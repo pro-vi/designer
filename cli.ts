@@ -7,6 +7,7 @@ import { listSessions, getSession } from './session-store.ts';
 import { createBrowser } from './browser.ts';
 import { writeTastingHtml, serveAndOpen } from './tasting.ts';
 import { sessionDir } from './artifact-store.ts';
+import { runSetup } from './setup.ts';
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -156,6 +157,10 @@ async function main(): Promise<void> {
       console.log('closed');
       break;
     }
+    case 'setup': {
+      const code = await runSetup();
+      process.exit(code);
+    }
     case 'doctor': {
       const checks = await runDoctor();
       const fail = checks.some((c) => c.status === 'fail');
@@ -218,6 +223,7 @@ async function main(): Promise<void> {
   fetch "<name>.html" [--key k] [--out path]   fetch a file's served HTML
   handoff [--key k] [--file "<name>.html"]     trigger Export→Handoff, download tar.gz, extract
   tasting [--key k]                            write tasting.html harness for the latest handoff bundle + serve + open
+  setup                                        first-run: deps, debug Chrome, login wait, skill copy, MCP register
   doctor                                       diagnose first-run setup (agent-browser, CDP, login, skill, etc.)
   close [--key k]                              close browser (state on disk preserved)
 
