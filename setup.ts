@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
+import { REPO_ROOT } from './repo-root.ts';
 
-const REPO_ROOT = path.dirname(new URL(import.meta.url).pathname);
 const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
 const SKILL_DEST_DIR = path.join(os.homedir(), '.claude', 'skills', 'designer-loop');
 const SKILL_DEST = path.join(SKILL_DEST_DIR, 'SKILL.md');

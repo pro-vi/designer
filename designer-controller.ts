@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { createBrowser, type Browser } from './browser.ts';
 import { sessionDir, saveIteration, type IterationRecord } from './artifact-store.ts';
 import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
+import { REPO_ROOT } from './repo-root.ts';
 
 export interface Selectors {
   login: { signedInIndicator: string | null };
@@ -92,11 +93,10 @@ export interface RepairReport {
   skipped: string[];
 }
 
-const PROJECT_ROOT = path.dirname(new URL(import.meta.url).pathname);
 const DESIGN_HOME = 'https://claude.ai/design';
 
 function loadSelectors(): Selectors {
-  const base = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'selectors.json'), 'utf8')) as Selectors;
+  const base = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'selectors.json'), 'utf8')) as Selectors;
   const overridePath = path.join(os.homedir(), '.designer', 'selectors.override.json');
   if (fs.existsSync(overridePath)) {
     try {

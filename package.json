@@ -1,9 +1,27 @@
 {
-  "name": "designer",
+  "name": "@provizhang/designer",
   "version": "0.3.0",
-  "private": true,
   "type": "module",
-  "description": "MCP + CLI for autonomous iteration of claude.ai/design (wireframe and high-fidelity)",
+  "description": "MCP + CLI for autonomous iteration of claude.ai/design — drives the design surface via agent-browser, downloads handoff bundles, and exposes a tasting harness for full-viewport variant comparison.",
+  "license": "MIT",
+  "author": "Provi Zhang",
+  "homepage": "https://github.com/provizhang/designer",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/provizhang/designer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/provizhang/designer/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude-design",
+    "mcp",
+    "model-context-protocol",
+    "design",
+    "agent-browser",
+    "anthropic"
+  ],
   "bin": {
     "designer": "./bin/designer"
   },
@@ -13,6 +31,9 @@
     "setup": "tsx cli.ts setup",
     "doctor": "tsx cli.ts doctor",
     "check": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run check && npm run build",
+    "postinstall": "node -e \"if (!process.env.npm_config_global) process.exit(0); console.log('\\n  designer installed. Next: run `designer setup` to launch debug Chrome, sign in, and register the MCP.\\n')\"",
     "probe": "tsx scripts/probe.ts"
   },
   "dependencies": {
@@ -26,5 +47,14 @@
   },
   "engines": {
     "node": ">=20"
-  }
+  },
+  "files": [
+    "dist/",
+    "bin/",
+    "skills/",
+    "scripts/designer-chrome.sh",
+    "selectors.json",
+    "README.md",
+    "LICENSE"
+  ]
 }

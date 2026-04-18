@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { REPO_ROOT } from './repo-root.ts';
 
 export interface SaveIterationInput {
   prompt: string;
@@ -20,8 +21,7 @@ export interface IterationRecord {
   files: { html?: string; screenshot?: string };
 }
 
-const PROJECT_ROOT = path.dirname(new URL(import.meta.url).pathname);
-const ARTIFACTS_ROOT = process.env.DESIGNER_ARTIFACTS_DIR || path.join(PROJECT_ROOT, 'artifacts');
+const ARTIFACTS_ROOT = process.env.DESIGNER_ARTIFACTS_DIR || path.join(REPO_ROOT, 'artifacts');
 
 function slug(s: string | null | undefined): string {
   return String(s || 'session')

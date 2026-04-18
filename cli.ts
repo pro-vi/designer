@@ -9,6 +9,7 @@ import { writeTastingHtml, serveAndOpen } from './tasting.ts';
 import { sessionDir } from './artifact-store.ts';
 import { runSetup } from './setup.ts';
 import { startMcpServer } from './mcp-server.ts';
+import { REPO_ROOT } from './repo-root.ts';
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -308,7 +309,7 @@ async function checkOnDesignSurface(): Promise<DoctorCheck> {
 
 function checkSelectors(): DoctorCheck {
   try {
-    fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), 'selectors.json'), 'utf8');
+    fs.readFileSync(path.join(REPO_ROOT, 'selectors.json'), 'utf8');
     return { name: 'selectors.json present', status: 'ok' };
   } catch {
     return { name: 'selectors.json present', status: 'fail', detail: 'missing — re-clone or restore from git' };

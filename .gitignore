@@ -1,4 +1,5 @@
 node_modules/
+dist/
 artifacts/
 logs/*.log
 .DS_Store

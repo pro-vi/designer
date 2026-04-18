@@ -15,18 +15,21 @@ done
 BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 REPO_ROOT="$(cd "$BIN_DIR/.." && pwd)"
 
+DIST_CLI="$REPO_ROOT/dist/cli.js"
 TSX="$REPO_ROOT/node_modules/.bin/tsx"
-CLI="$REPO_ROOT/cli.ts"
+SRC_CLI="$REPO_ROOT/cli.ts"
 
-if [ ! -x "$TSX" ]; then
-  echo "[designer] tsx not found at $TSX" >&2
-  echo "           Run: cd $REPO_ROOT && npm install" >&2
-  exit 1
+# Prefer compiled output (npm-installed users + post-build dev). Fall back to
+# tsx-on-source (clone-and-run dev mode, before tsc emits dist/).
+if [ -f "$DIST_CLI" ]; then
+  exec node "$DIST_CLI" "$@"
 fi
 
-if [ ! -f "$CLI" ]; then
-  echo "[designer] cli.ts not found at $CLI" >&2
-  exit 1
+if [ -x "$TSX" ] && [ -f "$SRC_CLI" ]; then
+  exec "$TSX" "$SRC_CLI" "$@"
 fi
 
-exec "$TSX" "$CLI" "$@"
+echo "[designer] No runnable found." >&2
+echo "           Expected $DIST_CLI (compiled) or $TSX + $SRC_CLI (dev)." >&2
+echo "           Run: cd $REPO_ROOT && npm install && npm run build" >&2
+exit 1
