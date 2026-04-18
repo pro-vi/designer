@@ -1,8 +1,9 @@
 #!/usr/bin/env -S node --import tsx
 import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { DesignerController } from './designer-controller.ts';
 import { listSessions, getSession } from './session-store.ts';
-import path from 'node:path';
 import { createBrowser } from './browser.ts';
 import { writeTastingHtml, serveAndOpen } from './tasting.ts';
 import { sessionDir } from './artifact-store.ts';
@@ -155,6 +156,13 @@ async function main(): Promise<void> {
       console.log('closed');
       break;
     }
+    case 'doctor': {
+      const checks = await runDoctor();
+      const fail = checks.some((c) => c.status === 'fail');
+      console.log(checks.map((c) => `${statusIcon(c.status)} ${c.name}${c.detail ? ' — ' + c.detail : ''}`).join('\n'));
+      if (fail) process.exit(2);
+      break;
+    }
     case 'tasting': {
       const base = sessionDir(key);
       const handoffs = fs
@@ -210,10 +218,97 @@ async function main(): Promise<void> {
   fetch "<name>.html" [--key k] [--out path]   fetch a file's served HTML
   handoff [--key k] [--file "<name>.html"]     trigger Export→Handoff, download tar.gz, extract
   tasting [--key k]                            write tasting.html harness for the latest handoff bundle + serve + open
+  doctor                                       diagnose first-run setup (agent-browser, CDP, login, skill, etc.)
   close [--key k]                              close browser (state on disk preserved)
 
 Env: DESIGNER_CDP=9222 attaches to Chrome at --remote-debugging-port=9222.`);
   }
+}
+
+type DoctorStatus = 'ok' | 'warn' | 'fail';
+interface DoctorCheck { name: string; status: DoctorStatus; detail?: string }
+
+function statusIcon(s: DoctorStatus): string {
+  return s === 'ok' ? '✓' : s === 'warn' ? '⚠' : '✗';
+}
+
+async function runDoctor(): Promise<DoctorCheck[]> {
+  const out: DoctorCheck[] = [];
+
+  out.push(await checkAgentBrowser());
+  out.push(await checkCdp());
+  out.push(await checkOnDesignSurface());
+  out.push(checkSelectors());
+  out.push(checkSkillInstalled());
+  out.push(checkMcpRegistered());
+
+  return out;
+}
+
+async function checkAgentBrowser(): Promise<DoctorCheck> {
+  return new Promise((resolve) => {
+    const c = spawn('agent-browser', ['--version'], { stdio: 'pipe' });
+    let v = '';
+    c.stdout.on('data', (d: Buffer) => (v += d.toString()));
+    c.on('error', () => resolve({ name: 'agent-browser installed', status: 'fail', detail: 'binary not found on PATH; install from https://github.com/agent-browser/agent-browser' }));
+    c.on('close', () => resolve({ name: 'agent-browser installed', status: 'ok', detail: v.trim() || 'present' }));
+  });
+}
+
+async function checkCdp(): Promise<DoctorCheck> {
+  const port = process.env.DESIGNER_CDP || '9222';
+  if (!process.env.DESIGNER_CDP) {
+    return { name: `CDP at port ${port}`, status: 'warn', detail: 'DESIGNER_CDP not set; defaulting to 9222. export DESIGNER_CDP=9222 to silence.' };
+  }
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/version`);
+    if (!res.ok) return { name: `CDP at port ${port}`, status: 'fail', detail: `HTTP ${res.status}` };
+    const j = await res.json() as { Browser?: string };
+    return { name: `CDP at port ${port}`, status: 'ok', detail: j.Browser || 'connected' };
+  } catch (e) {
+    return {
+      name: `CDP at port ${port}`,
+      status: 'fail',
+      detail: `not reachable. Run: ./scripts/designer-chrome.sh (launches Chrome with --remote-debugging-port=${port} in a dedicated profile)`
+    };
+  }
+}
+
+async function checkOnDesignSurface(): Promise<DoctorCheck> {
+  const port = process.env.DESIGNER_CDP || '9222';
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/list`);
+    if (!res.ok) return { name: 'logged into claude.ai/design', status: 'fail', detail: `HTTP ${res.status}` };
+    const tabs = await res.json() as Array<{ url?: string; title?: string }>;
+    const onDesign = tabs.find((t) => t.url && /claude\.ai\/design/.test(t.url));
+    if (!onDesign) return { name: 'logged into claude.ai/design', status: 'warn', detail: 'no tab on claude.ai/design — sign in and navigate there in the debug Chrome window' };
+    if (/login|sign in/i.test(onDesign.title || '')) return { name: 'logged into claude.ai/design', status: 'fail', detail: 'on a login page; sign in inside the debug Chrome window' };
+    return { name: 'logged into claude.ai/design', status: 'ok', detail: onDesign.url };
+  } catch {
+    return { name: 'logged into claude.ai/design', status: 'fail', detail: 'CDP not reachable; fix CDP first' };
+  }
+}
+
+function checkSelectors(): DoctorCheck {
+  try {
+    fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), 'selectors.json'), 'utf8');
+    return { name: 'selectors.json present', status: 'ok' };
+  } catch {
+    return { name: 'selectors.json present', status: 'fail', detail: 'missing — re-clone or restore from git' };
+  }
+}
+
+function checkSkillInstalled(): DoctorCheck {
+  const home = process.env.HOME || '';
+  const skillPath = path.join(home, '.claude', 'skills', 'designer-loop', 'SKILL.md');
+  if (!fs.existsSync(skillPath)) {
+    return { name: 'designer-loop skill installed', status: 'warn', detail: `not at ${skillPath}; agent will lack loop guidance` };
+  }
+  return { name: 'designer-loop skill installed', status: 'ok' };
+}
+
+function checkMcpRegistered(): DoctorCheck {
+  return { name: 'MCP registered with Claude Code', status: 'warn', detail: 'unverified (no introspection); see README for `claude mcp add` command' };
 }
 
 function prettyName(filename: string): string {
