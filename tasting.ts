@@ -71,11 +71,21 @@ function renderTastingHtml({ variants, title }: { variants: Array<{ name: string
     tab.classList.add('active');
     stage.src = tab.dataset.src;
   }
-  tabs.forEach(t => t.addEventListener('click', () => activate(t)));
-  document.addEventListener('keydown', (e) => {
+  function onKey(e) {
     if (e.target === notes) return;
     const n = parseInt(e.key, 10);
-    if (!Number.isNaN(n) && n >= 1 && n <= tabs.length) activate(tabs[n - 1]);
+    if (!Number.isNaN(n) && n >= 1 && n <= tabs.length) {
+      e.preventDefault();
+      activate(tabs[n - 1]);
+    }
+  }
+  tabs.forEach(t => t.addEventListener('click', () => activate(t)));
+  // Parent-document listener handles keys when focus is on the bar/notes/body.
+  document.addEventListener('keydown', onKey);
+  // Iframe content captures keys when the user has interacted with the variant.
+  // Same-origin (we serve via http.server on the same port) so we can reach in.
+  stage.addEventListener('load', () => {
+    try { stage.contentDocument && stage.contentDocument.addEventListener('keydown', onKey); } catch {}
   });
 </script>
 </body>
