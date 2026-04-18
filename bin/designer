@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Wrapper that resolves the repo's tsx + cli.ts regardless of the user's cwd.
+# Lets users type `designer <verb>` (after `npm link` or PATH symlink)
+# instead of the verbose `node_modules/.bin/tsx cli.ts <verb>`.
+
+set -e
+
+# Resolve symlinks to find the real script location, then back up to repo root.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+REPO_ROOT="$(cd "$BIN_DIR/.." && pwd)"
+
+TSX="$REPO_ROOT/node_modules/.bin/tsx"
+CLI="$REPO_ROOT/cli.ts"
+
+if [ ! -x "$TSX" ]; then
+  echo "[designer] tsx not found at $TSX" >&2
+  echo "           Run: cd $REPO_ROOT && npm install" >&2
+  exit 1
+fi
+
+if [ ! -f "$CLI" ]; then
+  echo "[designer] cli.ts not found at $CLI" >&2
+  exit 1
+fi
+
+exec "$TSX" "$CLI" "$@"

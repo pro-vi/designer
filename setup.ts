@@ -178,13 +178,12 @@ function step6Mcp(port: string): boolean {
     log('mcp', 'ok', 'Already registered.');
     return true;
   }
-  const tsx = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
-  const server = path.join(REPO_ROOT, 'mcp-server.ts');
-  if (!fs.existsSync(tsx) || !fs.existsSync(server)) {
-    log('mcp', 'fail', `Missing ${tsx} or ${server}`);
+  const wrapper = path.join(REPO_ROOT, 'bin', 'designer-mcp');
+  if (!fs.existsSync(wrapper)) {
+    log('mcp', 'fail', `Missing wrapper ${wrapper}`);
     return false;
   }
-  const cmd = ['mcp', 'add', '--transport', 'stdio', 'designer', '--', 'env', `DESIGNER_CDP=${port}`, tsx, server];
+  const cmd = ['mcp', 'add', '--transport', 'stdio', 'designer', '--', 'env', `DESIGNER_CDP=${port}`, wrapper];
   log('mcp', 'wait', `Registering: claude ${cmd.join(' ')}`);
   const reg = spawnSync('claude', cmd, { stdio: 'inherit' });
   if (reg.status !== 0) {
