@@ -24,7 +24,14 @@ npm run check            # tsc --noEmit, should pass clean
 ```bash
 git clone … && cd designer
 npm install
-node_modules/.bin/tsx cli.ts setup
+./bin/designer setup        # or: npm run setup
+```
+
+Optional — make `designer` available globally so you can run it from anywhere:
+
+```bash
+npm link                    # creates a `designer` symlink in your npm global bin
+designer setup              # now works from any cwd
 ```
 
 `designer setup` is idempotent and auto-progresses. It will:
@@ -60,9 +67,7 @@ curl -s http://127.0.0.1:9222/json/version | head
 export DESIGNER_CDP=9222
 # 6. Register MCP with Claude Code:
 claude mcp add --transport stdio designer \
-  -- env DESIGNER_CDP=9222 \
-     "$PWD/node_modules/.bin/tsx" \
-     "$PWD/mcp-server.ts"
+  -- env DESIGNER_CDP=9222 "$PWD/bin/designer-mcp"
 ```
 
 ## CLI (verbs)
@@ -82,7 +87,7 @@ designer close    [--key k]
 
 All verbs take `--key` to isolate parallel sessions. State lives at `~/.designer/sessions.json`.
 
-Run any verb via: `DESIGNER_CDP=9222 node_modules/.bin/tsx cli.ts <verb> …`
+Run any verb via `./bin/designer <verb>` (or `designer <verb>` after `npm link`). `npm run setup` and `npm run doctor` are scripted shortcuts.
 
 ## MCP (6 tools)
 
@@ -101,9 +106,10 @@ Register with Claude Code:
 claude mcp remove designer 2>/dev/null
 claude mcp add --transport stdio designer \
   -- env DESIGNER_CDP=9222 \
-     /Users/provi/Development/_projs/designer/node_modules/.bin/tsx \
-     /Users/provi/Development/_projs/designer/mcp-server.ts
+     /Users/provi/Development/_projs/designer/bin/designer-mcp
 ```
+
+(`designer setup` does this for you. The wrapper `bin/designer-mcp` resolves the repo's tsx + mcp-server.ts internally, so the registration command stays short.)
 
 ## The full loop (from `designer-loop` skill)
 
