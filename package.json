@@ -5,8 +5,7 @@
   "type": "module",
   "description": "MCP + CLI for autonomous iteration of claude.ai/design (wireframe and high-fidelity)",
   "bin": {
-    "designer": "./bin/designer",
-    "designer-mcp": "./bin/designer-mcp"
+    "designer": "./bin/designer"
   },
   "scripts": {
     "mcp": "tsx mcp-server.ts",

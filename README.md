@@ -67,7 +67,7 @@ curl -s http://127.0.0.1:9222/json/version | head
 export DESIGNER_CDP=9222
 # 6. Register MCP with Claude Code:
 claude mcp add --transport stdio designer \
-  -- env DESIGNER_CDP=9222 "$PWD/bin/designer-mcp"
+  -- env DESIGNER_CDP=9222 "$PWD/bin/designer" mcp serve
 ```
 
 ## CLI (verbs)
@@ -106,10 +106,10 @@ Register with Claude Code:
 claude mcp remove designer 2>/dev/null
 claude mcp add --transport stdio designer \
   -- env DESIGNER_CDP=9222 \
-     /Users/provi/Development/_projs/designer/bin/designer-mcp
+     /Users/provi/Development/_projs/designer/bin/designer mcp serve
 ```
 
-(`designer setup` does this for you. The wrapper `bin/designer-mcp` resolves the repo's tsx + mcp-server.ts internally, so the registration command stays short.)
+(`designer setup` does this for you. After `npm link`, the registered command becomes simply `designer mcp serve`.)
 
 ## The full loop (from `designer-loop` skill)
 

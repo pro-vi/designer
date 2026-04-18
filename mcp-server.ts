@@ -154,5 +154,17 @@ function simpleHash(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
 }
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+export async function startMcpServer(): Promise<void> {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+// Run server when invoked directly (node mcp-server.ts or via bin/designer-mcp).
+// Skip when imported (cli.ts uses startMcpServer for the `mcp serve` subcommand).
+const __isDirectInvoke =
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith('mcp-server.ts') ||
+  process.argv[1]?.endsWith('mcp-server.js');
+if (__isDirectInvoke) {
+  await startMcpServer();
+}

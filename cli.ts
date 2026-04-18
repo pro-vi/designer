@@ -8,6 +8,7 @@ import { createBrowser } from './browser.ts';
 import { writeTastingHtml, serveAndOpen } from './tasting.ts';
 import { sessionDir } from './artifact-store.ts';
 import { runSetup } from './setup.ts';
+import { startMcpServer } from './mcp-server.ts';
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -157,6 +158,15 @@ async function main(): Promise<void> {
       console.log('closed');
       break;
     }
+    case 'mcp': {
+      const sub = flags._[0];
+      if (sub !== 'serve') {
+        console.log("Usage: designer mcp serve\n  Starts the MCP stdio server. Used in 'claude mcp add --transport stdio designer -- designer mcp serve'.");
+        process.exit(sub ? 2 : 0);
+      }
+      await startMcpServer();
+      break;
+    }
     case 'setup': {
       const code = await runSetup();
       process.exit(code);
@@ -224,7 +234,8 @@ async function main(): Promise<void> {
   handoff [--key k] [--file "<name>.html"]     trigger Export→Handoff, download tar.gz, extract
   tasting [--key k]                            write tasting.html harness for the latest handoff bundle + serve + open
   setup                                        first-run: deps, debug Chrome, login wait, skill copy, MCP register
-  doctor                                       diagnose first-run setup (agent-browser, CDP, login, skill, etc.)
+  doctor                                       diagnose first-run setup
+  mcp serve                                    start the MCP stdio server (used by 'claude mcp add')
   close [--key k]                              close browser (state on disk preserved)
 
 Env: DESIGNER_CDP=9222 attaches to Chrome at --remote-debugging-port=9222.`);
