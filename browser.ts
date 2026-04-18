@@ -131,8 +131,8 @@ export function createBrowser({
       const out = await run(['eval', js]);
       try {
         return JSON.parse(out) as T;
-      } catch {
-        return out as unknown as T;
+      } catch (e) {
+        throw new Error(`evalValue: stdout was not JSON-parseable: ${(e as Error).message}\n--stdout--\n${out.slice(0, 500)}`);
       }
     }
   };

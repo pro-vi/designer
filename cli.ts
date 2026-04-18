@@ -22,9 +22,9 @@ function parseFlags(args: string[]): Flags {
     if (!a) continue;
     if (a.startsWith('--')) {
       const parts = a.slice(2).split('=');
-      const k = parts[0]!;
+      const k = parts[0] ?? '';
       const v = parts[1] ?? args[++i] ?? true;
-      out[k] = v as FlagValue;
+      if (k) out[k] = v as FlagValue;
     } else {
       (out._ as string[]).push(a);
     }
