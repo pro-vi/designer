@@ -19,26 +19,51 @@ npm install
 npm run check            # tsc --noEmit, should pass clean
 ```
 
-## First run — attach to your real Chrome (required)
+## First run
 
-`claude.ai` is protected by Cloudflare + Google SSO; headless browsers don't get through. The clean path is to attach to a logged-in Chrome via CDP.
+```bash
+git clone … && cd designer
+npm install
+node_modules/.bin/tsx cli.ts setup
+```
 
-Since Chrome 136, `--remote-debugging-port` is blocked on the **default profile** for security. Use a dedicated debug profile — one-time login:
+`designer setup` is idempotent and auto-progresses. It will:
 
-1. Fully quit Chrome (Cmd+Q).
-2. Launch with a debug port + separate user-data-dir:
+- Install deps if missing
+- Check `agent-browser` is on PATH
+- If Chrome is running (non-debug), ask you to Cmd+Q and wait
+- Launch a dedicated debug Chrome (`--remote-debugging-port=9222`, profile at `~/.chrome-designer-profile/`)
+- Wait for you to sign in to Claude and reach `claude.ai/design`
+- Copy the `designer-loop` skill to `~/.claude/skills/`
+- Register the MCP with Claude Code
 
-    ```bash
-    /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-      --remote-debugging-port=9222 \
-      --user-data-dir="$HOME/.chrome-designer-profile"
-    ```
+Re-run if interrupted — every step is a no-op when already satisfied.
 
-3. In that Chrome, sign in to Claude and navigate to `https://claude.ai/design`.
-4. Verify: `curl -s http://127.0.0.1:9222/json/version | head` prints Chrome's JSON.
-5. Set `DESIGNER_CDP=9222` in every designer command (or export it into your shell).
+### Why a dedicated profile?
 
-The debug profile persists at `~/.chrome-designer-profile/`; you only sign in once.
+Since Chrome 136, `--remote-debugging-port` is blocked on the default profile for security. The dedicated `~/.chrome-designer-profile/` is a one-time login that persists across launches. Your normal Chrome profile is untouched.
+
+### Bot detection
+
+Login is a real human typing into a real Chrome window. `--remote-debugging-port` alone doesn't set `navigator.webdriver` (only `--enable-automation` does); the user-agent is identical to normal Chrome. Cloudflare and Google OAuth see a normal session. First login on the new profile may trigger Google's "new device" verification once — that's a normal one-time prompt.
+
+### Manual setup (if you skip `designer setup`)
+
+```bash
+# 1. Quit Chrome fully (Cmd+Q)
+# 2. Launch debug Chrome:
+./scripts/designer-chrome.sh
+# 3. Sign in to Claude, navigate to https://claude.ai/design
+# 4. Verify CDP up:
+curl -s http://127.0.0.1:9222/json/version | head
+# 5. Set the env var (every designer call needs it; export to your rc):
+export DESIGNER_CDP=9222
+# 6. Register MCP with Claude Code:
+claude mcp add --transport stdio designer \
+  -- env DESIGNER_CDP=9222 \
+     "$PWD/node_modules/.bin/tsx" \
+     "$PWD/mcp-server.ts"
+```
 
 ## CLI (verbs)
 
