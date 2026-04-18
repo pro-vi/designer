@@ -1,0 +1,8 @@
+node_modules/
+artifacts/
+logs/*.log
+.DS_Store
+
+# local tooling state
+.claude/
+.prov/

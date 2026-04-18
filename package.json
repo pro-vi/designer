@@ -1,0 +1,29 @@
+{
+  "name": "designer",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP + CLI for autonomous iteration of claude.ai/design (wireframe and high-fidelity)",
+  "bin": {
+    "designer": "./cli.ts",
+    "designer-mcp": "./mcp-server.ts"
+  },
+  "scripts": {
+    "mcp": "tsx mcp-server.ts",
+    "cli": "tsx cli.ts",
+    "check": "tsc --noEmit",
+    "probe": "tsx scripts/probe.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
