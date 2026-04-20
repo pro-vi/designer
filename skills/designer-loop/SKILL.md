@@ -1,51 +1,36 @@
 ---
 name: designer-loop
-description: "Human-participated design iteration loop. The human is the designer — AI is hands + memory. Works two ways: (1) driving claude.ai/design via the `designer` MCP for new-surface exploration, or (2) iterating design tokens directly in an existing codebase. Always: human states intent, AI reads what exists, AI proposes (relays intent to Claude Design in MCP mode, executes directly or offers variants in token mode), human reacts in their own words, AI interprets and iterates. Promotes accepted result with a decision record."
+description: "Human-participated design iteration loop driven by claude.ai/design via the `designer` MCP. The human is the designer; AI is translation + plumbing. Human states intent, AI reads what exists and relays intent to Claude Design, human tastes the variants Claude produces, AI interprets reactions and iterates. Promotes accepted result with a decision record (the bundle's chat transcript)."
 ---
 
 # Designer Loop
 
-The human is the designer. The AI proposes, remembers, and executes — but taste lives with the human.
+The human is the designer. Claude Design has taste. The orchestrating agent is translation + plumbing — not a co-designer.
 
-Two modes:
+Three layers, each with its own job:
 
-- **MCP mode**: drive `claude.ai/design` via the `designer` MCP. Claude's design assistant has baked-in taste; you pipe intent in, show variants to the human, interpret reactions, and promote the result to code.
-- **Token mode**: edit tokens directly in the running repo. No MCP needed.
+- **Human**: taste. Describes intent, reacts to variants in their own words.
+- **Claude Design** (via the `designer` MCP): aesthetic judgment. Produces variants, names them, wires tweaks.
+- **Orchestrator** (this agent): translates intent to a minimal faithful prompt, presents what Claude produced, interprets reactions, promotes the result to code.
 
-The loop is identical in both modes; the mechanics differ.
+Don't muddle the three.
 
-### Which mode?
+### When NOT to invoke this skill
 
-Pick by the shape of the work, not the tool's availability.
+For trivial mechanical changes — single token, single value, no feeling-shaped question ("set `--border-radius: 12px`", "make the bg darker by 1 stop", "add 8px of padding here") — just make the change directly. Don't boot the MCP. Don't propose variants. Show the diff and move on.
 
-**MCP mode fits when:**
-- Designing a new surface that doesn't exist yet.
-- Redesigning an existing surface where multiple directions are plausible.
-- Human wants to taste alternatives side-by-side before committing.
-- Change crosses multiple dimensions (palette + type + layout + hierarchy) — tokens can't carry it.
-- Human's intent is exploratory ("what if", "feels like", "design me").
-
-**Token mode fits when:**
-- Change is mechanical and targeted — one or two dimensions (spacing, radius, a single color).
-- Existing codebase has a clear token layer to edit.
-- Human wants iterative polish, not fresh exploration.
-- The right answer is already clear enough that side-by-side alternatives would be wasted turns.
-
-**Default when ambiguous**: start MCP mode if the intent is feeling-shaped ("feels heavy", "too cold"); start token mode if it's value-shaped ("make the border lighter", "more padding").
-
-**Fallback**: if MCP mode is indicated but unavailable (not registered, CDP down, can't sign in), drop to token mode and tell the human. Don't silently downgrade.
+This skill is for **feeling-shaped, exploratory, or multi-dimensional** design work.
 
 ## The Loop
 
 ```
 1. Intent       → Human describes what they want to feel/change (not specific values)
-2. Read         → AI detects existing design language and constraints
-3. Propose      → AI proposes (in MCP mode: relays intent to Claude Design; in token mode:
-                  executes directly if clear, or offers 2-3 variants if not)
-4. React        → Human responds in their own words ("too cold", "almost", "yes")
-5. Interpret    → AI translates reaction into next proposal or promotion
+2. Read         → Agent calls designer_session; reads adjacent code/tokens if relevant
+3. Relay        → Agent translates intent into a minimal prompt; sends via designer_prompt
+4. Taste        → Human reacts to the variants Claude produced (in the tasting harness)
+5. Interpret    → Agent translates reaction into next prompt or promotion
 6. Repeat 3-5   → Until human says "that's it"
-7. Promote      → Write to production with decision record
+7. Promote      → designer_handoff; bundle's chat transcript is the decision record
 ```
 
 ## Phase 1: Intent
@@ -54,44 +39,33 @@ Pick by the shape of the work, not the tool's availability.
 
 Good intent: "The sidebar feels heavy — I want it to recede." "I want an intake screen that doesn't feel clinical."
 
-Bad intent (skip to Phase 3): `--border-radius: 12px` — already a solution.
-
-If the human gives a specific value, ask once: "What are you trying to achieve?" — the answer is the real intent.
+Bad intent (if it appears): `--border-radius: 12px` — already a solution, not this skill's job.
 
 **Interview only when intent is genuinely unclear, and only about scope — never about aesthetics.**
 
-Clarifying questions in scope: what data is rendered, what the primary user action is, what failure modes must be visible, what the adjacent screens are, what must NOT change.
+Scope questions (yours to ask): what data is rendered, what the primary user action is, what failure modes must be visible, what the adjacent screens are, what must NOT change.
 
-Aesthetic questions belong to Claude Design, not you: do not ask about palette, type, layout direction, tone, hierarchy, spacing style. Those are the design surface's job.
+Aesthetic questions belong to Claude Design, not you: do not ask about palette, type, layout direction, tone, hierarchy, spacing style.
 
 ## Phase 2: Read the Room
 
-**Token mode** — understand what exists in the codebase:
+Orient in the claude.ai/design surface:
 
-1. **Find the token layer** — CSS custom properties in `app.css`? Tailwind config? Theme file?
-2. **Map the current language** — spacing scale, palette, radii, shadow depth, type scale. Don't propose outside the system unless the intent is to break it.
-3. **Identify constraints** — dark mode, a11y contrast, brand colors, breakpoints. Non-negotiable unless the human says otherwise.
-4. **Note adjacency** — design is relational. Read the element AND what's next to it.
-
-**MCP mode** — orient in the claude.ai/design surface:
-
-1. `designer_session({ key })` — returns stored state + `availableFiles`. If `stored.designUrl` exists, you're resuming; otherwise create one with a sensible default name derived from the intent (don't interview the human for a project name).
-2. For existing projects: `designer_snapshot({ filename })` per file of interest. You get `htmlPath` — read it if deep inspection is warranted.
+1. `designer_session({ key })` — returns stored state + `availableFiles`. If `stored.designUrl` exists, you're resuming; otherwise create one with a sensible default name derived from the intent (don't interview for a project name).
+2. For existing projects: `designer_snapshot({ filename })` per file of interest. You get `htmlPath` — read it only if deep inspection is warranted.
 3. If this is a frontend for an existing backend or codebase, read the backend's API shape and any existing design tokens in the target repo BEFORE prompting. Those are constraints to thread into the prompt verbatim, not aesthetic hypotheses to propose.
 
-A one-line brief is fine ("I see X; here's the prompt I'm about to send"). Don't turn it into a design-by-interview. The human's intent goes in untouched.
+A one-line brief is fine ("I see X; here's the prompt I'm about to send"). Don't turn it into design-by-interview.
 
-## Phase 3: Propose
+## Phase 3: Relay
 
-### In MCP mode: you're a translator, not a co-designer
+Claude Design has taste. **Your job is to translate the human's intent into a minimal faithful prompt and let Claude's taste work.**
 
-Claude Design has taste. **Your only job is to translate the human's intent into a minimal faithful prompt and let Claude's taste work.**
-
-Guide, don't constrain. The prompt should give Claude enough to make good decisions, not pre-make the decisions:
+Guide, don't constrain. The prompt gives Claude enough to make good decisions, not pre-makes them:
 
 | Guide (include) | Constrain (omit) |
 |---|---|
-| What the product does / data it renders | Color palette (unless it's a hard brand token — see below) |
+| What the product does / data it renders | Color palette (unless it's a hard brand token) |
 | User's situation / primary action | Type treatment, font feel |
 | Entities, field names, copy that must appear | Layout direction, whitespace rules |
 | Adjacent surfaces / what must NOT change | Tone adjectives ("contemplative", "trustworthy") unless paired with a concrete lever |
@@ -104,15 +78,13 @@ Do not:
 - Propose variants of your own to the human. Claude Design proposes; you relay.
 - Interview about taste. Scope questions only — see Phase 1.
 
-The orchestrator is hands. Claude Design is the designer. The human is the taste. Don't muddle the three.
-
 ### Prompt discipline
 
-- **Short and concrete over long and tasteful.** Not a hard ceiling — goal + layout + content + audience is the recipe and sometimes takes more — but over-specification is the most common failure mode.
-- **Avoid ungrounded vibe adjectives.** Vibe words that don't map to a concrete surface (a button, a motion, a spacing rule) fight Claude's style coherence. Vibe word + concrete lever is fine; vibe essay ahead of the brief is not.
+- **Short and concrete over long and tasteful.** Not a hard ceiling, but over-specification is the most common failure mode.
+- **Avoid ungrounded vibe adjectives.** Vibe words without a concrete surface fight Claude's style coherence. Vibe word + concrete lever is fine; vibe essay ahead of the brief is not.
 - **Lock brand explicitly.** Palette, type, component names — say them. Don't hope Claude guesses.
 - **Ask for tweaks** on the dimensions you expect to iterate (type, spacing, palette). Claude wires live sliders.
-- **Quantities help.** "N variations", "N loaders on a grid", "N-screen onboarding" — Claude delivers variety within one generation.
+- **Quantities help.** "N variations", "N loaders on a grid", "N-screen onboarding."
 
 ### Picking the right artifact shape
 
@@ -132,14 +104,12 @@ Heuristic threshold: once **screens × meaningful states × breakpoints > ~8–1
 
 Two sub-modes:
 
-- **Grid canvas** — many small cells, each ≤300×300. For widgets where variants read at thumbnail scale (loaders, cards, icons, type specimens).
-- **Storyboard canvas** — a few frames at real device size, arranged as a sequence. For flows — one sequence, not competing variants.
+- **Grid canvas** — many small cells, each ≤300×300. For widgets where variants read at thumbnail scale.
+- **Storyboard canvas** — a few frames at real device size, arranged as a sequence. For flows.
 
-Variants of a full-viewport surface are neither. Grid canvas mangles them (type scale, whitespace, hierarchy only read at real size). Storyboard doesn't apply. Right shape: separate full-page HTML files + a skill-level full-viewport switcher. `designer tasting --key <name>` builds it.
+Variants of a full-viewport surface are neither. Grid canvas mangles them (type scale, whitespace, hierarchy only read at real size). Storyboard doesn't apply. Right shape: separate full-page HTML files + a full-viewport switcher. `designer tasting --key <name>` builds it.
 
 ### Naming variants vs locking brand
-
-Two different things, often conflated:
 
 - **Brand tokens** (palette, type, component names, product language) — specify explicitly.
 - **Variant names** (what each disposable exploratory branch is called) — let Claude name them from the problem domain. Exception: if the human already has review-friendly labels in mind ("single-page / wizard / dense ops"), use those.
@@ -160,21 +130,7 @@ Canvas variants (compact widgets):
 3. `designer_snapshot({ key })` — fetch the canvas file.
 4. `designer_handoff` when done.
 
-### In token mode: propose only when the answer isn't obvious
-
-Token mode has two sub-paths. Pick based on whether multiple moves are plausibly right.
-
-**(a) Direct execution.** The right move is clear from the intent + the existing token system. Make the change in the production file, show the diff, wait for reaction. No variants, no ceremony. This is the common case for value-shaped intents and single-dimension mechanical changes.
-
-**(b) Variant proposal.** Multiple moves are plausibly right, usually because the intent is feeling-shaped. Offer 2-3 variants. Each is a different *hypothesis* about what's wrong, not three ways to execute the same hypothesis. Each variant includes: the token diff, one sentence on why, one sentence on the trade-off. Keep names from the problem domain, not generic aesthetic vocabulary. Stay within the existing token scale unless the intent is to break it.
-
-Preview: write a single HTML file showing the variants in realistic context (actual components, actual content — not color swatches). Open it; human reacts.
-
-**Escalation to MCP mode.** If the variants would each differ on multiple dimensions (not just border, but also bg + shadow + type + layout), or if "more variants at this fidelity" doesn't get closer to the right feel, the problem is bigger than tokens. Stop, tell the human, and start an MCP session with the target repo's existing tokens attached as constraints. Don't silently grind out more token-mode iterations when the shape is wrong.
-
-**No-token-layer codebases.** If the repo doesn't have a token layer (inline styles, no theme file, no Tailwind config), token mode isn't available. Either extract tokens first (separate refactor, not this loop) or go straight to MCP mode.
-
-## Phase 4: React
+## Phase 4: Taste
 
 **The human reacts in their own language.** Don't ask "accept or reject?" — ask "what do you think?"
 
@@ -184,24 +140,22 @@ Messy reactions are the point:
 - "Neither — what if we kept the border but made it almost invisible?"
 - "Yes. That's it."
 
-In MCP mode, the human can tune live via the tweak sliders Claude wired into the canvas. Those tweak positions are themselves a reaction — capture them.
+The human can tune live via the tweak sliders Claude wired into the canvas. Those tweak positions are themselves a reaction — capture them.
 
 ## Phase 5: Interpret
 
 Translate reaction into the next move:
 
-- **"Too X"** → propose variants that move away from X.
+- **"Too X"** → prompt for variants that move away from X.
 - **"Almost"** → narrow range, smaller adjustments.
-- **"What if..."** → human is designing now — execute their idea as the next variant.
+- **"What if..."** → human is designing now — execute their idea as the next prompt.
 - **"Yes"** → promote (Phase 7).
-- **Silence / uncertainty** → show variants in context, ask what's bothering them.
+- **Silence / uncertainty** → open the tasting harness, ask what's bothering them.
 - **Ambiguous** → before re-prompting, consider `designer_ask({ prompt })` to *consult* Claude: "given the human said X, what small change would address that?" — cheap (~15-30s text reply) and often surfaces the right adjustment.
 
 Never override with "but best practice says..." — capture the tension in the decision record instead.
 
 ## Phase 6: Promote
-
-**MCP mode**:
 
 1. `designer_handoff({ key, openFile: <chosen variant> })` — downloads the tar.gz bundle under `./artifacts/{key}/handoff-{ts}/`. The bundle is the decision record:
    - `README.md` — handoff protocol for the implementing agent
@@ -210,51 +164,34 @@ Never override with "but best practice says..." — capture the tension in the d
 2. If this is a frontend for an existing codebase, the implementing agent (this one, or Claude Code downstream) reads the bundle's README + chat transcript first, then translates the chosen variant into real code in the target repo.
 3. Append to the codebase's design decision log with a short entry citing the bundle path + the human's final reaction verbatim.
 
-**Token mode**:
-
-1. Write tokens to the production file (`app.css`, tailwind config, theme).
-2. Capture a decision record colocated with the tokens (as a comment, or companion file). Include: the human's intent verbatim, the chosen direction, rejected directions with the human's verbatim reason, and any constraints honored (a11y contrast, brand tokens, etc.).
-3. Show the diff before writing.
-
 ## Guardrails
 
-- **Read before proposing** (Phase 2). In MCP mode, call `designer_session` first — it returns `availableFiles` so you know what exists.
-- **Offer rationale**, not just values — whether proposing variants or executing directly, state why.
-- **Variant names from the problem domain** — in MCP mode, let Claude name them; in token mode, borrow from the subject matter, not from generic aesthetic vocabulary.
-- **Lock brand explicitly.** Claude won't guess your palette. If brand matters, state it — palette, type, component names.
-- **Capture feedback verbatim** in the decision record — don't sanitize.
-- **Direct values execute** — if the human says `--border-radius: 12px`, just do it. Still ask about intent for the record.
+- **Read before relaying** (Phase 2). Call `designer_session` first — it returns `availableFiles`.
+- **Guide, don't constrain.** Scope + data + hard brand tokens in; aesthetic choices out.
+- **Lock brand explicitly.** Claude won't guess your palette.
+- **Let Claude name variants** from the problem domain.
+- **Capture feedback verbatim.** The bundle's chat transcript is the record — don't sanitize.
+- **Direct values execute.** If the human says `--border-radius: 12px` mid-loop, just do it (don't even invoke Claude Design for that). Still note the intent.
 - **Promote only after explicit "yes"** — "almost" is not "yes."
-- **MCP prompts short and concrete.** Not a hard ceiling, but over-specification is the most common failure mode. Official gallery examples average 30–40 words.
 
 ## Anti-Patterns
 
-- **Swatch galleries** — isolated color chips instead of tokens in context.
-- **Binary choice** — "A or B?" instead of "what do you think?"
-- **Premature precision** — debating `oklch(0.78 0.02 285)` vs `oklch(0.79 0.02 285)` before direction is established.
-- **Ignoring adjacency** — changing the sidebar without seeing how it affects the content area.
-- **Silent promotion** — writing tokens without a decision record.
-- **Interviewing about aesthetics in MCP mode.** Scope questions are fine when intent is genuinely unclear; taste questions aren't yours to ask.
-- **Proposing variants of your own in MCP mode.** Claude Design proposes. You relay.
+- **Interviewing about aesthetics.** Scope questions are fine when intent is genuinely unclear; taste questions aren't yours to ask.
+- **Proposing variants of your own.** Claude Design proposes. You relay.
 - **Constraining where Claude should have room.** Brand tokens are constraints; palette feelings and layout hunches aren't.
-- **Ungrounded vibe essays** — vibe words without a concrete surface to attach to fight Claude's style coherence.
-- **Variant grid for full-screen experiences** — shrinking an intake/onboarding/dashboard into a 400px canvas cell loses hierarchy, type scale, whitespace. Screen-level variants → separate files + tasting harness.
-- **Separate files for compact widgets** — 20 loading indicators don't each need their own file. Grid canvas.
-- **Variant grid for journeys/states/systems** — multiplying screens by variants blows up fast. Once screens × states × breakpoints > ~8–10, converge to one routed prototype.
-- **Dictating variant names when team has none** — generic aesthetic stereotypes. Let Claude name exploratory branches from the problem domain.
-- **Forgetting to lock brand** — Claude won't guess your palette. If brand matters, state it.
-- **Auto-handoff** — don't promote on every iteration. Handoff is Phase 6, not a sub-verb of `designer_prompt`.
+- **Ungrounded vibe essays.** Vibe words without a concrete surface to attach to fight Claude's style coherence.
+- **Variant grid for full-screen experiences.** Shrinking an intake/onboarding/dashboard into a 400px cell loses hierarchy, type scale, whitespace. Screen-level variants → separate files + tasting harness.
+- **Separate files for compact widgets.** 20 loading indicators don't each need their own file. Grid canvas.
+- **Variant grid for journeys/states/systems.** Multiplying screens by variants blows up fast. Converge to one routed prototype.
+- **Auto-handoff.** Don't promote on every iteration. Handoff is Phase 7, not a sub-verb of `designer_prompt`.
+- **Invoking this skill for mechanical changes.** Single-token, single-value, no-feeling changes don't need the loop. Just edit.
 
 ## When the MCP is not available
 
 Check first: `designer_*` tools should appear in the tool list. If they don't:
 
 1. Ask the human whether they've installed the `designer` package. If yes, the MCP may have disconnected — `claude mcp list` will show the status.
-2. If they haven't set it up, the one-call install is:
-   ```
-   cd ~/Development/_projs/designer && ./bin/designer setup
-   ```
-   (Or after `npm i -g @pro-vi/designer` + `designer setup` once it's published.)
-3. If setup isn't possible in this session, fall back to **token mode** or hand-write an HTML variant gallery you can open in the browser.
+2. If they haven't set it up: `cd ~/Development/_projs/designer && ./bin/designer setup` (or after publish: `npm i -g @pro-vi/designer && designer setup`).
+3. If setup isn't possible in this session, tell the human the skill can't run and fall back to making the change directly (no variant exploration).
 
-Setup needs to happen once per machine: launch debug Chrome with a dedicated profile, sign in, register the MCP. Re-runs of `designer setup` are idempotent.
+The MCP auto-launches debug Chrome on first tool call if the dedicated profile exists. Re-runs of `designer setup` are idempotent.

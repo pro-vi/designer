@@ -7,6 +7,7 @@ import { createBrowser, type Browser } from './browser.ts';
 import { sessionDir, saveIteration, type IterationRecord } from './artifact-store.ts';
 import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
 import { REPO_ROOT } from './repo-root.ts';
+import { ensureCdpUp } from './cdp-ensure.ts';
 
 export interface Selectors {
   login: { signedInIndicator: string | null };
@@ -183,6 +184,7 @@ export class DesignerController {
   }
 
   async ensureReady(): Promise<{ ok: true; url: string; inSession: boolean }> {
+    await ensureCdpUp();
     const u = await this.currentUrl();
     if (!/claude\.ai\/design/.test(u)) {
       await this.browser.open(DESIGN_HOME);
