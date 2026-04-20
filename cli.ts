@@ -64,6 +64,7 @@ async function main(): Promise<void> {
         timeoutMs: flags.timeoutMs ? Number(flags.timeoutMs) : undefined,
         stabilityMs: flags.stabilityMs ? Number(flags.stabilityMs) : undefined
       });
+      if (res.url) console.log(`\nTaste here: ${res.url}\n`);
       console.log(JSON.stringify(res, null, 2));
       break;
     }
@@ -86,6 +87,7 @@ async function main(): Promise<void> {
       const filename = flags.file as string | undefined;
       if (filename) await c.openFile(filename);
       const snap = await c.snapshotDesign();
+      if (snap.url) console.log(`\nTaste here: ${snap.url}\n`);
       console.log(
         JSON.stringify(
           { file: filename ?? null, url: snap.url, htmlBytes: snap.html?.length || 0, screenshotPath: snap.screenshotPath },
