@@ -59,6 +59,8 @@ export type FailureMode = null | 'timeout' | 'unstable' | 'no_change';
 export interface IterateResult {
   done: { ok: boolean; elapsedMs: number; failureMode: FailureMode };
   changed: boolean;
+  /** Live claude.ai/design URL for the human — interactive, tweaks work. Default taste path. */
+  url: string;
   activeFile: string | null;
   newFiles: string[];
   removedFiles: string[];
@@ -419,6 +421,7 @@ export class DesignerController {
     return {
       done: { ok: done.ok, elapsedMs: done.elapsedMs, failureMode },
       changed: !!(snap.html && snap.html !== this._preSendHtml) || newFiles.length > 0,
+      url: snap.url,
       activeFile,
       newFiles,
       removedFiles,

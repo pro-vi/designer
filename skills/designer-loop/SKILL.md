@@ -85,6 +85,7 @@ Do not:
 - **Lock brand explicitly.** Palette, type, component names — say them. Don't hope Claude guesses.
 - **Ask for tweaks** on the dimensions you expect to iterate (type, spacing, palette). Claude wires live sliders.
 - **Quantities help.** "N variations", "N loaders on a grid", "N-screen onboarding."
+- **Flat file layout for multi-file variants.** Tell Claude "all files at project root, no subfolders." Claude tends to organize variants under a folder (`directions/`, `variants/`) which the current MCP's file list doesn't see through — use the handoff bundle if you need nested layouts.
 
 ### Picking the right artifact shape
 
@@ -107,7 +108,7 @@ Two sub-modes:
 - **Grid canvas** — many small cells, each ≤300×300. For widgets where variants read at thumbnail scale.
 - **Storyboard canvas** — a few frames at real device size, arranged as a sequence. For flows.
 
-Variants of a full-viewport surface are neither. Grid canvas mangles them (type scale, whitespace, hierarchy only read at real size). Storyboard doesn't apply. Right shape: separate full-page HTML files + a full-viewport switcher. `designer tasting --key <name>` builds it.
+Variants of a full-viewport surface are neither. Grid canvas mangles them (type scale, whitespace, hierarchy only read at real size). Storyboard doesn't apply. Right shape: separate full-page HTML files viewed at real size — usually via Claude's own `index.html` gallery opened at `currentUrl`. Fall back to `designer tasting --key <name>` (local full-viewport switcher) only if the IDE chrome is distracting judgment.
 
 ### Naming variants vs locking brand
 
@@ -116,21 +117,33 @@ Variants of a full-viewport surface are neither. Grid canvas mangles them (type 
 
 ### Tool sequence
 
-Separate-file variants (app screens, full-viewport):
+Common loop for any variant shape:
 
 1. `designer_session({ key, action: 'create', name, fidelity: 'highfi' })`.
-2. `designer_prompt({ prompt })` — terse, let-Claude-name. Returns `newFiles`.
-3. `designer_handoff({ key })` — tar.gz bundle with all variants + README + chat transcript.
-4. `designer tasting --key <name>` — builds the full-viewport switcher and opens it.
+2. `designer_prompt({ prompt })` — terse, let-Claude-name. The MCP auto-appends a flat-file-layout instruction; if you want subfolders you must explicitly override in your prompt.
+3. **Hand the human the URL** — `designer_session({ key, action: 'status' }).currentUrl`, or the URL echoed in the prompt result. The URL is the live design in Claude's IDE: all tweak sliders work, variant switcher works, fully interactive. This is the default taste path.
+4. Repeat 2-3 as they react.
+5. When they say "that's it": `designer_handoff({ key })` — tar.gz bundle with all variants + README + chat transcript. This is non-optional; it's what the implementing agent needs to build the real thing.
 
-Canvas variants (compact widgets):
+### When the URL isn't enough — full-viewport tasting
 
-1. `designer_session({ key, action: 'create' })`.
-2. `designer_prompt` with "on a wrapping grid" / "N variations on a canvas".
-3. `designer_snapshot({ key })` — fetch the canvas file.
-4. `designer_handoff` when done.
+The URL shows Claude's IDE (chat panel + project tree + toolbar eating space). That's fine for most taste judgments, but breaks down when:
+
+- You're comparing multiple screen-level variants and the IDE chrome is stealing viewport space the designs need.
+- Claude didn't build an index.html switcher, so the URL only lets you see one variant at a time (navigating via `?file=`).
+- You need to judge the design at real app scale with no "is this just Claude wrapping?" distraction.
+
+In those cases, after a handoff: `designer tasting --key <name>` — builds a local full-viewport switcher over the bundle, serves on `127.0.0.1`, opens the browser. Keyboard 1/N switches. Notes field persists in localStorage.
+
+Don't default to tasting. Reach for it when the URL framing is getting in the way.
+
+### Canvas-variant shape (compact widgets)
+
+When the prompt is for a grid of small things ("20 loaders on a wrapping grid"), Claude generates one HTML file with everything on a canvas. The URL shows this perfectly — no tasting harness needed. `designer_handoff` at the end for code promotion.
 
 ## Phase 4: Taste
+
+Show the human the URL first. Only reach for the tasting harness when full-viewport matters more than interactivity.
 
 **The human reacts in their own language.** Don't ask "accept or reject?" — ask "what do you think?"
 
