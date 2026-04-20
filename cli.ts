@@ -10,6 +10,7 @@ import { sessionDir } from './artifact-store.ts';
 import { runSetup } from './setup.ts';
 import { startMcpServer } from './mcp-server.ts';
 import { REPO_ROOT } from './repo-root.ts';
+import { runHealth } from './ui-anchors.ts';
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -172,6 +173,23 @@ async function main(): Promise<void> {
       const code = await runSetup();
       process.exit(code);
     }
+    case 'health': {
+      const browser = createBrowser({ session: `designer-${key}` });
+      const results = await runHealth(browser);
+      const worst = results.some((r) => r.status === 'fail') ? 'fail' : 'ok';
+      const icon = (s: string) => (s === 'ok' ? '✓' : s === 'fail' ? '✗' : '·');
+      for (const r of results) {
+        const line = `${icon(r.status)} [${r.category}] ${r.id} — ${r.description}${r.detail ? ' (' + r.detail + ')' : ''}`;
+        console.log(line);
+      }
+      const counts = results.reduce<Record<string, number>>((acc, r) => {
+        acc[r.status] = (acc[r.status] || 0) + 1;
+        return acc;
+      }, {});
+      console.log(`\n${counts['ok'] || 0} ok, ${counts['fail'] || 0} fail, ${counts['skip'] || 0} skip`);
+      if (worst === 'fail') process.exit(2);
+      break;
+    }
     case 'doctor': {
       const checks = await runDoctor();
       const fail = checks.some((c) => c.status === 'fail');
@@ -253,6 +271,7 @@ async function main(): Promise<void> {
   tasting [--key k]                            write tasting.html harness for the latest handoff bundle + serve + open
   setup                                        first-run: deps, debug Chrome, login wait, skill copy, MCP register
   doctor                                       diagnose first-run setup
+  health                                       probe every UI anchor we depend on (periodic regression check)
   mcp serve                                    start the MCP stdio server (used by 'claude mcp add')
   close [--key k]                              close browser (state on disk preserved)
 
