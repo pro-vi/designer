@@ -41,6 +41,17 @@ const flags = parseFlags(rest);
 const key = (flags.key as string) || 'default';
 
 async function main(): Promise<void> {
+  // Honor --help / -h at the top: `designer <verb> --help` prints just that verb's
+  // expanded docs. Done here rather than in each case so every verb gets it free.
+  if (flags.help === true || flags.h === true) {
+    if (cmd && HELP[cmd]) {
+      console.log(HELP[cmd]);
+    } else {
+      console.log(TOP_HELP);
+    }
+    return;
+  }
+
   switch (cmd) {
     case 'open': {
       const c = new DesignerController({ key });
@@ -251,37 +262,241 @@ async function main(): Promise<void> {
       console.log(JSON.stringify({ ok: true, tastingPath, url, port, serverPid: pid, variants }, null, 2));
       break;
     }
-    default:
-      console.log(`designer CLI
-  session [--key k] [--action status|ensure_ready|resume|create] [--name N] [--fidelity wireframe|highfi]
-                                               auto-orient / create / resume
-  open [--key k]                               ensure browser on claude.ai/design
-  create <name> [--key k] [--fidelity wireframe|highfi]
-                                               create a new claude.ai/design project
-  resume [--key k]                             navigate back into stored session url
-  prompt "<text>" | - | --prompt-file p [--key k] [--file f.html] [--timeoutMs n] [--stabilityMs n]
-                                               modify the design, wait, snapshot
-                                               - = read prompt from stdin; --prompt-file = read from file
-  ask "<text>" | - | --prompt-file p [--key k] [--file f.html]
-                                               text-only Q&A with the assistant
-  snapshot [--key k] [--file f.html]           capture current or switch+capture
-  status [--key k]                             show stored state
-  list                                         list locally-tracked sessions
-  projects                                     list all Claude projects
-  files [--key k]                              list files in the open project
-  open-file "<name>.html" [--key k]            switch the open file
-  fetch "<name>.html" [--key k] [--out path]   fetch a file's served HTML
-  handoff [--key k] [--file "<name>.html"]     trigger Export→Handoff, download tar.gz, extract
-  tasting [--key k]                            write tasting.html harness for the latest handoff bundle + serve + open
-  setup                                        first-run: deps, debug Chrome, login wait, skill copy, MCP register
-  doctor                                       diagnose first-run setup
-  health                                       probe every UI anchor we depend on (periodic regression check)
-  mcp serve                                    start the MCP stdio server (used by 'claude mcp add')
-  close [--key k]                              close browser (state on disk preserved)
-
-Env: DESIGNER_CDP=9222 attaches to Chrome at --remote-debugging-port=9222.`);
+    case '--help':
+    case '-h':
+    case 'help':
+    case undefined:
+    default: {
+      const verb = cmd === 'help' ? flags._[0] : cmd && cmd !== '--help' && cmd !== '-h' ? cmd : undefined;
+      if (verb && HELP[verb]) {
+        console.log(HELP[verb]);
+      } else {
+        console.log(TOP_HELP);
+      }
+      if (cmd && cmd !== 'help' && cmd !== '--help' && cmd !== '-h' && cmd !== undefined && !HELP[cmd]) {
+        process.exit(1);
+      }
+    }
   }
 }
+
+const TOP_HELP = `designer — CLI + MCP for iterating on claude.ai/design
+
+Typical loop:
+  designer setup                                       (once per machine)
+  designer session --action create --name "X" --key x  start a project
+  designer prompt "design the …" --key x               prints 'Taste here: <url>'  ← open that
+  designer prompt - --key x < follow-up.txt            iterate until human says yes
+  designer handoff --key x                             bundle for code implementation
+
+Session lifecycle:
+  session [--action status|ensure_ready|resume|create] [--name N] [--fidelity wireframe|highfi] [--key k]
+                                               enter/inspect/transition (primary entry)
+  status [--key k]                             read stored state
+  list                                         list locally-tracked sessions
+  close [--key k]                              close browser (state preserved)
+
+Design operations (prompt + snapshot print 'Taste here: <url>' above the JSON):
+  prompt "<text>" | - | --prompt-file p [--key k] [--file f.html] [--timeoutMs n] [--stabilityMs n]
+  ask    "<text>" | - | --prompt-file p [--key k] [--file f.html]
+  snapshot [--key k] [--file f.html]
+
+File / project introspection:
+  projects                                     all Claude projects (scrapes home)
+  files [--key k]                              files in current project
+  open-file "<name>.html" [--key k]            switch open file
+  fetch "<name>.html" [--key k] [--out p]      fetch served HTML to disk
+
+Exit / promotion:
+  handoff [--key k] [--file "<name>.html"]     download tar.gz bundle (README + chats + source)
+  tasting [--key k]                            local full-viewport switcher for the latest bundle
+                                               (fallback when Claude's URL framing hurts taste)
+
+Setup / ops:
+  setup                                        one-call first-run
+  doctor                                       diagnose setup state
+  health                                       probe every UI anchor we depend on
+
+Internal:
+  mcp serve                                    start MCP stdio server ('claude mcp add' uses this)
+
+All verbs accept --key <k> for parallel isolation.
+Env: DESIGNER_CDP=9222 (auto-detected after 'designer setup').
+
+Per-verb detail: designer help <verb>   or   designer <verb> --help`;
+
+const HELP: Record<string, string> = {
+  session: `designer session — enter, inspect, or transition a claude.ai/design session.
+
+Flags:
+  --action <a>    status (default, read-only) | ensure_ready | resume | create
+  --name <N>      required when --action create
+  --fidelity <f>  wireframe | highfi — locked at creation, default wireframe
+  --key <k>       stable session key (e.g., feature name), defaults to 'default'
+
+Examples:
+  designer session                                        # read status of 'default'
+  designer session --action create --name "feat X" --fidelity highfi --key feat-x
+  designer session --action resume --key feat-x
+  designer session --key feat-x                           # status for feat-x`,
+
+  prompt: `designer prompt — modify the design. Waits for HTML to change and stabilize.
+
+Input (pick one):
+  "<text>"                literal argument (positional)
+  -                       read from stdin
+  --prompt-file <path>    read from file
+
+Flags:
+  --key <k>               session to target (default: 'default')
+  --file <f.html>         switch to this file before prompting
+  --timeoutMs <n>         default 10 minutes
+  --stabilityMs <n>       default 4 seconds
+
+Output: prints 'Taste here: <url>' then JSON metadata (done, newFiles, htmlPath, screenshotPath,
+htmlHash, chatReply). HTML is written to disk (read htmlPath if needed); it's not inline.
+
+Auto-appended to every prompt: 'Keep all generated files at the project root; no subfolders.'
+Override by explicitly contradicting it in your prompt text.
+
+Examples:
+  designer prompt "add a Remember-me checkbox" --key feat-x
+  designer prompt --prompt-file ./brief.md --key feat-x
+  cat follow-up.txt | designer prompt - --key feat-x`,
+
+  ask: `designer ask — Q&A with the design assistant. No file changes; returns the reply.
+
+Input (pick one):
+  "<text>"                literal argument
+  -                       read from stdin
+  --prompt-file <path>    read from file
+
+Flags:
+  --key <k>               session to target
+  --file <f.html>         switch to this file first (gives Claude context)
+  --timeoutMs <n>         default 5 minutes
+
+Output: JSON with { ok, reply, elapsedMs, failureMode }.
+
+Use for 'why did you choose X?', 'compare A and B', 'suggest 3 alternatives before I commit'.
+Distinct from prompt because it watches the chat panel, not the served HTML.`,
+
+  snapshot: `designer snapshot — capture current design state without prompting.
+
+Flags:
+  --key <k>               session to target
+  --file <f.html>         switch to this file first
+
+Output: prints 'Taste here: <url>' then JSON with { file, url, htmlBytes, screenshotPath }.
+Useful when you want to inspect a variant or save the current state to disk without iterating.`,
+
+  handoff: `designer handoff — trigger Export→Handoff and download the tar.gz bundle.
+
+Flags:
+  --key <k>               session to target
+  --file <name.html>      switch to this file first (marks it as the primary in the bundle)
+
+Bundle contains:
+  README.md       handoff protocol for the implementing agent
+  chats/chat1.md  full transcript — every prompt + reply, verbatim (the decision record)
+  project/*       all design files (HTML, standalone HTML, JSX, CSS)
+
+Lands under ./artifacts/{key}/handoff-{timestamp}/. Non-optional for code promotion — the
+implementing agent (Claude Code downstream) reads README + chats first, then builds in real code.`,
+
+  tasting: `designer tasting — build a local full-viewport switcher over the latest handoff bundle.
+
+Flags:
+  --key <k>               session to target
+  --port <n>              default auto-assigned from 8765
+
+What it does: walks the latest handoff's project/ dir, writes tasting.html with variant tabs
+(keyboard 1/N to switch) + notes field (persisted in localStorage), starts http.server, opens
+the browser.
+
+Use when Claude.ai/design's IDE chrome (chat panel, toolbar) is stealing viewport space that
+the design needs for judgment. Requires a prior 'designer handoff'.`,
+
+  setup: `designer setup — one-call first-run for this machine.
+
+Runs in order, idempotent at every step:
+  1. npm install (if missing)
+  2. Check agent-browser on PATH
+  3. If non-debug Chrome running → ask you to Cmd+Q, poll until quit
+  4. Auto-launch debug Chrome with --remote-debugging-port + dedicated --user-data-dir
+  5. Poll until you sign in to Claude and reach /design
+  6. Copy the designer-loop skill to ~/.claude/skills/
+  7. Register the MCP server with Claude Code at user scope
+
+Re-run any time; every step no-ops when already satisfied.`,
+
+  doctor: `designer doctor — diagnose first-run setup state without changing anything.
+
+Checks: agent-browser on PATH, CDP reachable at DESIGNER_CDP port, a /design tab is open,
+selectors.json present, designer-loop skill installed at ~/.claude/skills/, MCP registration.
+
+Exits with code 2 if any check fails.`,
+
+  health: `designer health — probe every UI anchor this MCP depends on.
+
+Walks the current Chrome state (home / session) and checks each selector / button / URL /
+DOM pattern we rely on. Reports pass / fail / skip per anchor with actionable detail.
+
+Exit code 2 on any fail — wire into cron or CI to catch UI regressions (e.g., claude.ai
+moving the Share button) before users do.`,
+
+  'mcp': `designer mcp serve — start the MCP stdio server.
+
+Used by 'claude mcp add':
+  claude mcp add --transport stdio designer -- env DESIGNER_CDP=9222 designer mcp serve
+
+Handled automatically by 'designer setup'.`,
+
+  files: `designer files — list filenames in the current project (scrapes the design-files panel).
+
+Flags: --key <k>
+
+Note: the scrape is flat-only. Files nested under folders (directions/, variants/) are
+invisible to this command. The handoff bundle is always folder-aware — use that for
+authoritative file listing.`,
+
+  projects: `designer projects — list all Claude design projects visible on /design home.
+
+Output: JSON array of { name, sub (subtitle, e.g., 'Today'), url }.`,
+
+  'open-file': `designer open-file "<name>.html" — switch the currently-open file in the project.
+
+Flags: --key <k>
+
+URL-encodes the filename and navigates to ?file=<name>. Useful mid-iteration.`,
+
+  fetch: `designer fetch "<name>.html" — fetch a file's served HTML.
+
+Flags:
+  --key <k>
+  --out <path>   write HTML to this path
+
+Without --out, returns JSON with a 200-char preview. With --out, writes the full HTML and
+returns { file, htmlBytes, written }.`,
+
+  close: `designer close — close the browser (state on disk is preserved).
+
+Flags: --key <k>
+
+Rarely needed; the debug Chrome window persists across designer calls. Primary use is
+test cleanup.`,
+
+  status: `designer status — print stored state for a session.
+
+Flags: --key <k>
+
+Output: the full session record from ~/.designer/sessions.json — createdAt, designUrl,
+name, fidelity, lastUrl, full history.`,
+
+  list: `designer list — list all locally-tracked sessions from ~/.designer/sessions.json.
+
+No flags. Output: JSON array of session records.`
+};
 
 type DoctorStatus = 'ok' | 'warn' | 'fail';
 interface DoctorCheck { name: string; status: DoctorStatus; detail?: string }
