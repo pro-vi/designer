@@ -9,10 +9,31 @@ The human is the designer. The AI proposes, remembers, and executes — but tast
 
 Two modes:
 
-- **MCP mode** (preferred when designing a new surface): drive `claude.ai/design` via the `designer` MCP. Claude's design assistant has baked-in taste; your job is to pipe intent in, show variants to the human, interpret reactions, and promote the result to code.
-- **Token mode** (preferred when iterating an existing codebase's design language): edit tokens directly in the running repo. No MCP needed.
+- **MCP mode**: drive `claude.ai/design` via the `designer` MCP. Claude's design assistant has baked-in taste; you pipe intent in, show variants to the human, interpret reactions, and promote the result to code.
+- **Token mode**: edit tokens directly in the running repo. No MCP needed.
 
 The loop is identical in both modes; the mechanics differ.
+
+### Which mode?
+
+Pick by the shape of the work, not the tool's availability.
+
+**MCP mode fits when:**
+- Designing a new surface that doesn't exist yet.
+- Redesigning an existing surface where multiple directions are plausible.
+- Human wants to taste alternatives side-by-side before committing.
+- Change crosses multiple dimensions (palette + type + layout + hierarchy) — tokens can't carry it.
+- Human's intent is exploratory ("what if", "feels like", "design me").
+
+**Token mode fits when:**
+- Change is mechanical and targeted — one or two dimensions (spacing, radius, a single color).
+- Existing codebase has a clear token layer to edit.
+- Human wants iterative polish, not fresh exploration.
+- The right answer is already clear enough that side-by-side alternatives would be wasted turns.
+
+**Default when ambiguous**: start MCP mode if the intent is feeling-shaped ("feels heavy", "too cold"); start token mode if it's value-shaped ("make the border lighter", "more padding").
+
+**Fallback**: if MCP mode is indicated but unavailable (not registered, CDP down, can't sign in), drop to token mode and tell the human. Don't silently downgrade.
 
 ## The Loop
 
