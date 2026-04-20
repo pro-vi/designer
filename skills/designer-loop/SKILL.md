@@ -1,6 +1,6 @@
 ---
 name: designer-loop
-description: "Human-participated design iteration loop. The human is the designer — AI is hands + memory. Works two ways: (1) driving claude.ai/design via the `designer` MCP for new-surface exploration, or (2) iterating design tokens directly in an existing codebase. Always: human states intent, AI reads what exists, proposes 2-3 variants with rationale, human reacts in their own words, AI interprets and iterates. Promotes accepted result with a decision record."
+description: "Human-participated design iteration loop. The human is the designer — AI is hands + memory. Works two ways: (1) driving claude.ai/design via the `designer` MCP for new-surface exploration, or (2) iterating design tokens directly in an existing codebase. Always: human states intent, AI reads what exists, AI proposes (relays intent to Claude Design in MCP mode, executes directly or offers variants in token mode), human reacts in their own words, AI interprets and iterates. Promotes accepted result with a decision record."
 ---
 
 # Designer Loop
@@ -40,7 +40,8 @@ Pick by the shape of the work, not the tool's availability.
 ```
 1. Intent       → Human describes what they want to feel/change (not specific values)
 2. Read         → AI detects existing design language and constraints
-3. Propose      → AI offers 2-3 variants
+3. Propose      → AI proposes (in MCP mode: relays intent to Claude Design; in token mode:
+                  executes directly if clear, or offers 2-3 variants if not)
 4. React        → Human responds in their own words ("too cold", "almost", "yes")
 5. Interpret    → AI translates reaction into next proposal or promotion
 6. Repeat 3-5   → Until human says "that's it"
@@ -159,27 +160,19 @@ Canvas variants (compact widgets):
 3. `designer_snapshot({ key })` — fetch the canvas file.
 4. `designer_handoff` when done.
 
-### In token mode: **offer variants with rationale**
+### In token mode: propose only when the answer isn't obvious
 
-Offer 2-3 variants. Each has:
+Token mode has two sub-paths. Pick based on whether multiple moves are plausibly right.
 
-- **Name** — evocative, not technical ("Whisper", "Breathe", "Recede"). Let the problem domain suggest names when you can.
-- **Tokens** — the actual CSS/config changes.
-- **Rationale** — why this variant might satisfy the intent.
-- **Trade-off** — what you lose.
+**(a) Direct execution.** The right move is clear from the intent + the existing token system. Make the change in the production file, show the diff, wait for reaction. No variants, no ceremony. This is the common case for value-shaped intents and single-dimension mechanical changes.
 
-```
-### Whisper
-Reduces sidebar border to 1px, drops shadow to 0 1px 2px, mutes background by 2 stops.
-→ Why: border and shadow are the two heaviest signals. Removing them lets content lead.
-→ Trade-off: sidebar/content boundary becomes implicit.
-```
+**(b) Variant proposal.** Multiple moves are plausibly right, usually because the intent is feeling-shaped. Offer 2-3 variants. Each is a different *hypothesis* about what's wrong, not three ways to execute the same hypothesis. Each variant includes: the token diff, one sentence on why, one sentence on the trade-off. Keep names from the problem domain, not generic aesthetic vocabulary. Stay within the existing token scale unless the intent is to break it.
 
-**Preview**:
-- **Quick preview** — write an HTML file with variants side-by-side using realistic content (not isolated swatches).
-- **Live preview** — apply variant tokens to the running app via CSS override; capture screenshots.
+Preview: write a single HTML file showing the variants in realistic context (actual components, actual content — not color swatches). Open it; human reacts.
 
-Store variants in `.design-lab/` (gitignored) until promoted.
+**Escalation to MCP mode.** If the variants would each differ on multiple dimensions (not just border, but also bg + shadow + type + layout), or if "more variants at this fidelity" doesn't get closer to the right feel, the problem is bigger than tokens. Stop, tell the human, and start an MCP session with the target repo's existing tokens attached as constraints. Don't silently grind out more token-mode iterations when the shape is wrong.
+
+**No-token-layer codebases.** If the repo doesn't have a token layer (inline styles, no theme file, no Tailwind config), token mode isn't available. Either extract tokens first (separate refactor, not this loop) or go straight to MCP mode.
 
 ## Phase 4: React
 
@@ -220,22 +213,13 @@ Never override with "but best practice says..." — capture the tension in the d
 **Token mode**:
 
 1. Write tokens to the production file (`app.css`, tailwind config, theme).
-2. Capture the decision record as a comment or companion file:
-
-```css
-/* Design decision: sidebar weight (2026-03-26)
-   Intent: "sidebar feels heavy, want it to recede"
-   Chosen: "Whisper" — reduced border + muted shadow
-   Rejected: "Breathe" (spacing-only) — "still felt dense"
-   Constraint: kept 3:1 contrast ratio for a11y */
-```
-
+2. Capture a decision record colocated with the tokens (as a comment, or companion file). Include: the human's intent verbatim, the chosen direction, rejected directions with the human's verbatim reason, and any constraints honored (a11y contrast, brand tokens, etc.).
 3. Show the diff before writing.
 
 ## Guardrails
 
 - **Read before proposing** (Phase 2). In MCP mode, call `designer_session` first — it returns `availableFiles` so you know what exists.
-- **Offer rationale**, not just values — the human should understand WHY.
+- **Offer rationale**, not just values — whether proposing variants or executing directly, state why.
 - **Variant names from the problem domain** — in MCP mode, let Claude name them; in token mode, borrow from the subject matter, not from generic aesthetic vocabulary.
 - **Lock brand explicitly.** Claude won't guess your palette. If brand matters, state it — palette, type, component names.
 - **Capture feedback verbatim** in the decision record — don't sanitize.
