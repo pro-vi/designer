@@ -56,8 +56,8 @@ async function main(): Promise<void> {
       break;
     }
     case 'prompt': {
-      const prompt = flags._.join(' ');
-      if (!prompt) throw new Error('Usage: designer prompt "<text>" [--key k] [--file "f.html"]');
+      const prompt = await readPromptArg(flags);
+      if (!prompt) throw new Error('Usage: designer prompt "<text>" | - (stdin) | --prompt-file path [--key k] [--file "f.html"]');
       const c = new DesignerController({ key });
       const res = await c.iterate(prompt, {
         file: flags.file as string | undefined,
@@ -121,8 +121,8 @@ async function main(): Promise<void> {
       break;
     }
     case 'ask': {
-      const prompt = flags._.join(' ');
-      if (!prompt) throw new Error('Usage: designer ask "<text>" --key k');
+      const prompt = await readPromptArg(flags);
+      if (!prompt) throw new Error('Usage: designer ask "<text>" | - (stdin) | --prompt-file path --key k');
       const c = new DesignerController({ key });
       const r = await c.ask(prompt, {
         file: flags.file as string | undefined,
@@ -259,9 +259,11 @@ async function main(): Promise<void> {
   create <name> [--key k] [--fidelity wireframe|highfi]
                                                create a new claude.ai/design project
   resume [--key k]                             navigate back into stored session url
-  prompt "<text>" [--key k] [--file f.html] [--timeoutMs n] [--stabilityMs n]
+  prompt "<text>" | - | --prompt-file p [--key k] [--file f.html] [--timeoutMs n] [--stabilityMs n]
                                                modify the design, wait, snapshot
-  ask "<text>" [--key k] [--file f.html]       text-only Q&A with the assistant
+                                               - = read prompt from stdin; --prompt-file = read from file
+  ask "<text>" | - | --prompt-file p [--key k] [--file f.html]
+                                               text-only Q&A with the assistant
   snapshot [--key k] [--file f.html]           capture current or switch+capture
   status [--key k]                             show stored state
   list                                         list locally-tracked sessions
@@ -365,6 +367,20 @@ function checkSkillInstalled(): DoctorCheck {
 
 function checkMcpRegistered(): DoctorCheck {
   return { name: 'MCP registered with Claude Code', status: 'warn', detail: 'unverified (no introspection); see README for `claude mcp add` command' };
+}
+
+async function readPromptArg(flags: Flags): Promise<string> {
+  if (flags['prompt-file']) {
+    const p = flags['prompt-file'] as string;
+    return fs.readFileSync(p, 'utf8').trim();
+  }
+  const positional = (flags._ as string[]).join(' ').trim();
+  if (positional === '-') {
+    const chunks: string[] = [];
+    for await (const chunk of process.stdin) chunks.push(chunk.toString());
+    return chunks.join('').trim();
+  }
+  return positional;
 }
 
 function prettyName(filename: string): string {
