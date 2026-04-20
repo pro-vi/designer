@@ -215,13 +215,14 @@ Never override with "but best practice says..." — capture the tension in the d
 
 ## Guardrails
 
-- **Read before proposing** (Phase 2). In MCP mode, call `designer_session` first.
+- **Read before proposing** (Phase 2). In MCP mode, call `designer_session` first — it returns `availableFiles` so you know what exists.
 - **Offer rationale**, not just values — the human should understand WHY.
-- **Variant names come from the problem domain** — in MCP mode, let Claude name them; in token mode, borrow from the subject matter ("Whisper" for a sidebar intent about retreating; "Marginalia" for a text-annotation feature).
+- **Variant names from the problem domain** — in MCP mode, let Claude name them; in token mode, borrow from the subject matter ("Whisper" for a sidebar intent about retreating; "Marginalia" for a text-annotation feature).
+- **Lock brand explicitly.** Claude won't guess your palette. If brand matters, state it — palette, type, component names.
 - **Capture feedback verbatim** in the decision record — don't sanitize.
 - **Direct values execute** — if the human says `--border-radius: 12px`, just do it. Still ask about intent for the record.
 - **Promote only after explicit "yes"** — "almost" is not "yes."
-- **Keep MCP prompts under ~60 words.** Over-specification is the most common failure mode.
+- **MCP prompts short and concrete.** Not a hard ceiling, but over-specification is the most common failure mode. Official gallery examples average 30–40 words.
 
 ## Anti-Patterns
 
@@ -240,6 +241,14 @@ Never override with "but best practice says..." — capture the tension in the d
 
 ## When the MCP is not available
 
-Fall back to token mode. If the human is trying to explore a net-new surface and no MCP is available, either:
-- Write a minimal HTML variant-gallery by hand and open in the browser, OR
-- Ask the human to run `designer mcp add` (see `~/Development/_projs/designer/README.md`).
+Check first: `designer_*` tools should appear in the tool list. If they don't:
+
+1. Ask the human whether they've installed the `designer` package. If yes, the MCP may have disconnected — `claude mcp list` will show the status.
+2. If they haven't set it up, the one-call install is:
+   ```
+   cd ~/Development/_projs/designer && ./bin/designer setup
+   ```
+   (Or after `npm i -g @pro-vi/designer` + `designer setup` once it's published.)
+3. If setup isn't possible in this session, fall back to **token mode** or hand-write an HTML variant gallery you can open in the browser.
+
+Setup needs to happen once per machine: launch debug Chrome with a dedicated profile, sign in, register the MCP. Re-runs of `designer setup` are idempotent.
