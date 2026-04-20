@@ -30,11 +30,17 @@ The loop is identical in both modes; the mechanics differ.
 
 **The human speaks in feelings, not values.**
 
-Good intent: "The sidebar feels heavy — I want it to recede." "Everything looks flat, needs depth without being cheesy." "I want an intake screen that doesn't feel clinical."
+Good intent: "The sidebar feels heavy — I want it to recede." "I want an intake screen that doesn't feel clinical."
 
 Bad intent (skip to Phase 3): `--border-radius: 12px` — already a solution.
 
-If the human gives a specific value, ask: "What are you trying to achieve?" — the answer is the real intent.
+If the human gives a specific value, ask once: "What are you trying to achieve?" — the answer is the real intent.
+
+**Interview only when intent is genuinely unclear, and only about scope — never about aesthetics.**
+
+Clarifying questions in scope: what data is rendered, what the primary user action is, what failure modes must be visible, what the adjacent screens are, what must NOT change.
+
+Aesthetic questions belong to Claude Design, not you: do not ask about palette, type, layout direction, tone, hierarchy, spacing style. Those are the design surface's job.
 
 ## Phase 2: Read the Room
 
@@ -57,11 +63,24 @@ A one-line brief is fine ("I see X; here's the prompt I'm about to send"). Don't
 
 ### In MCP mode: you're a translator, not a co-designer
 
-Claude Design has taste. **Your only job is to translate the human's intent into a minimal faithful prompt and let Claude's taste work.** Do not:
+Claude Design has taste. **Your only job is to translate the human's intent into a minimal faithful prompt and let Claude's taste work.**
 
-- Interview the human about aesthetic preferences. Their intent is what they gave you. Use it.
-- Propose variants of your own in chat. Claude Design proposes.
-- Workshop aesthetic direction before sending anything to the design surface.
+Guide, don't constrain. The prompt should give Claude enough to make good decisions, not pre-make the decisions:
+
+| Guide (include) | Constrain (omit) |
+|---|---|
+| What the product does / data it renders | Color palette (unless it's a hard brand token — see below) |
+| User's situation / primary action | Type treatment, font feel |
+| Entities, field names, copy that must appear | Layout direction, whitespace rules |
+| Adjacent surfaces / what must NOT change | Tone adjectives ("contemplative", "trustworthy") unless paired with a concrete lever |
+| Hard brand tokens (palette, type, existing component names) as non-negotiables | Visual hierarchy choices |
+| Quantity + shape of variants ("3 full-page files", "20 on a wrapping grid") | Variant names (let Claude pick) |
+
+Do not:
+
+- Workshop aesthetic direction in chat before sending.
+- Propose variants of your own to the human. Claude Design proposes; you relay.
+- Interview about taste. Scope questions only — see Phase 1.
 
 The orchestrator is hands. Claude Design is the designer. The human is the taste. Don't muddle the three.
 
@@ -210,8 +229,9 @@ Never override with "but best practice says..." — capture the tension in the d
 - **Premature precision** — debating `oklch(0.78 0.02 285)` vs `oklch(0.79 0.02 285)` before direction is established.
 - **Ignoring adjacency** — changing the sidebar without seeing how it affects the content area.
 - **Silent promotion** — writing tokens without a decision record.
-- **Interviewing the human in MCP mode.** You're a translator, not a co-designer. Take their intent as-is and send.
+- **Interviewing about aesthetics in MCP mode.** Scope questions are fine when intent is genuinely unclear; taste questions aren't yours to ask.
 - **Proposing variants of your own in MCP mode.** Claude Design proposes. You relay.
+- **Constraining where Claude should have room.** Brand tokens are constraints; palette feelings and layout hunches aren't.
 - **Ungrounded vibe essays** — vibe words without a concrete surface to attach to fight Claude's style coherence.
 - **Variant grid for full-screen experiences** — shrinking an intake/onboarding/dashboard into a 400px canvas cell loses hierarchy, type scale, whitespace. Screen-level variants → separate files + tasting harness.
 - **Separate files for compact widgets** — 20 loading indicators don't each need their own file. Grid canvas.
