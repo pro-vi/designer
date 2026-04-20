@@ -96,6 +96,14 @@ export interface RepairReport {
 
 const DESIGN_HOME = 'https://claude.ai/design';
 
+// Appended to every designer_prompt payload. The live MCP surface
+// (listFiles / openFile / newFiles diff) scrapes a flat root from the
+// file panel; files nested under folders stay invisible until handoff.
+// Enforcing flat layout here keeps the live flow honest. Users who genuinely
+// want nested layouts should explicitly contradict this in their prompt and
+// rely on `designer_handoff` for authoritative file access.
+const FLAT_LAYOUT_SUFFIX = '\n\nFile layout: keep all generated files at the project root. No subfolders.';
+
 function loadSelectors(): Selectors {
   const base = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'selectors.json'), 'utf8')) as Selectors;
   const overridePath = path.join(os.homedir(), '.designer', 'selectors.override.json');
@@ -280,8 +288,9 @@ export class DesignerController {
   async sendPrompt(prompt: string): Promise<{ ok: true }> {
     const before = await this.fetchServedHtml();
     this._preSendHtml = before.html;
-    await this._submitPrompt(prompt);
-    appendHistory(this.key, { kind: 'prompt', prompt });
+    const effective = prompt + FLAT_LAYOUT_SUFFIX;
+    await this._submitPrompt(effective);
+    appendHistory(this.key, { kind: 'prompt', prompt, suffixApplied: 'flat_layout' });
     return { ok: true };
   }
 
