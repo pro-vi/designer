@@ -125,6 +125,10 @@ Common loop for any variant shape:
 4. Repeat 2-3 as they react.
 5. When they say "that's it": `designer_handoff({ key })` — tar.gz bundle with all variants + README + chat transcript. This is non-optional; it's what the implementing agent needs to build the real thing.
 
+### When `designer_list({ scope: 'files' })` says `authoritative: false`
+
+Claude Design sometimes organizes generated files under folders (`directions/`, `variants/`, `shared/`). The live file-list scrape only sees top-level files + folder names, never contents. When the result includes `folders: […]` and `authoritative: false`, the list is incomplete. Fall back to `designer_handoff` — the tar.gz bundle is always folder-aware.
+
 ### When the URL isn't enough — full-viewport tasting
 
 The URL shows Claude's IDE (chat panel + project tree + toolbar eating space). That's fine for most taste judgments, but breaks down when:

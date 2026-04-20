@@ -86,8 +86,20 @@ server.registerTool(
   },
   async ({ key, scope }) => {
     const c = getController(key);
-    const data = scope === 'projects' ? await c.listProjects() : await c.listFiles();
-    return textResult(data);
+    if (scope === 'projects') return textResult(await c.listProjects());
+    const detail = await c.listFilesDetailed();
+    if (!detail.authoritative) {
+      return textResult({
+        files: detail.files,
+        folders: detail.folders,
+        authoritative: false,
+        warning:
+          'This project has folders (' +
+          detail.folders.join(', ') +
+          '). Files under folders are not visible to the live file-list scrape. Call designer_handoff for an authoritative list.'
+      });
+    }
+    return textResult({ files: detail.files, authoritative: true });
   }
 );
 

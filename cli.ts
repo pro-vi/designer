@@ -121,7 +121,13 @@ async function main(): Promise<void> {
     }
     case 'files': {
       const c = new DesignerController({ key });
-      console.log(JSON.stringify(await c.listFiles(), null, 2));
+      const detail = await c.listFilesDetailed();
+      if (!detail.authoritative) {
+        console.error(
+          `[designer] Folders detected (${detail.folders.join(', ')}) — files under them are invisible to the live scrape. Run 'designer handoff --key ${key}' for authoritative file listing.`
+        );
+      }
+      console.log(JSON.stringify(detail, null, 2));
       break;
     }
     case 'open-file': {

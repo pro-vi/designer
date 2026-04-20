@@ -452,28 +452,79 @@ export class DesignerController {
   }
 
   async listFiles(): Promise<string[]> {
-    if (!(await this.isInSession())) {
-      const stored = getSession(this.key);
-      if (!stored?.designUrl) throw new Error('Not in a session and no designUrl stored. createSession or resumeSession first.');
-      await this.browser.open(stored.designUrl);
-      await this.browser.waitLoad('networkidle').catch(() => null);
+    const { files } = await this.listFilesDetailed();
+    return files;
+  }
+
+  // Returns top-level files + whether folders were detected in the panel.
+  // The live panel shows folders collapsed and doesn't expose an API we can
+  // auth against (/files endpoint is 401, no aria-expanded on rows, clicks
+  // don't expand programmatically). When folders are present, the caller
+  // should fall back to designer_handoff for an authoritative list.
+  async listFilesDetailed(): Promise<{ files: string[]; folders: string[]; authoritative: boolean }> {
+    // Navigate to THIS key's project if we're not already there. Being in
+    // any /p/ session isn't enough — a different key's files would be
+    // returned against the currently-visible project by mistake.
+    const stored = getSession(this.key);
+    const currentUrl = await this.currentUrl();
+    const targetRoot = stored?.designUrl?.split('?')[0];
+    const currentRoot = currentUrl.split('?')[0];
+    if (!targetRoot) {
+      throw new Error(`No designUrl stored for key=${this.key}. createSession or resumeSession first.`);
     }
-    const files = await this.browser.evalValue<string[]>(
+    if (currentRoot !== targetRoot) {
+      await this.browser.open(stored.designUrl!);
+      await this.browser.waitLoad('networkidle').catch(() => null);
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+
+    // Open the Design Files dialog to get the richer file/folder listing.
+    // Idempotent — if already open, the click is a no-op (or toggles; we
+    // accept the occasional toggle as the tradeoff for not probing state).
+    await this.browser.evalValue<boolean>(
+      `(() => {
+        const spans = Array.from(document.querySelectorAll('span'));
+        const label = spans.find(s => s.children.length === 0 && (s.textContent || '').trim() === 'Design Files');
+        if (!label) return false;
+        let row = label;
+        while (row && row.onclick === null) row = row.parentElement;
+        if (row) row.click();
+        return true;
+      })()`
+    ).catch(() => null);
+    await new Promise((r) => setTimeout(r, 600));
+
+    const result = await this.browser.evalValue<{ files: string[]; folders: string[] }>(
       `(() => {
         const spans = Array.from(document.querySelectorAll('span'));
         const seen = new Set();
-        const out = [];
+        const files = [];
         for (const s of spans) {
           if (s.children.length) continue;
           const t = (s.textContent || '').trim();
-          if (!/^[A-Za-z0-9 _.()\\-]+\\.html$/i.test(t) || seen.has(t)) continue;
+          if (!/^[A-Za-z0-9 _.()\\-]+\\.(html|js|css|jsx)$/i.test(t) || seen.has(t)) continue;
           seen.add(t);
-          out.push(t);
+          files.push(t);
         }
-        return out;
+        // Folders: rows whose sibling text is 'Folder' (a Claude-side label)
+        const folderSet = new Set();
+        const divs = Array.from(document.querySelectorAll('div'));
+        for (const d of divs) {
+          if (d.onclick === null) continue;
+          const lines = (d.innerText || '').trim().split('\\n').map((l) => l.trim());
+          if (lines.length >= 2 && lines[1] === 'Folder' && lines[0] && lines[0].length < 40) {
+            folderSet.add(lines[0]);
+          }
+        }
+        return { files, folders: Array.from(folderSet) };
       })()`
-    ).catch(() => []);
-    return Array.isArray(files) ? files : [];
+    ).catch(() => ({ files: [] as string[], folders: [] as string[] }));
+
+    return {
+      files: Array.isArray(result.files) ? result.files : [],
+      folders: Array.isArray(result.folders) ? result.folders : [],
+      authoritative: (result.folders?.length ?? 0) === 0
+    };
   }
 
   async openFile(filename: string): Promise<{ ok: true; file: string; url: string } | { ok: false; error: string; file: string; url: string }> {
