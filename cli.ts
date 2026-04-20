@@ -199,13 +199,30 @@ async function main(): Promise<void> {
       const projectDir = path.join(slugDir, 'project');
       if (!fs.existsSync(projectDir)) throw new Error(`Missing ${projectDir}`);
 
-      const files = fs
-        .readdirSync(projectDir)
-        .filter((f) => f.endsWith('.html') && f !== 'tasting.html' && f !== 'index.html');
+      // Walk recursively — Claude Design organizes variants under folders
+      // (e.g. directions/*.html) often enough that flat readdir misses them.
+      // Paths are stored relative to projectDir so iframe hrefs can point
+      // at them directly over the local HTTP server.
+      const files: string[] = [];
+      const stack = [''];
+      while (stack.length) {
+        const rel = stack.pop()!;
+        const abs = path.join(projectDir, rel);
+        for (const entry of fs.readdirSync(abs)) {
+          const childRel = rel ? path.join(rel, entry) : entry;
+          const childAbs = path.join(projectDir, childRel);
+          if (fs.statSync(childAbs).isDirectory()) {
+            stack.push(childRel);
+            continue;
+          }
+          if (!entry.endsWith('.html') || entry === 'tasting.html' || entry === 'index.html') continue;
+          files.push(childRel);
+        }
+      }
       if (files.length === 0) throw new Error('No .html variants found in bundle project dir.');
 
       const variants = files.map((f) => ({
-        name: prettyName(f),
+        name: prettyName(path.basename(f)),
         file: f
       }));
 

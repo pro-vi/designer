@@ -156,6 +156,9 @@ designer/
 
 ## Known quirks
 
+- **Folder-organized variants**: Claude Design sometimes organizes multi-file variants under a subfolder (e.g., `directions/sediment.html`). The live MCP's file-list scrape (`designer_list files`, `designer_session.availableFiles`, the `newFiles` diff from `designer_prompt`) is currently flat-only — it misses files nested under folders. The handoff bundle IS folder-aware, and `designer tasting` walks bundles recursively. Workaround for the live surface: include *"all files at project root, no subfolders"* in the prompt. Covered in the `designer-loop` skill.
+
+
 - **React-controlled inputs**: `agent-browser fill` doesn't fire React's synthetic input event. The controller uses the native `HTMLTextAreaElement` value-setter + `dispatchEvent(new Event('input', { bubbles: true }))`, plus JS `.click()` on Send. Both are canonical React-compat patterns.
 - **Em-dash handoff bug**: Claude's handoff pipeline currently writes em-dash (`—`) into `index.html` hrefs but saves files with regular hyphens. `designer_handoff` detects and repairs (returns `repaired.renamed: [...]`). Safe if Anthropic fixes upstream — the repair is a no-op when hrefs already resolve.
 - **Cross-origin iframe**: served HTML lives on `claudeusercontent.com` with a signed token — direct fetch from node works without cookies. The `t=` token is session-scoped, not per-iteration.
