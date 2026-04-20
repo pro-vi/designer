@@ -571,7 +571,10 @@ export class DesignerController {
     await this._ensureInSession();
     if (openFile) await this.openFile(openFile);
 
-    await this._clickButtonByText(/^Export$/);
+    // Claude.ai/design moved Export actions under the Share dropdown
+    // (~2026-04-19). Try Share first; fall back to Export for older builds.
+    const opened = await this._clickButtonByText(/^Share$/).catch(() => null);
+    if (!opened) await this._clickButtonByText(/^Export$/);
     await new Promise((r) => setTimeout(r, 400));
     await this._clickButtonByText(/handoff to claude code/i);
 
