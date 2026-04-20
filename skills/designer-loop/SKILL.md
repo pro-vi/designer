@@ -47,97 +47,76 @@ If the human gives a specific value, ask: "What are you trying to achieve?" — 
 
 **MCP mode** — orient in the claude.ai/design surface:
 
-1. `designer_session({ key })` — returns stored state + `availableFiles`. If `stored.designUrl` exists, you're resuming; otherwise propose a project name.
-2. For existing projects: `designer_snapshot({ filename })` per file of interest. You'll get `htmlPath` — read it if the file needs deep inspection.
-3. If this is a frontend for an existing backend/codebase, read the backend's API shape and any existing design tokens in the target repo BEFORE prompting. The prompt will be better for it.
+1. `designer_session({ key })` — returns stored state + `availableFiles`. If `stored.designUrl` exists, you're resuming; otherwise create one with a sensible default name derived from the intent (don't interview the human for a project name).
+2. For existing projects: `designer_snapshot({ filename })` per file of interest. You get `htmlPath` — read it if deep inspection is warranted.
+3. If this is a frontend for an existing backend or codebase, read the backend's API shape and any existing design tokens in the target repo BEFORE prompting. Those are constraints to thread into the prompt verbatim, not aesthetic hypotheses to propose.
 
-Present a brief either way: "Here's what I see: [current state]. Given your intent, I'm going to explore [direction]."
+A one-line brief is fine ("I see X; here's the prompt I'm about to send"). Don't turn it into a design-by-interview. The human's intent goes in untouched.
 
 ## Phase 3: Propose
 
-### In MCP mode: **let Claude's taste lead**
+### In MCP mode: you're a translator, not a co-designer
 
-The central insight: claude.ai/design has taste baked in. Over-specifying style fights the product. Under-specify and let it surface directions from the subject matter.
+Claude Design has taste. **Your only job is to translate the human's intent into a minimal faithful prompt and let Claude's taste work.** Do not:
 
-**Prompt discipline** (from Anthropic's docs + gallery):
+- Interview the human about aesthetic preferences. Their intent is what they gave you. Use it.
+- Propose variants of your own in chat. Claude Design proposes.
+- Workshop aesthetic direction before sending anything to the design surface.
 
-- **Short and concrete over long and tasteful.** Official gallery prompts average 30–40 words. Target similar but don't treat it as a hard ceiling — goal + layout + content + audience from Anthropic's doc is the actual recipe, and it sometimes takes more.
-- **Avoid *ungrounded* vibe adjectives.** "Contemplative, trustworthy, modern, not chatbot-pink" without concrete levers fights Claude's style coherence. Anthropic's own examples include aesthetic shifts ("darker and more minimal", "iridescent", "organic, blobby") — these are fine because they're paired with specific artifacts. The rule is: vibe word OK if it maps to a concrete surface (a loader's motion, a button's treatment); not OK as a brand essay ahead of the brief.
-- **Lock brand explicitly.** Palette / type / component names → say them. Don't hope Claude picks your teal.
-- **Ask for tweaks** when you expect to iterate dimensions (type, spacing, palette). Claude wires live sliders.
-- **Quantities help** ("20 loaders on a wrapping grid", "4-screen onboarding", "3 directions for the intake") — matches Anthropic's gallery style.
+The orchestrator is hands. Claude Design is the designer. The human is the taste. Don't muddle the three.
+
+### Prompt discipline
+
+- **Short and concrete over long and tasteful.** Not a hard ceiling — goal + layout + content + audience is the recipe and sometimes takes more — but over-specification is the most common failure mode.
+- **Avoid ungrounded vibe adjectives.** Vibe words that don't map to a concrete surface (a button, a motion, a spacing rule) fight Claude's style coherence. Vibe word + concrete lever is fine; vibe essay ahead of the brief is not.
+- **Lock brand explicitly.** Palette, type, component names — say them. Don't hope Claude guesses.
+- **Ask for tweaks** on the dimensions you expect to iterate (type, spacing, palette). Claude wires live sliders.
+- **Quantities help.** "N variations", "N loaders on a grid", "N-screen onboarding" — Claude delivers variety within one generation.
 
 ### Picking the right artifact shape
 
-The split is not canvas-vs-files. The split is **what's the unit of critique?** — pick the generation AND the evaluation surface from that.
+The split is not canvas-vs-files. The split is **what's the unit of critique?** — pick generation AND evaluation from that.
 
 | Unit of critique | What to generate | How to evaluate |
 |---|---|---|
-| **Alternative treatments of one view** (three ways the intake screen could feel) | Canvas with N variations OR separate full-page files (choose based on scale — see below) | Canvas works if variants read at cell scale (loaders, cards, icons); otherwise serve separate files with a full-viewport switcher |
-| **A journey across screens** (onboarding, checkout, signup flow) | One routed prototype that includes the sequence in context. Anthropic's public example: *"Create a simple iOS signup flow for a bikesharing app. Show screens on a canvas."* | Native canvas as storyboard — each screen is a frame in the flow, not a competing variant |
-| **Named interactive states** (empty / loading / error / success) | One interactive prototype with the states as toggles or routes | Claude's tweak system or explicit state buttons |
-| **Scroll rhythm / long-form pacing** (landing page, essay, long dashboard) | One scrollable artifact. Don't multiply it | Scroll through it at real width |
-| **A system / shipped artifact** | Routed prototype, zip bundle, or handoff to code. Anthropic supports all three | Claude Code via `designer_handoff` |
+| Alternative treatments of one view | Canvas grid OR separate full-page files, based on scale (see below) | Canvas works for ≤300×300 cells; otherwise full-viewport with a switcher |
+| A journey across screens | One routed prototype with the sequence in context | Storyboard canvas — each frame is a screen in the flow |
+| Named interactive states (empty / loading / error / success) | One interactive prototype with the states as toggles | Tweak system or state buttons |
+| Scroll rhythm / long-form pacing | One scrollable artifact. Don't multiply it | Scroll at real width |
+| A system / shipped artifact | Routed prototype, zip, or handoff to code | `designer_handoff` |
 
-Heuristic threshold: once **screens × meaningful states × breakpoints > ~8–10**, stop multiplying variants. Converge to one routed prototype or structured file handoff.
+Heuristic threshold: once **screens × meaningful states × breakpoints > ~8–10**, stop multiplying variants. Converge to one routed prototype or structured handoff.
 
 ### Canvas at what scale
 
-Canvas is Claude's native multi-artifact container. Two sub-modes:
+Two sub-modes:
 
-- **Grid canvas** — many small cells, each ≤300×300. Anthropic's gallery: "20 loaders on a wrapping grid", "10 streaming animations", "5 interactive shaders". Variety without ceremony. Use this for widgets where variants read fine at thumbnail scale.
-- **Storyboard canvas** — a few frames at real device size. Anthropic's gallery: "iOS signup flow — show screens on a canvas". Each frame is a screen in a sequence. Works for flows because there's one sequence, not competing variants.
+- **Grid canvas** — many small cells, each ≤300×300. For widgets where variants read at thumbnail scale (loaders, cards, icons, type specimens).
+- **Storyboard canvas** — a few frames at real device size, arranged as a sequence. For flows — one sequence, not competing variants.
 
-**Variants of a full-viewport surface are the awkward case.** Grid canvas mangles them (hierarchy, type scale, whitespace only read at real size). Storyboard canvas doesn't apply (these aren't a sequence). Best shape: **Claude generates the variants as separate full-page HTML files (optionally under a wrapper `index.html`), our tasting harness swaps between them full-viewport.**
-
-Prompt for this case:
-> "Produce 3 distinct directions as 3 separate full-page HTML files — you name each one after the stance it takes."
-
-Empirical confirmation: for a Jungian text-retrieval intake screen, this yielded Claude-named **The Alembic / The Clinic / The Reading Room** — each a real stance on what the tool is. Dictating names ("Editorial / Canvas / Terminal") gave generic aesthetic stereotypes.
-
-Evaluation harness: `designer tasting --key <name>` finds the latest handoff bundle, walks its `.html` files, writes `tasting.html` with tab-switcher + keyboard shortcuts + persistent notes, starts a local server, opens the browser.
+Variants of a full-viewport surface are neither. Grid canvas mangles them (type scale, whitespace, hierarchy only read at real size). Storyboard doesn't apply. Right shape: separate full-page HTML files + a skill-level full-viewport switcher. `designer tasting --key <name>` builds it.
 
 ### Naming variants vs locking brand
 
 Two different things, often conflated:
 
-- **Brand tokens** (palette, type, existing component names, product language) → **specify explicitly**. These are non-negotiables; don't hope Claude guesses. Example: "use the existing teal/orange palette, GeistMono for code, Inter for UI."
-- **Variant names** (what each disposable exploratory branch is called) → **let Claude name them** when they're exploratory branches and the human hasn't already committed to names. Names from the problem domain ("Alembic / Clinic / Reading Room" for a Jungian tool) beat generic aesthetic stereotypes ("Editorial / Canvas / Terminal").
+- **Brand tokens** (palette, type, component names, product language) — specify explicitly.
+- **Variant names** (what each disposable exploratory branch is called) — let Claude name them from the problem domain. Exception: if the human already has review-friendly labels in mind ("single-page / wizard / dense ops"), use those.
 
-Counter-exception: if the human already has review-friendly labels in mind ("single-page / wizard / dense ops"), use those. Don't invent names when the team already has vocabulary.
+### Tool sequence
 
-### Prompting examples
+Separate-file variants (app screens, full-viewport):
 
-Good — full-page intake variants:
+1. `designer_session({ key, action: 'create', name, fidelity: 'highfi' })`.
+2. `designer_prompt({ prompt })` — terse, let-Claude-name. Returns `newFiles`.
+3. `designer_handoff({ key })` — tar.gz bundle with all variants + README + chat transcript.
+4. `designer tasting --key <name>` — builds the full-viewport switcher and opens it.
 
-> "Design the intake screen for Philemon, a Jungian text retrieval tool. A user pastes a life situation or Reddit post; the app returns ranked passages from Jung's Collected Works — §number, chapter, relevance score 0-10, direct quote, 1-2 sentence explanation. Sidebar shows extracted themes and the FTS5 queries it ran. Produce 3 distinct directions as 3 separate full-page HTML files — you name each one after the stance it takes. Add tweaks for typography and palette on each."
+Canvas variants (compact widgets):
 
-Good — canvas variants for a compact widget:
-
-> "Prototype 8 loading indicators that fit in a 200×200 cell on a wrapping grid. All monochrome, no text. Each should feel organic, not mechanical. Add tweaks for speed and stroke weight."
-
-Bad (over-specified, taste-loaded, wrong variant container):
-
-> "Design the first screen for Philemon. Tone: contemplative, literate, generous with whitespace, trustworthy. Not trendy, not chatbot-pink. Generate 3 variants: 'Editorial' (serif headings, restrained), 'Canvas' (whitespace-forward, minimalist), 'Terminal' (dense, monospace). Each variant in a separate file."
-
-### Tool sequence (separate-file variants — the common case for app screens)
-
-1. `designer_session({ key, action: 'create', name, fidelity: 'highfi' })` — start the project.
-2. `designer_prompt({ prompt })` — send the terse, let-Claude-name prompt. Returns `newFiles` listing the variant filenames Claude chose.
-3. `designer_handoff({ key })` — download the tar.gz bundle with all variants + README + chat transcript.
-4. (skill-level) **Write a tasting harness** — a `tasting.html` in the bundle's `project/` dir with:
-   - fixed top bar: variant tabs, keyboard shortcuts (1/2/3), persistent notes field (localStorage)
-   - full-viewport iframe underneath swapping between variant files
-   - serve it via local http.server (needed — browsers block cross-origin XHR under `file://`)
-5. Human tastes, reacts in their own words into the notes field or in chat.
-
-The `designer` CLI ships a `tasting` verb that does step 4 automatically: `designer tasting --key <name>` finds the latest handoff bundle, walks its `.html` files, writes `tasting.html`, starts a local server, opens the browser.
-
-### Tool sequence (canvas variants — compact grids)
-
-1. `designer_session create` as above.
+1. `designer_session({ key, action: 'create' })`.
 2. `designer_prompt` with "on a wrapping grid" / "N variations on a canvas".
-3. `designer_snapshot({ key })` — fetch the canvas file for review.
+3. `designer_snapshot({ key })` — fetch the canvas file.
 4. `designer_handoff` when done.
 
 ### In token mode: **offer variants with rationale**
@@ -217,7 +196,7 @@ Never override with "but best practice says..." — capture the tension in the d
 
 - **Read before proposing** (Phase 2). In MCP mode, call `designer_session` first — it returns `availableFiles` so you know what exists.
 - **Offer rationale**, not just values — the human should understand WHY.
-- **Variant names from the problem domain** — in MCP mode, let Claude name them; in token mode, borrow from the subject matter ("Whisper" for a sidebar intent about retreating; "Marginalia" for a text-annotation feature).
+- **Variant names from the problem domain** — in MCP mode, let Claude name them; in token mode, borrow from the subject matter, not from generic aesthetic vocabulary.
 - **Lock brand explicitly.** Claude won't guess your palette. If brand matters, state it — palette, type, component names.
 - **Capture feedback verbatim** in the decision record — don't sanitize.
 - **Direct values execute** — if the human says `--border-radius: 12px`, just do it. Still ask about intent for the record.
@@ -231,7 +210,9 @@ Never override with "but best practice says..." — capture the tension in the d
 - **Premature precision** — debating `oklch(0.78 0.02 285)` vs `oklch(0.79 0.02 285)` before direction is established.
 - **Ignoring adjacency** — changing the sidebar without seeing how it affects the content area.
 - **Silent promotion** — writing tokens without a decision record.
-- **Ungrounded vibe essays** — "contemplative, literate, trustworthy, not trendy" without levers fights Claude's style coherence. Vibe words need concrete surfaces.
+- **Interviewing the human in MCP mode.** You're a translator, not a co-designer. Take their intent as-is and send.
+- **Proposing variants of your own in MCP mode.** Claude Design proposes. You relay.
+- **Ungrounded vibe essays** — vibe words without a concrete surface to attach to fight Claude's style coherence.
 - **Variant grid for full-screen experiences** — shrinking an intake/onboarding/dashboard into a 400px canvas cell loses hierarchy, type scale, whitespace. Screen-level variants → separate files + tasting harness.
 - **Separate files for compact widgets** — 20 loading indicators don't each need their own file. Grid canvas.
 - **Variant grid for journeys/states/systems** — multiplying screens by variants blows up fast. Once screens × states × breakpoints > ~8–10, converge to one routed prototype.
