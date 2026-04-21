@@ -36,7 +36,7 @@ designer setup     # now works from any cwd
 3. Asks you to Cmd+Q Chrome if a non-debug Chrome is running (polls until quit).
 4. Launches a dedicated debug Chrome (`--remote-debugging-port=9222`, profile at `~/.chrome-designer-profile/`).
 5. Polls until you sign in to Claude and reach `/design`.
-6. Copies the `designer-loop` skill to `~/.claude/skills/`.
+6. Installs the `designer-loop` skill at `~/.claude/skills/designer-loop/` unless one is already present (respects bootstrap/dotfiles-managed symlinks).
 7. Registers the MCP with Claude Code at user scope.
 
 Re-run any time — every step no-ops when already satisfied.
@@ -55,11 +55,13 @@ Login is a real human typing into a real Chrome window. `--remote-debugging-port
 
 ### Manual setup
 
+The MCP registration embeds `DESIGNER_CDP=9222`, so Claude sessions pick it up automatically. The shell export below only matters for direct CLI invocations (`designer session`, `designer prompt`, etc.) from an interactive terminal — add it to `~/.zshenv` or equivalent if you use the CLI directly.
+
 ```bash
 ./scripts/designer-chrome.sh              # launches debug Chrome
 # sign in to Claude, navigate to /design
 curl -s http://127.0.0.1:9222/json/version | head   # verify CDP
-export DESIGNER_CDP=9222                  # persistent: add to your shell rc
+export DESIGNER_CDP=9222                  # only needed for direct CLI use
 claude mcp add --transport stdio designer \
   -- env DESIGNER_CDP=9222 "$PWD/bin/designer" mcp serve
 ```

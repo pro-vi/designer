@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { REPO_ROOT } from './repo-root.ts';
 
 const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
@@ -52,26 +53,67 @@ function chromeRunning(): boolean {
   return r.status === 0 && (r.stdout?.toString().trim().length ?? 0) > 0;
 }
 
-async function pollUntil(name: string, fn: () => Promise<boolean> | boolean, opts: { intervalMs: number; timeoutMs: number; reminder: string }): Promise<boolean> {
+async function pollUntil(
+  name: string,
+  fn: () => Promise<boolean> | boolean,
+  opts: { intervalMs: number; timeoutMs: number; reminder: string; hint60s?: string }
+): Promise<boolean> {
   const start = Date.now();
-  let lastReminderAt = 0;
+  let emittedReminder = false;
+  let emittedHint = false;
+  let dots = 0;
   while (Date.now() - start < opts.timeoutMs) {
-    if (await fn()) return true;
-    if (Date.now() - lastReminderAt > 5_000) {
+    if (await fn()) {
+      if (dots > 0) process.stdout.write('\n');
+      return true;
+    }
+    const elapsed = Date.now() - start;
+    if (!emittedReminder) {
       log(name, 'wait', opts.reminder);
-      lastReminderAt = Date.now();
+      emittedReminder = true;
+    } else {
+      process.stdout.write('.');
+      dots++;
+    }
+    if (!emittedHint && opts.hint60s && elapsed > 60_000) {
+      process.stdout.write('\n');
+      dots = 0;
+      log(name, 'wait', opts.hint60s);
+      emittedHint = true;
     }
     await sleep(opts.intervalMs);
   }
+  if (dots > 0) process.stdout.write('\n');
   return false;
 }
 
-async function step1NpmInstall(): Promise<boolean> {
-  if (fs.existsSync(path.join(REPO_ROOT, 'node_modules'))) {
-    log('deps', 'ok', 'node_modules present');
-    return true;
+function lockfileHash(p: string): string | null {
+  try {
+    return createHash('sha1').update(fs.readFileSync(p)).digest('hex');
+  } catch {
+    return null;
   }
-  log('deps', 'wait', 'running npm install...');
+}
+
+async function step1NpmInstall(): Promise<boolean> {
+  const nm = path.join(REPO_ROOT, 'node_modules');
+  const rootLock = path.join(REPO_ROOT, 'package-lock.json');
+  const innerLock = path.join(nm, '.package-lock.json');
+  if (fs.existsSync(nm)) {
+    const a = lockfileHash(rootLock);
+    const b = lockfileHash(innerLock);
+    if (a && b && a === b) {
+      log('deps', 'ok', 'node_modules in sync with package-lock');
+      return true;
+    }
+    if (a && b) {
+      log('deps', 'wait', 'lockfile mismatch; reinstalling...');
+    } else {
+      log('deps', 'wait', 'node_modules present but no lockfile to verify; reinstalling to be safe...');
+    }
+  } else {
+    log('deps', 'wait', 'running npm install...');
+  }
   const r = spawnSync('npm', ['install'], { cwd: REPO_ROOT, stdio: 'inherit' });
   if (r.status !== 0) {
     log('deps', 'fail', `npm install exited ${r.status}`);
@@ -141,7 +183,8 @@ async function step4SignIn(port: string): Promise<boolean> {
   const ok = await pollUntil('login', async () => (await getDesignTab(port)) !== null, {
     intervalMs: 2000,
     timeoutMs: 10 * 60_000,
-    reminder: 'Still waiting for a tab on claude.ai/design (not on /login).'
+    reminder: 'Still waiting for a tab on claude.ai/design (not on /login).',
+    hint60s: "If Chrome shows a Google 'new device' or 2FA prompt, complete that first — setup is waiting on you."
   });
   if (!ok) {
     log('login', 'fail', 'Timed out waiting for sign-in. Re-run setup when ready.');
@@ -153,7 +196,13 @@ async function step4SignIn(port: string): Promise<boolean> {
 
 function step5Skill(): boolean {
   if (fs.existsSync(SKILL_DEST)) {
-    log('skill', 'ok', `Already at ${SKILL_DEST}`);
+    let detail = `Already at ${SKILL_DEST}`;
+    try {
+      if (fs.lstatSync(SKILL_DEST_DIR).isSymbolicLink()) {
+        detail = `Already at ${SKILL_DEST_DIR} → ${fs.realpathSync(SKILL_DEST_DIR)} (bootstrap-managed, leaving alone)`;
+      }
+    } catch {}
+    log('skill', 'ok', detail);
     return true;
   }
   if (!fs.existsSync(SKILL_SRC)) {
@@ -204,9 +253,10 @@ export async function runSetup(): Promise<number> {
   if (!step5Skill()) return 1;
   if (!step6Mcp(DEFAULT_PORT)) return 1;
 
-  console.log('\n✓ designer is ready. Try:\n  DESIGNER_CDP=' + DEFAULT_PORT + ' tsx cli.ts session\n  DESIGNER_CDP=' + DEFAULT_PORT + ' tsx cli.ts projects');
+  console.log('\n✓ designer is ready. Verify:  designer doctor');
+  console.log(`  (or: DESIGNER_CDP=${DEFAULT_PORT} tsx cli.ts doctor)`);
   if (!process.env.DESIGNER_CDP) {
-    console.log(`\nTip: export DESIGNER_CDP=${DEFAULT_PORT} in your shell rc to skip the prefix.`);
+    console.log(`\nTip: export DESIGNER_CDP=${DEFAULT_PORT} in your shell rc if you'll invoke the CLI directly (MCP callers don't need this).`);
   }
   return 0;
 }

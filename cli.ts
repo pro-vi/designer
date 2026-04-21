@@ -1,7 +1,8 @@
 #!/usr/bin/env -S node --import tsx
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { DesignerController } from './designer-controller.ts';
 import { listSessions, getSession } from './session-store.ts';
 import { createBrowser } from './browser.ts';
@@ -514,14 +515,32 @@ function statusIcon(s: DoctorStatus): string {
 async function runDoctor(): Promise<DoctorCheck[]> {
   const out: DoctorCheck[] = [];
 
+  out.push(checkDeps());
   out.push(await checkAgentBrowser());
   out.push(await checkCdp());
   out.push(await checkOnDesignSurface());
   out.push(checkSelectors());
   out.push(checkSkillInstalled());
-  out.push(checkMcpRegistered());
+  out.push(await checkMcpRegistered());
 
   return out;
+}
+
+function checkDeps(): DoctorCheck {
+  const nm = path.join(REPO_ROOT, 'node_modules');
+  if (!fs.existsSync(nm)) {
+    return { name: 'dependencies installed', status: 'fail', detail: 'node_modules missing — run `designer setup` or `npm install`' };
+  }
+  const rootLock = path.join(REPO_ROOT, 'package-lock.json');
+  const innerLock = path.join(nm, '.package-lock.json');
+  if (!fs.existsSync(rootLock) || !fs.existsSync(innerLock)) {
+    return { name: 'dependencies installed', status: 'ok', detail: 'node_modules present (no lockfile to compare)' };
+  }
+  const h = (p: string): string => createHash('sha1').update(fs.readFileSync(p)).digest('hex');
+  if (h(rootLock) !== h(innerLock)) {
+    return { name: 'dependencies installed', status: 'warn', detail: 'node_modules stale (lockfile mismatch) — run `npm install`' };
+  }
+  return { name: 'dependencies installed', status: 'ok', detail: 'in sync with package-lock' };
 }
 
 async function checkAgentBrowser(): Promise<DoctorCheck> {
@@ -579,15 +598,34 @@ function checkSelectors(): DoctorCheck {
 
 function checkSkillInstalled(): DoctorCheck {
   const home = process.env.HOME || '';
-  const skillPath = path.join(home, '.claude', 'skills', 'designer-loop', 'SKILL.md');
+  const skillDir = path.join(home, '.claude', 'skills', 'designer-loop');
+  const skillPath = path.join(skillDir, 'SKILL.md');
   if (!fs.existsSync(skillPath)) {
     return { name: 'designer-loop skill installed', status: 'warn', detail: `not at ${skillPath}; agent will lack loop guidance` };
   }
-  return { name: 'designer-loop skill installed', status: 'ok' };
+  try {
+    if (fs.lstatSync(skillDir).isSymbolicLink()) {
+      return { name: 'designer-loop skill installed', status: 'ok', detail: `${skillDir} → ${fs.realpathSync(skillDir)}` };
+    }
+  } catch {}
+  return { name: 'designer-loop skill installed', status: 'ok', detail: skillDir };
 }
 
-function checkMcpRegistered(): DoctorCheck {
-  return { name: 'MCP registered with Claude Code', status: 'warn', detail: 'unverified (no introspection); see README for `claude mcp add` command' };
+async function checkMcpRegistered(): Promise<DoctorCheck> {
+  const which = spawnSync('which', ['claude'], { stdio: 'pipe' });
+  if (which.status !== 0) {
+    return { name: 'MCP registered with Claude Code', status: 'warn', detail: 'claude CLI not on PATH; install Claude Code to verify' };
+  }
+  const list = spawnSync('claude', ['mcp', 'list'], { stdio: 'pipe' });
+  if (list.status !== 0) {
+    return { name: 'MCP registered with Claude Code', status: 'fail', detail: `\`claude mcp list\` exited ${list.status}` };
+  }
+  const stdout = list.stdout?.toString() || '';
+  const line = stdout.split('\n').find((l) => /(\s|^)designer\b/i.test(l));
+  if (!line) {
+    return { name: 'MCP registered with Claude Code', status: 'warn', detail: 'not registered — run `designer setup` or see README' };
+  }
+  return { name: 'MCP registered with Claude Code', status: 'ok', detail: line.trim() };
 }
 
 async function readPromptArg(flags: Flags): Promise<string> {
