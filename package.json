@@ -1,6 +1,6 @@
 {
   "name": "@pro-vi/designer",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "MCP + CLI for autonomous iteration of claude.ai/design — drives the design surface via agent-browser, downloads handoff bundles, and exposes a tasting harness for full-viewport variant comparison.",
   "license": "MIT",
@@ -33,7 +33,7 @@
     "check": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "prepublishOnly": "npm run check && npm run build",
-    "postinstall": "node -e \"if (!process.env.npm_config_global) process.exit(0); console.log('\\n  designer installed. Next: run `designer setup` to launch debug Chrome, sign in, and register the MCP.\\n')\"",
+    "postinstall": "node scripts/postinstall.mjs",
     "probe": "tsx scripts/probe.ts"
   },
   "dependencies": {
@@ -53,6 +53,7 @@
     "bin/",
     "skills/",
     "scripts/designer-chrome.sh",
+    "scripts/postinstall.mjs",
     "selectors.json",
     "README.md",
     "LICENSE"
