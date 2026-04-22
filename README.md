@@ -176,35 +176,6 @@ Default path for tasting is the live URL. Use tasting when: full-viewport compar
 - `designer doctor` — diagnose first-run setup state. Checks agent-browser, CDP, a /design tab is open, selectors present, skill installed, MCP registered. Exits 2 on failure.
 - `designer health` — probe every UI anchor this MCP depends on. 17 probes across home / session / share / pattern categories. Exits 2 on any fail. Wire into cron / CI to catch claude.ai UI regressions (it already moved Export under Share once mid-development).
 
-## Layout
-
-```
-designer/
-├── package.json
-├── tsconfig.json            # type-check only
-├── tsconfig.build.json      # tsc → dist/
-├── bin/designer             # bash wrapper, prefers dist/ then tsx
-├── mcp-server.ts            # MCP stdio server (exports startMcpServer)
-├── cli.ts                   # same verbs, directly runnable; rich --help
-├── designer-controller.ts   # core flow: session, prompt, ask, snapshot, handoff
-├── browser.ts               # thin wrapper over agent-browser subprocess
-├── cdp-ensure.ts            # auto-launches debug Chrome on first tool call
-├── tasting.ts               # tasting.html generator + http.server
-├── ui-anchors.ts            # every DOM / URL / structural dependency, enumerated
-├── setup.ts                 # designer setup verb
-├── session-store.ts         # per-session state at ~/.designer/
-├── artifact-store.ts        # writes HTML/PNG/JSON under ./artifacts/{key}/
-├── repo-root.ts             # package.json walk so source + compiled both resolve resources
-├── selectors.json           # DOM selectors for the claude.ai/design surface
-├── scripts/
-│   ├── designer-chrome.sh   # standalone Chrome launcher
-│   └── probe.ts             # manual DOM exploration helper
-├── skills/
-│   └── designer-loop/SKILL.md   # the skill, copied to ~/.claude/skills/ by setup
-├── artifacts/               # generated outputs (gitignored)
-└── dist/                    # tsc build output (gitignored; published on npm)
-```
-
 ## Known quirks
 
 - **Folder-organized variants.** Claude Design sometimes organizes multi-file variants under a subfolder (`directions/sediment.html`). The live MCP's file-list scrape (`designer_list files`, `availableFiles` in session status, `newFiles` diff from `designer_prompt`) is flat-only; nested files are invisible until `designer_handoff`. Mitigation: `designer_prompt` auto-appends *"Keep all generated files at the project root; no subfolders."* Handoff bundle is folder-aware; `designer tasting` walks recursively.
@@ -212,4 +183,12 @@ designer/
 - **Em-dash handoff filenames.** Claude's handoff pipeline wrote em-dash (`—`) into `index.html` hrefs but saved files with regular hyphens. `designer_handoff` detects and repairs (`repaired.renamed: [...]`). No-op when hrefs already resolve.
 - **Cross-origin iframe.** Served HTML lives on `claudeusercontent.com` with a signed `t=` token in the URL. Direct fetch from node works without cookies. The token is session-scoped, not per-iteration.
 - **UI regressions.** Claude has moved critical buttons mid-development (Export → Share dropdown). `designer health` is the early-warning system; run it periodically.
+
+## Credits
+
+Built on [`agent-browser`](https://github.com/ctate/agent-browser) by [@ctatedev](https://x.com/ctatedev) — the CDP driver that makes the real-Chrome attachment possible.
+
+## License
+
+[MIT](LICENSE).
 
