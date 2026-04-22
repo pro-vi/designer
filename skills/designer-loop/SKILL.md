@@ -53,7 +53,7 @@ Orient in the claude.ai/design surface:
 
 1. `designer_session({ key })` — returns stored state + `availableFiles`. If `stored.designUrl` exists, you're resuming; otherwise create one with a sensible default name derived from the intent (don't interview for a project name).
 2. For existing projects: `designer_snapshot({ filename })` per file of interest. You get `htmlPath` — read it only if deep inspection is warranted.
-3. If this is a frontend for an existing backend or codebase, read the backend's API shape and any existing design tokens in the target repo BEFORE prompting. Those are constraints to thread into the prompt verbatim, not aesthetic hypotheses to propose.
+3. **Survey capabilities — this is the primary source of design, not an afterthought.** Before relaying any intent, read the target repo for what the system actually DOES: entities and their fields, operations / endpoints, states (loading / empty / error / success), failure modes, hard constraints (auth, rate limits, offline cases), and existing design tokens. The design EXPRESSES these capabilities — the human's feeling-shaped intent only tells you *how*; the codebase tells you *what*. Transfer capability facts into the prompt verbatim; don't filter them down to what you think matters aesthetically. If there's no codebase yet (greenfield intake), say so in the prompt so Claude Design doesn't invent constraints.
 
 A one-line brief is fine ("I see X; here's the prompt I'm about to send"). Don't turn it into design-by-interview.
 
@@ -65,9 +65,9 @@ Guide, don't constrain. The prompt gives Claude enough to make good decisions, n
 
 | Guide (include) | Constrain (omit) |
 |---|---|
-| What the product does / data it renders | Color palette (unless it's a hard brand token) |
+| **Capability context**: what the product does, entities + fields, operations, states, failure modes | Color palette (unless it's a hard brand token) |
 | User's situation / primary action | Type treatment, font feel |
-| Entities, field names, copy that must appear | Layout direction, whitespace rules |
+| Entities, field names, copy that must appear verbatim | Layout direction, whitespace rules |
 | Adjacent surfaces / what must NOT change | Tone adjectives ("contemplative", "trustworthy") unless paired with a concrete lever |
 | Hard brand tokens (palette, type, existing component names) as non-negotiables | Visual hierarchy choices |
 | Quantity + shape of variants ("3 full-page files", "20 on a wrapping grid") | Variant names (let Claude pick) |
@@ -184,6 +184,7 @@ Never override with "but best practice says..." — capture the tension in the d
 ## Guardrails
 
 - **Read before relaying** (Phase 2). Call `designer_session` first — it returns `availableFiles`.
+- **Transfer capabilities, don't summarize them.** When the codebase has real endpoints / entities / states, drop them into the prompt unabridged. Summarizing is filtering — you're quietly making design decisions Claude Design should make.
 - **Guide, don't constrain.** Scope + data + hard brand tokens in; aesthetic choices out.
 - **Lock brand explicitly.** Claude won't guess your palette.
 - **Let Claude name variants** from the problem domain.
@@ -193,6 +194,7 @@ Never override with "but best practice says..." — capture the tension in the d
 
 ## Anti-Patterns
 
+- **Designing before reading capabilities.** Booting the loop without surveying the target repo produces designs that look good and don't fit the system. Phase 2 step 3 is load-bearing.
 - **Interviewing about aesthetics.** Scope questions are fine when intent is genuinely unclear; taste questions aren't yours to ask.
 - **Proposing variants of your own.** Claude Design proposes. You relay.
 - **Constraining where Claude should have room.** Brand tokens are constraints; palette feelings and layout hunches aren't.

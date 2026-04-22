@@ -1,8 +1,8 @@
 # designer
 
-MCP + CLI for iterating on **claude.ai/design** — Claude's web-based wireframe and high-fidelity design tool.
+MCP + CLI that lets your coding agent drive **claude.ai/design** with full context of your codebase — capabilities, data shape, existing tokens fed into every prompt.
 
-The human describes intent. The orchestrating agent translates intent into a minimal prompt, relays it to Claude Design, hands the URL back to the human, interprets their reaction, iterates. When the human says "yes", `designer_handoff` downloads a tar.gz bundle (README + chat transcripts + all design files + source JSX) so the implementing agent (Claude Code, typically) can build the design in a real repo.
+Human describes intent → agent surveys codebase and prompts Claude Design → hands you the URL → iterate → `designer_handoff` bundles the result (README + chats + HTML + JSX) back into your repo.
 
 ## Stance
 
