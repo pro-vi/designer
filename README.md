@@ -220,12 +220,3 @@ designer/
 - **Cross-origin iframe.** Served HTML lives on `claudeusercontent.com` with a signed `t=` token in the URL. Direct fetch from node works without cookies. The token is session-scoped, not per-iteration.
 - **UI regressions.** Claude has moved critical buttons mid-development (Export → Share dropdown). `designer health` is the early-warning system; run it periodically.
 
-## Publishing
-
-Shipped as `@pro-vi/designer` on npm. `prepublishOnly` runs `tsc --noEmit` + `tsc -p tsconfig.build.json`; the `files` whitelist in `package.json` keeps the tarball under 40KB. To release:
-
-```bash
-npm version patch   # or minor / major
-npm publish --access public
-git push --follow-tags
-```
