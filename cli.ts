@@ -357,7 +357,7 @@ Input (pick one):
 Flags:
   --key <k>               session to target (default: 'default')
   --file <f.html>         switch to this file before prompting
-  --timeoutMs <n>         default 10 minutes
+  --timeoutMs <n>         default 20 minutes
   --stabilityMs <n>       default 4 seconds
 
 Output: prints 'Taste here: <url>' then JSON metadata (done, newFiles, htmlPath, screenshotPath,

@@ -49,7 +49,7 @@ server.registerTool(
       key: z.string().optional(),
       prompt: z.string(),
       file: z.string().optional().describe('Switch to this file before sending (targets the prompt at it).'),
-      timeoutMs: z.number().optional().describe('Default 10m.'),
+      timeoutMs: z.number().optional().describe('Default 20m. Hi-fi generations can take 15+ min; bump this for complex multi-variant prompts.'),
       stabilityMs: z.number().optional().describe('Default 4s.')
     }
   },

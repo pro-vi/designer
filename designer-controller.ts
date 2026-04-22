@@ -297,7 +297,7 @@ export class DesignerController {
   }
 
   async waitForGenerationDone({
-    timeoutMs = 10 * 60_000,
+    timeoutMs = 20 * 60_000,
     stabilityMs = 4000,
     pollMs = 1500
   }: { timeoutMs?: number; stabilityMs?: number; pollMs?: number } = {}): Promise<{
