@@ -99,6 +99,16 @@ async function step1NpmInstall(): Promise<boolean> {
   const nm = path.join(REPO_ROOT, 'node_modules');
   const rootLock = path.join(REPO_ROOT, 'package-lock.json');
   const innerLock = path.join(nm, '.package-lock.json');
+  // Installed mode: shipped tarball has no package-lock.json. If node_modules
+  // exists, npm already placed deps — nothing to verify.
+  if (!fs.existsSync(rootLock)) {
+    if (fs.existsSync(nm)) {
+      log('deps', 'ok', 'installed-mode (no package-lock to verify)');
+      return true;
+    }
+    log('deps', 'fail', 'no package-lock.json and no node_modules — reinstall the package');
+    return false;
+  }
   if (fs.existsSync(nm)) {
     const a = lockfileHash(rootLock);
     const b = lockfileHash(innerLock);
@@ -106,11 +116,7 @@ async function step1NpmInstall(): Promise<boolean> {
       log('deps', 'ok', 'node_modules in sync with package-lock');
       return true;
     }
-    if (a && b) {
-      log('deps', 'wait', 'lockfile mismatch; reinstalling...');
-    } else {
-      log('deps', 'wait', 'node_modules present but no lockfile to verify; reinstalling to be safe...');
-    }
+    log('deps', 'wait', b ? 'lockfile mismatch; reinstalling...' : 'no inner lockfile; reinstalling to sync...');
   } else {
     log('deps', 'wait', 'running npm install...');
   }
