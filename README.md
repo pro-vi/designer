@@ -186,7 +186,7 @@ Default path for tasting is the live URL. Use tasting when: full-viewport compar
 
 ## Credits
 
-Built on [`agent-browser`](https://github.com/ctate/agent-browser) by [@ctatedev](https://x.com/ctatedev) — the CDP driver that makes the real-Chrome attachment possible.
+Built on [`agent-browser`](https://github.com/ctate/agent-browser) by [@ctatedev](https://x.com/ctatedev). It's the CLI that `designer` shells out to for every browser operation (`open`, `click`, `fill`, `eval`, `snapshot`, ...). The CDP attachment itself is Chrome's own feature — a Playwright-CDP client could play the same role. agent-browser's subprocess-friendly shape fits the MCP's one-shot-per-tool-call model cleanly, which is what made it the right substrate here.
 
 ## License
 
