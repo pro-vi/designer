@@ -14,7 +14,26 @@ The human describes intent. The orchestrating agent translates intent into a min
 
 ## Install
 
-One-call first-run:
+Three paths depending on what you want. All land at the same `designer setup` flow.
+
+### A. Just try it — zero install
+
+```bash
+npx -y @pro-vi/designer setup
+```
+
+Runs the setup once. Nothing stays on PATH. Good for a first look.
+
+### B. Daily use — install globally
+
+```bash
+npm i -g @pro-vi/designer
+designer setup
+```
+
+After this, `designer <verb>` works from any cwd. The MCP registration added by `setup` points at the globally-installed wrapper, so Claude Code picks it up automatically.
+
+### C. Hacking on it — clone
 
 ```bash
 git clone https://github.com/pro-vi/designer.git && cd designer
@@ -22,16 +41,13 @@ npm install
 ./bin/designer setup
 ```
 
-Optional — make `designer` available globally:
+Use this if you want to edit source. `bin/designer` prefers `dist/cli.js` if present, else falls back to `tsx cli.ts` — no rebuild-between-edits required during dev.
 
-```bash
-npm link
-designer setup     # now works from any cwd
-```
+### What `designer setup` does
 
-`designer setup` is idempotent and auto-progresses:
+Idempotent and auto-progresses:
 
-1. Installs deps if missing.
+1. Verifies deps (lockfile-hash compare; reinstalls if stale).
 2. Checks `agent-browser` is on PATH.
 3. Asks you to Cmd+Q Chrome if a non-debug Chrome is running (polls until quit).
 4. Launches a dedicated debug Chrome (`--remote-debugging-port=9222`, profile at `~/.chrome-designer-profile/`).
@@ -39,7 +55,18 @@ designer setup     # now works from any cwd
 6. Installs the `designer-loop` skill at `~/.claude/skills/designer-loop/` unless one is already present (respects bootstrap/dotfiles-managed symlinks).
 7. Registers the MCP with Claude Code at user scope.
 
-Re-run any time — every step no-ops when already satisfied.
+Re-run any time — every step no-ops when already satisfied. Verify with `designer doctor`.
+
+### MCP only — no CLI
+
+If you only want the MCP in Claude Code (skip the CLI entirely):
+
+```bash
+claude mcp add --scope user --transport stdio designer \
+  -- env DESIGNER_CDP=9222 npx -y @pro-vi/designer mcp serve
+```
+
+You'll still need debug Chrome running (`npx -y @pro-vi/designer setup` handles Chrome + login + skill install, then you can skip the CLI afterward).
 
 ### Why a dedicated profile?
 
@@ -115,15 +142,14 @@ Six tools, registered at user scope by `designer setup`:
 | `designer_snapshot` | Capture current state. Optional `filename` to switch first. Default: paths + hash only; `includeHtml: true` inlines. |
 | `designer_handoff` | Export → Handoff → download + extract tar.gz. Returns README + paths. Auto-repairs Claude-side em-dash filename bugs. |
 
-Registration:
+Registration (if you cloned the repo):
 
 ```bash
-claude mcp add --transport stdio designer \
-  -- env DESIGNER_CDP=9222 \
-     /Users/provi/Development/_projs/designer/bin/designer mcp serve
+claude mcp add --scope user --transport stdio designer \
+  -- env DESIGNER_CDP=9222 "$PWD/bin/designer" mcp serve
 ```
 
-(`designer setup` runs this. After `npm link` it collapses to `designer mcp serve`.)
+(`designer setup` runs this for you. For the npm-installed path, use the `npx -y @pro-vi/designer mcp serve` form shown in the MCP-only section above.)
 
 ## The loop
 
