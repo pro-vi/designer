@@ -8,7 +8,7 @@ Human describes intent → agent surveys codebase and prompts Claude Design → 
 
 - **Single-vendor, single-purpose.** Only `claude.ai/design`. No kitchen sink.
 - **`agent-browser` is the substrate.** Attaches to your real Chrome via CDP — sidesteps Cloudflare + Google SSO.
-- **Human is the designer.** See `~/.claude/skills/designer-loop`. Orchestrator is translation + plumbing; Claude Design has the taste; human arbitrates.
+- **Capabilities drive design.** The agent surveys what the codebase can actually do (entities, operations, states, failure modes, existing tokens) and feeds that into every prompt. The human's intent tells Claude Design *how*; the codebase tells it *what*. See the [designer-loop skill](skills/designer-loop/SKILL.md).
 - **URL is the default taste path.** `designer_prompt` returns a live claude.ai/design URL where tweak sliders work and variants switch. Local tasting harness exists only for when IDE chrome gets in the way.
 - **Artifacts land on disk.** Every iteration + every handoff saves under `./artifacts/{key}/`.
 
@@ -155,15 +155,16 @@ claude mcp add --scope user --transport stdio designer \
 
 ```
 1. Intent       → human describes what they want to feel / change
-2. Read         → designer_session returns currentUrl + availableFiles
-3. Relay        → designer_prompt with a terse, guide-not-constrain prompt
-4. Taste        → hand the human the url from the return; they react in their own words
+2. Survey       → agent reads the target repo: entities, operations, states,
+                  failure modes, existing tokens — capability facts, verbatim
+3. Relay        → designer_prompt = intent + capabilities, minimal faithful prompt
+4. Taste        → hand the human the returned URL; they react in their own words
 5. Interpret    → next designer_prompt (modify) or designer_ask (clarify)
 6. Repeat 3-5   → until human says "that's it"
 7. Promote      → designer_handoff — bundle is the decision record
 ```
 
-Full guidance in `~/.claude/skills/designer-loop/SKILL.md` (also in-repo at `skills/designer-loop/SKILL.md`).
+Full guidance: [`skills/designer-loop/SKILL.md`](skills/designer-loop/SKILL.md) in this repo (also installed to `~/.claude/skills/designer-loop/` by `designer setup`).
 
 ## Tasting harness
 
@@ -219,18 +220,12 @@ designer/
 - **Cross-origin iframe.** Served HTML lives on `claudeusercontent.com` with a signed `t=` token in the URL. Direct fetch from node works without cookies. The token is session-scoped, not per-iteration.
 - **UI regressions.** Claude has moved critical buttons mid-development (Export → Share dropdown). `designer health` is the early-warning system; run it periodically.
 
-## Publishing (future — not yet on npm)
+## Publishing
 
-Prepped but not shipped. Prerequisites: npm account with scope `@pro-vi` (currently 404/available), 2FA, `npm login`. Then:
+Shipped as `@pro-vi/designer` on npm. `prepublishOnly` runs `tsc --noEmit` + `tsc -p tsconfig.build.json`; the `files` whitelist in `package.json` keeps the tarball under 40KB. To release:
 
 ```bash
+npm version patch   # or minor / major
 npm publish --access public
-```
-
-`prepublishOnly` runs `tsc --noEmit` + `tsc -p tsconfig.build.json`. `files` whitelist in `package.json` keeps the tarball under 35KB. Published package will support:
-
-```bash
-npx @pro-vi/designer setup                                         # trial
-npm i -g @pro-vi/designer && designer setup                        # daily use
-claude mcp add --transport stdio designer -- designer mcp serve    # MCP
+git push --follow-tags
 ```
