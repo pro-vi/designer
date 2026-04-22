@@ -1,8 +1,10 @@
 # designer
 
-MCP + CLI that lets your coding agent drive **claude.ai/design** with full context of your codebase — capabilities, data shape, existing tokens fed into every prompt.
+MCP + CLI that lets your coding agent drive **[claude.ai/design](https://claude.ai/design)** — Claude's web-based wireframe and hi-fi design tool, which has no API — with full context of your codebase. Capabilities, data shape, existing tokens fed into every prompt.
 
 Human describes intent → agent surveys codebase and prompts Claude Design → hands you the URL → iterate → `designer_handoff` bundles the result (README + chats + HTML + JSX) back into your repo.
+
+> **Status:** v0.3.0, early. macOS only (hardcodes Chrome.app path and `pgrep`). Linux/Windows support not implemented.
 
 ## Stance
 
@@ -14,9 +16,16 @@ Human describes intent → agent surveys codebase and prompts Claude Design → 
 
 ## Install
 
-Three paths depending on what you want. All land at the same `designer setup` flow.
+### Prerequisites
 
-### A. Just try it — zero install
+- macOS, Node 20+, and Google Chrome installed at `/Applications/Google Chrome.app`.
+- `agent-browser` on PATH — install with `npm i -g agent-browser` (or `brew install agent-browser`). This is the CDP driver `designer` shells out to.
+
+### Three paths
+
+All land at the same `designer setup` flow.
+
+#### A. Just try it — zero install
 
 ```bash
 npx -y @pro-vi/designer setup
@@ -24,7 +33,7 @@ npx -y @pro-vi/designer setup
 
 Runs the setup once. Nothing stays on PATH. Good for a first look.
 
-### B. Daily use — install globally
+#### B. Daily use — install globally
 
 ```bash
 npm i -g @pro-vi/designer
@@ -33,7 +42,7 @@ designer setup
 
 After this, `designer <verb>` works from any cwd. The MCP registration added by `setup` points at the globally-installed wrapper, so Claude Code picks it up automatically.
 
-### C. Hacking on it — clone
+#### C. Hacking on it — clone
 
 ```bash
 git clone https://github.com/pro-vi/designer.git && cd designer
@@ -80,18 +89,9 @@ After first setup, the MCP auto-launches debug Chrome from the saved profile on 
 
 Login is a real human typing into a real Chrome window. `--remote-debugging-port` alone doesn't set `navigator.webdriver` (only `--enable-automation` does); user-agent is identical to normal Chrome. Cloudflare and Google OAuth see a normal session. First login on the new profile may trigger Google's "new device" verification — that's a standard one-time prompt.
 
-### Manual setup
+### DESIGNER_CDP shell export
 
-The MCP registration embeds `DESIGNER_CDP=9222`, so Claude sessions pick it up automatically. The shell export below only matters for direct CLI invocations (`designer session`, `designer prompt`, etc.) from an interactive terminal — add it to `~/.zshenv` or equivalent if you use the CLI directly.
-
-```bash
-./scripts/designer-chrome.sh              # launches debug Chrome
-# sign in to Claude, navigate to /design
-curl -s http://127.0.0.1:9222/json/version | head   # verify CDP
-export DESIGNER_CDP=9222                  # only needed for direct CLI use
-claude mcp add --transport stdio designer \
-  -- env DESIGNER_CDP=9222 "$PWD/bin/designer" mcp serve
-```
+The MCP registration embeds `DESIGNER_CDP=9222` automatically, so Claude Code sessions work without any shell config. The shell export is only needed if you invoke the CLI directly (`designer session`, `designer prompt`, etc.) from an interactive terminal — add to `~/.zshenv` or equivalent.
 
 ## CLI
 
@@ -142,14 +142,7 @@ Six tools, registered at user scope by `designer setup`:
 | `designer_snapshot` | Capture current state. Optional `filename` to switch first. Default: paths + hash only; `includeHtml: true` inlines. |
 | `designer_handoff` | Export → Handoff → download + extract tar.gz. Returns README + paths. Auto-repairs Claude-side em-dash filename bugs. |
 
-Registration (if you cloned the repo):
-
-```bash
-claude mcp add --scope user --transport stdio designer \
-  -- env DESIGNER_CDP=9222 "$PWD/bin/designer" mcp serve
-```
-
-(`designer setup` runs this for you. For the npm-installed path, use the `npx -y @pro-vi/designer mcp serve` form shown in the MCP-only section above.)
+`designer setup` registers the MCP for you (flavor depends on install path — see the [MCP-only section](#mcp-only--no-cli) above).
 
 ## The loop
 
