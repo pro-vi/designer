@@ -527,14 +527,19 @@ async function runDoctor(): Promise<DoctorCheck[]> {
 }
 
 function checkDeps(): DoctorCheck {
+  const rootLock = path.join(REPO_ROOT, 'package-lock.json');
+  // Installed-mode (npx / bunx / pnpm): no package-lock shipped, deps live
+  // outside the package dir. If we got this far, the package manager placed them.
+  if (!fs.existsSync(rootLock)) {
+    return { name: 'dependencies installed', status: 'ok', detail: 'installed-mode' };
+  }
   const nm = path.join(REPO_ROOT, 'node_modules');
   if (!fs.existsSync(nm)) {
-    return { name: 'dependencies installed', status: 'fail', detail: 'node_modules missing — run `designer setup` or `npm install`' };
+    return { name: 'dependencies installed', status: 'fail', detail: 'node_modules missing — run `npm install`' };
   }
-  const rootLock = path.join(REPO_ROOT, 'package-lock.json');
   const innerLock = path.join(nm, '.package-lock.json');
-  if (!fs.existsSync(rootLock) || !fs.existsSync(innerLock)) {
-    return { name: 'dependencies installed', status: 'ok', detail: 'node_modules present (no lockfile to compare)' };
+  if (!fs.existsSync(innerLock)) {
+    return { name: 'dependencies installed', status: 'ok', detail: 'node_modules present (no inner lockfile)' };
   }
   const h = (p: string): string => createHash('sha1').update(fs.readFileSync(p)).digest('hex');
   if (h(rootLock) !== h(innerLock)) {

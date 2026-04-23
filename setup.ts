@@ -99,15 +99,12 @@ async function step1NpmInstall(): Promise<boolean> {
   const nm = path.join(REPO_ROOT, 'node_modules');
   const rootLock = path.join(REPO_ROOT, 'package-lock.json');
   const innerLock = path.join(nm, '.package-lock.json');
-  // Installed mode: shipped tarball has no package-lock.json. If node_modules
-  // exists, npm already placed deps — nothing to verify.
+  // Installed mode: shipped tarball has no package-lock.json. Bun/pnpm/npx
+  // resolve deps outside the package dir, so don't inspect node_modules here —
+  // if we got this far, the package manager has done its job.
   if (!fs.existsSync(rootLock)) {
-    if (fs.existsSync(nm)) {
-      log('deps', 'ok', 'installed-mode (no package-lock to verify)');
-      return true;
-    }
-    log('deps', 'fail', 'no package-lock.json and no node_modules — reinstall the package');
-    return false;
+    log('deps', 'ok', 'installed-mode');
+    return true;
   }
   if (fs.existsSync(nm)) {
     const a = lockfileHash(rootLock);
