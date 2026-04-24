@@ -195,6 +195,47 @@ export const UI_ANCHORS: AnchorDef[] = [
       const ok = /[?&]file=/.test(url);
       return { ok: true, detail: ok ? 'file param present' : '(no file open — not a regression)' };
     }
+  },
+  {
+    id: 'session.fileListScrape',
+    category: 'session',
+    description: 'filename text nodes detectable (listFiles scrape still works)',
+    requires: 'session',
+    check: async (b, url) => {
+      const result = await b
+        .evalValue<{ files: string[] }>(
+          `(() => {
+            const seen = new Set();
+            const files = [];
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) {
+              const t = (node.textContent || '').trim();
+              if (!/^[A-Za-z0-9 _.()\\-]+\\.(html|js|css|jsx|tsx|ts|md|json|svg)$/i.test(t)) continue;
+              if (t.length > 80 || seen.has(t)) continue;
+              seen.add(t);
+              files.push(t);
+            }
+            return { files };
+          })()`
+        )
+        .catch(() => ({ files: [] as string[] }));
+      const files = Array.isArray(result.files) ? result.files : [];
+      if (files.length === 0) {
+        return { ok: false, detail: 'found 0 filenames — scraper regex or DOM layout regressed' };
+      }
+      const match = url.match(/[?&]file=([^&]+)/);
+      if (match && match[1]) {
+        const activeFile = decodeURIComponent(match[1]);
+        if (!files.includes(activeFile)) {
+          return {
+            ok: false,
+            detail: `active file "${activeFile}" not in scrape ([${files.slice(0, 3).join(', ')}...]) — scraper missing files`
+          };
+        }
+      }
+      return { ok: true, detail: `${files.length} file(s) detected` };
+    }
   }
 ];
 
