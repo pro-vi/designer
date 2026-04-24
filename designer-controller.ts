@@ -496,17 +496,23 @@ export class DesignerController {
 
     const result = await this.browser.evalValue<{ files: string[]; folders: string[] }>(
       `(() => {
-        const spans = Array.from(document.querySelectorAll('span'));
+        // Walk all text nodes — Claude's file panel wraps filenames in styled-
+        // component <div>s whose class hashes change across deploys. Tag-based
+        // scraping misses them; text-node walking is resilient.
         const seen = new Set();
         const files = [];
-        for (const s of spans) {
-          if (s.children.length) continue;
-          const t = (s.textContent || '').trim();
-          if (!/^[A-Za-z0-9 _.()\\-]+\\.(html|js|css|jsx)$/i.test(t) || seen.has(t)) continue;
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+          const t = (node.textContent || '').trim();
+          if (!/^[A-Za-z0-9 _.()\\-]+\\.(html|js|css|jsx|tsx|ts|md|json|svg)$/i.test(t)) continue;
+          if (t.length > 80 || seen.has(t)) continue;
           seen.add(t);
           files.push(t);
         }
-        // Folders: rows whose sibling text is 'Folder' (a Claude-side label)
+        // Folders: rows whose sibling text is 'Folder' (a Claude-side label).
+        // Still tag-based since folder rows are structurally different —
+        // revisit if this breaks.
         const folderSet = new Set();
         const divs = Array.from(document.querySelectorAll('div'));
         for (const d of divs) {
