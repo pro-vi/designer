@@ -193,19 +193,63 @@ export class DesignerController {
     throw new Error(`Unknown action: ${action}`);
   }
 
+  // Pick the live claude.ai/design tab among possibly many CDP pages, switch
+  // agent-browser's binding to it, and verify readiness via DOM anchors.
+  // Returns the count of candidates considered (for error messaging).
+  private async selectMatchingTab(): Promise<{ matched: boolean; candidates: number }> {
+    const tabs = await this.browser.tabs().catch(() => [] as Awaited<ReturnType<Browser['tabs']>>);
+    if (tabs.length === 0) return { matched: false, candidates: 0 };
+
+    const stored = getSession(this.key);
+    const targetRoot = stored?.designUrl?.split('?')[0];
+    const candidates = tabs.filter((t) => {
+      if (t.type !== 'page' || !t.url) return false;
+      if (targetRoot) return t.url.startsWith(targetRoot);
+      return /^https:\/\/claude\.ai\/design(\/|$|\?)/.test(t.url);
+    });
+    if (candidates.length === 0) return { matched: false, candidates: 0 };
+
+    // Prefer the active tab first, then by index ascending.
+    candidates.sort((a, b) => (Number(b.active) - Number(a.active)) || (a.index - b.index));
+
+    for (const cand of candidates) {
+      await this.browser.activateTab(cand.index).catch(() => null);
+      const composerOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
+      const homeOk = this.selectors.login.signedInIndicator
+        ? await this.browser.isVisible(this.selectors.login.signedInIndicator).catch(() => false)
+        : false;
+      if (composerOk || homeOk) {
+        upsertSession(this.key, { lastUrl: await this.currentUrl() });
+        return { matched: true, candidates: candidates.length };
+      }
+    }
+    return { matched: false, candidates: candidates.length };
+  }
+
   async ensureReady(): Promise<{ ok: true; url: string; inSession: boolean }> {
     await ensureCdpUp();
-    const u = await this.currentUrl();
-    if (!/claude\.ai\/design/.test(u)) {
-      await this.browser.open(DESIGN_HOME);
-      await this.browser.waitLoad('networkidle').catch(() => null);
+
+    const picked = await this.selectMatchingTab();
+    if (picked.matched) {
+      return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession() };
     }
+
+    // No live design tab matched. Fall back to opening home and re-checking.
+    if (picked.candidates === 0) {
+      const u = await this.currentUrl();
+      if (!/claude\.ai\/design/.test(u)) {
+        await this.browser.open(DESIGN_HOME);
+        await this.browser.waitLoad('networkidle').catch(() => null);
+      }
+    }
+
     const homeOk = this.selectors.login.signedInIndicator
       ? await this.browser.isVisible(this.selectors.login.signedInIndicator).catch(() => false)
       : false;
     const sessionOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
     if (!homeOk && !sessionOk) {
-      throw new Error('Not signed in to claude.ai/design, or on an unrecognized page. Sign in in the CDP-attached Chrome.');
+      const suffix = picked.candidates > 0 ? ` (checked ${picked.candidates} tab(s))` : '';
+      throw new Error(`Not signed in to claude.ai/design, or on an unrecognized page${suffix}. Sign in in the CDP-attached Chrome.`);
     }
     upsertSession(this.key, { lastUrl: await this.currentUrl() });
     return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession() };
