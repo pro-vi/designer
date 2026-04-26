@@ -5,11 +5,6 @@ const cmd = process.argv[2];
 const arg = process.argv[3];
 
 const browser = createBrowser({ headed: true });
-if (!process.env.DESIGNER_CDP) {
-  console.error(
-    '[probe] DESIGNER_CDP not set — using agent-browser-managed session (may be blocked by Cloudflare/SSO). Prefer: export DESIGNER_CDP=9222 and relaunch Chrome with --remote-debugging-port=9222.'
-  );
-}
 
 async function main(): Promise<void> {
   switch (cmd) {
@@ -47,12 +42,26 @@ async function main(): Promise<void> {
     case 'close':
       await browser.close();
       break;
+    case 'tabs': {
+      const tabs = await browser.tabs();
+      const composer = '[data-testid="chat-composer-input"]';
+      const signedIn = '[data-testid="create-project-button"]';
+      for (const t of tabs) {
+        await browser.activateTab(t.index).catch(() => null);
+        const composerOk = await browser.isVisible(composer).catch(() => false);
+        const signedInOk = await browser.isVisible(signedIn).catch(() => false);
+        const flag = composerOk ? 'composer' : signedInOk ? 'home' : 'unrecognized';
+        console.log(`[${t.index}] active=${t.active ? 'Y' : 'N'} ${flag.padEnd(12)} ${t.url}`);
+      }
+      break;
+    }
     default:
       console.log(`Usage:
   probe.ts login                  open headed window for manual login
   probe.ts open <url>             navigate
   probe.ts url                    print current url
   probe.ts title                  print current title
+  probe.ts tabs                   list CDP tabs with readiness verdict
   probe.ts snapshot [scope]       interactive a11y tree (text)
   probe.ts snapshot-json [scope]  interactive a11y tree (JSON)
   probe.ts screenshot [path]      full-page screenshot
