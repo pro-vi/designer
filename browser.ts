@@ -21,6 +21,14 @@ export interface SnapshotOptions {
   scope?: string;
 }
 
+export interface TabInfo {
+  active: boolean;
+  index: number;
+  title: string;
+  type: string;
+  url: string;
+}
+
 export interface Browser {
   session: string;
   run(args: string[], opts?: { input?: string; parseJson?: boolean }): Promise<string>;
@@ -28,6 +36,8 @@ export interface Browser {
   close(): Promise<string | null>;
   url(): Promise<string>;
   title(): Promise<string>;
+  tabs(): Promise<TabInfo[]>;
+  activateTab(index: number): Promise<void>;
   snapshot<T = unknown>(opts?: SnapshotOptions): Promise<T>;
   snapshotText(opts?: SnapshotOptions): Promise<string>;
   click(sel: string): Promise<string>;
@@ -103,6 +113,17 @@ export function createBrowser({
     close: () => run(['close']).catch(() => null),
     url: () => run(['get', 'url']),
     title: () => run(['get', 'title']),
+    tabs: async () => {
+      const out = await run(['tab', 'list', '--json']);
+      const env = JSON.parse(out) as { success?: boolean; data?: { tabs?: TabInfo[] }; error?: unknown };
+      if (env.success === false) {
+        throw new Error(`agent-browser tab list failed: ${JSON.stringify(env.error)}`);
+      }
+      return env.data?.tabs ?? [];
+    },
+    activateTab: async (index) => {
+      await run(['tab', String(index)]);
+    },
     snapshot: <T = unknown>({ interactive = true, scope }: SnapshotOptions = {}) => {
       const args = ['snapshot', '--json'];
       if (interactive) args.push('-i');
