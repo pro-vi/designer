@@ -2,7 +2,12 @@ import { spawn } from 'node:child_process';
 
 const BIN = process.env.DESIGNER_AGENT_BROWSER_BIN || 'agent-browser';
 const DEFAULT_SESSION = process.env.DESIGNER_SESSION_NAME || 'designer';
-const CDP = process.env.DESIGNER_CDP || '';
+// Default to the dedicated debug Chrome on :9222. Without this, callers that
+// don't export DESIGNER_CDP (e.g. codex shelling `designer` directly) silently
+// fall through to AGENT_BROWSER_SESSION_NAME mode and agent-browser launches
+// its own Chromium instead of attaching to the user's live signed-in Chrome.
+// Set DESIGNER_CDP='' explicitly to opt out and use the session-managed flow.
+const CDP = process.env.DESIGNER_CDP ?? '9222';
 
 export interface CreateBrowserOptions {
   session?: string;

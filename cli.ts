@@ -560,9 +560,6 @@ async function checkAgentBrowser(): Promise<DoctorCheck> {
 
 async function checkCdp(): Promise<DoctorCheck> {
   const port = process.env.DESIGNER_CDP || '9222';
-  if (!process.env.DESIGNER_CDP) {
-    return { name: `CDP at port ${port}`, status: 'warn', detail: 'DESIGNER_CDP not set; defaulting to 9222. export DESIGNER_CDP=9222 to silence.' };
-  }
   try {
     const res = await fetch(`http://127.0.0.1:${port}/json/version`);
     if (!res.ok) return { name: `CDP at port ${port}`, status: 'fail', detail: `HTTP ${res.status}` };
