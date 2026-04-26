@@ -538,17 +538,19 @@ export class DesignerController {
     ).catch(() => null);
     await new Promise((r) => setTimeout(r, 600));
 
-    const result = await this.browser.evalValue<{ files: string[]; folders: string[] }>(
+    const result = await this.browser.evalValue<{ files: string[]; folders: string[]; designFilesLabelVisible: boolean }>(
       `(() => {
         // Walk all text nodes — Claude's file panel wraps filenames in styled-
         // component <div>s whose class hashes change across deploys. Tag-based
         // scraping misses them; text-node walking is resilient.
         const seen = new Set();
         const files = [];
+        let designFilesLabelVisible = false;
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
         let node;
         while ((node = walker.nextNode())) {
           const t = (node.textContent || '').trim();
+          if (t === 'Design Files') designFilesLabelVisible = true;
           if (!/^[A-Za-z0-9 _.()\\-]+\\.(html|js|css|jsx|tsx|ts|md|json|svg)$/i.test(t)) continue;
           if (t.length > 80 || seen.has(t)) continue;
           seen.add(t);
@@ -566,14 +568,19 @@ export class DesignerController {
             folderSet.add(lines[0]);
           }
         }
-        return { files, folders: Array.from(folderSet) };
+        return { files, folders: Array.from(folderSet), designFilesLabelVisible };
       })()`
-    ).catch(() => ({ files: [] as string[], folders: [] as string[] }));
+    ).catch(() => ({ files: [] as string[], folders: [] as string[], designFilesLabelVisible: false }));
 
+    const files = Array.isArray(result.files) ? result.files : [];
+    const folders = Array.isArray(result.folders) ? result.folders : [];
+    // Empty rail under a visible "Design Files" label means we scraped the
+    // wrong tab or the panel didn't open — don't tell callers it's truth.
+    const emptyButLabelVisible = files.length === 0 && result.designFilesLabelVisible === true;
     return {
-      files: Array.isArray(result.files) ? result.files : [],
-      folders: Array.isArray(result.folders) ? result.folders : [],
-      authoritative: (result.folders?.length ?? 0) === 0
+      files,
+      folders,
+      authoritative: !emptyButLabelVisible && folders.length === 0
     };
   }
 
