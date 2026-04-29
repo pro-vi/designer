@@ -74,7 +74,8 @@ async function main(): Promise<void> {
       const res = await c.iterate(prompt, {
         file: flags.file as string | undefined,
         timeoutMs: flags.timeoutMs ? Number(flags.timeoutMs) : undefined,
-        stabilityMs: flags.stabilityMs ? Number(flags.stabilityMs) : undefined
+        stabilityMs: flags.stabilityMs ? Number(flags.stabilityMs) : undefined,
+        decisive: Boolean(flags.decisive)
       });
       if (res.url) console.log(`\nTaste here: ${res.url}\n`);
       console.log(JSON.stringify(res, null, 2));
@@ -359,12 +360,17 @@ Flags:
   --file <f.html>         switch to this file before prompting
   --timeoutMs <n>         default 20 minutes
   --stabilityMs <n>       default 4 seconds
+  --decisive              tell Claude not to stop on clarifying questions; pick defaults and proceed
 
 Output: prints 'Taste here: <url>' then JSON metadata (done, newFiles, htmlPath, screenshotPath,
 htmlHash, chatReply). HTML is written to disk (read htmlPath if needed); it's not inline.
 
 Auto-appended to every prompt: 'Keep all generated files at the project root; no subfolders.'
 Override by explicitly contradicting it in your prompt text.
+
+With --decisive, also append: 'If you would otherwise stop to ask clarifying questions, do not.
+Choose the most defensible answer for each axis yourself and proceed.' Use when you want Claude
+to commit to a direction instead of blocking on the clarifying-questions affordance.
 
 Examples:
   designer prompt "add a Remember-me checkbox" --key feat-x

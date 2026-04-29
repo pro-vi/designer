@@ -52,6 +52,11 @@ export interface SessionStatus {
   inSession: boolean;
   onHome: boolean;
   availableFiles: string[];
+  // True when the latest turn is Claude punting with the "Claude has some questions →"
+  // teaser. The questions UI itself is ephemeral — it disappears on refresh and has no
+  // stable DOM contract — so we don't try to scrape and answer them. Caller should
+  // surface this to a human, or re-prompt with `decisive: true` to bypass.
+  awaitingClarification: boolean;
 }
 
 export type FailureMode = null | 'timeout' | 'unstable' | 'no_change';
@@ -105,6 +110,8 @@ const DESIGN_HOME = 'https://claude.ai/design';
 // want nested layouts should explicitly contradict this in their prompt and
 // rely on `designer_handoff` for authoritative file access.
 const FLAT_LAYOUT_SUFFIX = '\n\nFile layout: keep all generated files at the project root. No subfolders.';
+const DECISIVE_SUFFIX =
+  '\n\nIf you would otherwise stop to ask clarifying questions, do not. Choose the most defensible answer for each axis yourself and proceed. Note your assumption in a one-line `<!-- assumed: ... -->` comment at the top of the relevant file so I can override on the next turn.';
 
 function loadSelectors(): Selectors {
   const base = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'selectors.json'), 'utf8')) as Selectors;
@@ -159,14 +166,28 @@ export class DesignerController {
     const url = await this.currentUrl();
     const inSession = /\/design\/p\/[a-f0-9-]+/i.test(url);
     const availableFiles = inSession ? await this.listFiles().catch(() => []) : [];
+    const awaitingClarification = inSession ? await this.detectAwaitingClarification() : false;
     return {
       key: this.key,
       stored,
       currentUrl: url,
       inSession,
       onHome: /\/design\/?$/.test(url) || url.endsWith('/design'),
-      availableFiles
+      availableFiles,
+      awaitingClarification
     };
+  }
+
+  // Heuristic only. The questions popover is ephemeral, but the teaser text stays
+  // in the chat turn body. If the most recent turn is from Claude and contains the
+  // teaser, treat the session as blocked on a clarification. Returns false if the
+  // page is mid-stream (we'd race the textnode walk against React's commit phase).
+  private async detectAwaitingClarification(): Promise<boolean> {
+    const turns = await this.getChatTurns().catch(() => [] as ChatTurn[]);
+    if (turns.length === 0) return false;
+    const last = turns[turns.length - 1];
+    if (!last || last.role !== 'assistant') return false;
+    return /Claude has some questions/i.test(last.text);
   }
 
   async session({
@@ -331,12 +352,13 @@ export class DesignerController {
     );
   }
 
-  async sendPrompt(prompt: string): Promise<{ ok: true }> {
+  async sendPrompt(prompt: string, { decisive = false }: { decisive?: boolean } = {}): Promise<{ ok: true }> {
     const before = await this.fetchServedHtml();
     this._preSendHtml = before.html;
-    const effective = prompt + FLAT_LAYOUT_SUFFIX;
+    const effective = prompt + FLAT_LAYOUT_SUFFIX + (decisive ? DECISIVE_SUFFIX : '');
     await this._submitPrompt(effective);
-    appendHistory(this.key, { kind: 'prompt', prompt, suffixApplied: 'flat_layout' });
+    const suffixApplied = decisive ? 'flat_layout+decisive' : 'flat_layout';
+    appendHistory(this.key, { kind: 'prompt', prompt, suffixApplied });
     return { ok: true };
   }
 
@@ -421,7 +443,7 @@ export class DesignerController {
 
   async iterate(
     prompt: string,
-    { file, timeoutMs, stabilityMs }: { file?: string; timeoutMs?: number; stabilityMs?: number } = {}
+    { file, timeoutMs, stabilityMs, decisive }: { file?: string; timeoutMs?: number; stabilityMs?: number; decisive?: boolean } = {}
   ): Promise<IterateResult> {
     await this._ensureInSession();
     if (file) await this.openFile(file);
@@ -429,7 +451,7 @@ export class DesignerController {
     const preFiles = await this.listFiles().catch((): string[] => []);
     const preChatCount = (await this.getChatTurns()).length;
 
-    await this.sendPrompt(prompt);
+    await this.sendPrompt(prompt, { decisive });
     const done = await this.waitForGenerationDone({ timeoutMs, stabilityMs });
 
     const postFiles = await this.listFiles().catch((): string[] => []);

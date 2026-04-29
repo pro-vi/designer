@@ -50,11 +50,17 @@ server.registerTool(
       prompt: z.string(),
       file: z.string().optional().describe('Switch to this file before sending (targets the prompt at it).'),
       timeoutMs: z.number().optional().describe('Default 20m. Hi-fi generations can take 15+ min; bump this for complex multi-variant prompts.'),
-      stabilityMs: z.number().optional().describe('Default 4s.')
+      stabilityMs: z.number().optional().describe('Default 4s.'),
+      decisive: z
+        .boolean()
+        .optional()
+        .describe(
+          "Append a 'do not stop to ask clarifying questions' instruction. Use when you want Claude to commit to a direction (pick defensible defaults itself, document the assumption inline) instead of blocking on the ephemeral clarifying-questions affordance — which disappears on refresh and has no stable DOM contract to scrape."
+        )
     }
   },
-  async ({ key, prompt, file, timeoutMs, stabilityMs }) =>
-    textResult(await getController(key).iterate(prompt, { file, timeoutMs, stabilityMs }))
+  async ({ key, prompt, file, timeoutMs, stabilityMs, decisive }) =>
+    textResult(await getController(key).iterate(prompt, { file, timeoutMs, stabilityMs, decisive }))
 );
 
 server.registerTool(
