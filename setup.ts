@@ -182,11 +182,11 @@ async function step4SignIn(port: string): Promise<boolean> {
     log('login', 'ok', `Signed in. Tab on ${tab.url.replace(/\?.*$/, '')}`);
     return true;
   }
-  log('login', 'wait', 'Sign in to Claude in the debug Chrome window I just opened, then navigate to claude.ai/design. I am polling.');
+  log('login', 'wait', 'Sign in to Claude in the DEBUG Chrome window I just opened (it is a separate window with no extensions/bookmarks — NOT your normal Chrome; the two have separate cookie jars). Then navigate to claude.ai/design. I am polling.');
   const ok = await pollUntil('login', async () => (await getDesignTab(port)) !== null, {
     intervalMs: 2000,
     timeoutMs: 10 * 60_000,
-    reminder: 'Still waiting for a tab on claude.ai/design (not on /login).',
+    reminder: 'Still waiting for a tab on claude.ai/design in the debug window (signing into your normal Chrome will not help — different profile).',
     hint60s: "If Chrome shows a Google 'new device' or 2FA prompt, complete that first — setup is waiting on you."
   });
   if (!ok) {

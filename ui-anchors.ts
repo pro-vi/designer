@@ -111,7 +111,12 @@ export const UI_ANCHORS: AnchorDef[] = [
     category: 'session',
     description: 'html-viewer-iframe (design preview)',
     requires: 'session',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="html-viewer-iframe"]') })
+    check: async (b, url) => {
+      // The iframe only renders when a file is open. Without ?file= in the URL,
+      // its absence is expected, not a regression.
+      if (!/[?&]file=/.test(url)) return { ok: true, detail: '(no file open — iframe not expected)' };
+      return { ok: await hasSelector(b, '[data-testid="html-viewer-iframe"]') };
+    }
   },
   {
     id: 'session.chatMessages',
@@ -125,11 +130,12 @@ export const UI_ANCHORS: AnchorDef[] = [
     category: 'pattern',
     description: 'iframe src is claudeusercontent.com with signed ?t= token',
     requires: 'session',
-    check: async (b) => {
+    check: async (b, url) => {
+      if (!/[?&]file=/.test(url)) return { ok: true, detail: '(no file open — iframe not expected)' };
       const src = await b.evalValue<string>(
         `(() => { const el = document.querySelector('[data-testid="html-viewer-iframe"]'); return (el && el.src) || ''; })()`
       ).catch(() => '');
-      if (!src) return { ok: false, detail: 'no iframe src (is a file open?)' };
+      if (!src) return { ok: false, detail: 'file param present but iframe missing src' };
       const ok = /claudeusercontent\.com/.test(src) && /[?&]t=/.test(src);
       return { ok, detail: ok ? undefined : `src=${src.slice(0, 120)}...` };
     }
@@ -226,7 +232,10 @@ export const UI_ANCHORS: AnchorDef[] = [
       }
       const match = url.match(/[?&]file=([^&]+)/);
       if (match && match[1]) {
-        const activeFile = decodeURIComponent(match[1]);
+        // Claude Design's URL bar form-encodes spaces as '+'. decodeURIComponent
+        // only handles %xx, so normalize '+' → ' ' first before comparing
+        // against the scraper's text-node output (which uses real spaces).
+        const activeFile = decodeURIComponent(match[1].replace(/\+/g, ' '));
         if (!files.includes(activeFile)) {
           return {
             ok: false,

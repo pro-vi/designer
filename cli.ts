@@ -584,14 +584,36 @@ async function checkOnDesignSurface(): Promise<DoctorCheck> {
   const port = process.env.DESIGNER_CDP || '9222';
   try {
     const res = await fetch(`http://127.0.0.1:${port}/json/list`);
-    if (!res.ok) return { name: 'logged into claude.ai/design', status: 'fail', detail: `HTTP ${res.status}` };
+    if (!res.ok) {
+      return {
+        name: 'claude.ai/design tab',
+        status: 'fail',
+        detail: `CDP HTTP ${res.status} — debug Chrome may have died. Run \`designer setup\` to relaunch it.`
+      };
+    }
     const tabs = await res.json() as Array<{ url?: string; title?: string }>;
     const onDesign = tabs.find((t) => t.url && /claude\.ai\/design/.test(t.url));
-    if (!onDesign) return { name: 'logged into claude.ai/design', status: 'warn', detail: 'no tab on claude.ai/design — sign in and navigate there in the debug Chrome window' };
-    if (/login|sign in/i.test(onDesign.title || '')) return { name: 'logged into claude.ai/design', status: 'fail', detail: 'on a login page; sign in inside the debug Chrome window' };
-    return { name: 'logged into claude.ai/design', status: 'ok', detail: onDesign.url };
+    if (!onDesign) {
+      return {
+        name: 'claude.ai/design tab',
+        status: 'warn',
+        detail: 'no tab on claude.ai/design in the debug Chrome window. Open https://claude.ai/design THERE (not in your normal Chrome — they are separate profiles with separate cookies).'
+      };
+    }
+    if (/login|sign in/i.test(onDesign.title || '')) {
+      return {
+        name: 'signed in to claude.ai/design',
+        status: 'fail',
+        detail: 'on a login page. Sign in INSIDE the debug Chrome window (not your normal Chrome — that profile is signed in but its cookies are not shared).'
+      };
+    }
+    return { name: 'signed in to claude.ai/design', status: 'ok', detail: onDesign.url };
   } catch {
-    return { name: 'logged into claude.ai/design', status: 'fail', detail: 'CDP not reachable; fix CDP first' };
+    return {
+      name: 'claude.ai/design tab',
+      status: 'fail',
+      detail: 'debug Chrome unreachable. Run `designer setup` to launch it.'
+    };
   }
 }
 
