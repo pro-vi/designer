@@ -1,17 +1,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
+import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
+import crossSpawn from 'cross-spawn';
 
 export const IS_WIN = process.platform === 'win32';
 export const IS_MAC = process.platform === 'darwin';
 
-// On Windows, npm-installed CLIs are `.cmd`/`.ps1` shims that `spawn` cannot
-// resolve without `shell: true`. On macOS/Linux they are real executables.
-// Use this for commands that come from npm (npm, agent-browser, claude, etc.)
-// or system tools that may not be on PATH as a real binary on Windows.
-export function shimSpawnOpts<T extends SpawnOptions | SpawnSyncOptions>(opts: T = {} as T): T {
-  return IS_WIN ? ({ ...opts, shell: true } as T) : opts;
-}
+// Drop-in replacements for `child_process.spawn` / `spawnSync`.
+//
+// On Windows, npm-installed CLIs are `<name>.cmd` shims (sometimes `.ps1`)
+// that Node ≥ 21 refuses to spawn directly (security policy: `EINVAL`), and
+// that misbehave under `shell: true` when args contain shell metacharacters
+// (parens, quotes, redirects — common in JS code passed to `agent-browser eval`).
+//
+// `cross-spawn` resolves shim paths and invokes them via `cmd /c` with proper
+// argv quoting. Used by 100M+ npm packages; this is the standard fix.
+//
+// On macOS/Linux it's a passthrough to `child_process` — no behavior change.
+export const xspawn = crossSpawn;
+export const xspawnSync = crossSpawn.sync;
 
 // Returns the `which` / `where` command name for the current OS.
 export const WHICH = IS_WIN ? 'where' : 'which';
@@ -28,7 +35,6 @@ export function defaultChromeBin(): string {
     return candidates[0] ?? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
   }
   if (IS_MAC) return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-  // Linux defaults
   for (const c of ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser']) {
     if (fs.existsSync(c)) return c;
   }
@@ -36,23 +42,18 @@ export function defaultChromeBin(): string {
 }
 
 // Cross-platform "is a non-debug Chrome currently running?" check.
-// Used to refuse auto-launching debug Chrome when it would either no-op or
-// fight with an existing user session.
 export function isChromeRunning(): boolean {
   if (IS_WIN) {
-    // tasklist is shipped with Windows. /FI filters by image name; /NH suppresses headers.
-    const r = spawnSync('tasklist', ['/FI', 'IMAGENAME eq chrome.exe', '/NH', '/FO', 'CSV'], shimSpawnOpts({ stdio: 'pipe' }));
+    const r = nodeSpawnSync('tasklist', ['/FI', 'IMAGENAME eq chrome.exe', '/NH', '/FO', 'CSV'], { stdio: 'pipe' });
     if (r.status !== 0) return false;
     const out = r.stdout?.toString() || '';
-    // tasklist prints "INFO: No tasks..." on stdout when nothing matches.
     return out.toLowerCase().includes('chrome.exe');
   }
   if (IS_MAC) {
-    const r = spawnSync('pgrep', ['-f', 'Google Chrome.app/Contents/MacOS/Google Chrome'], { stdio: 'pipe' });
+    const r = nodeSpawnSync('pgrep', ['-f', 'Google Chrome.app/Contents/MacOS/Google Chrome'], { stdio: 'pipe' });
     return r.status === 0 && (r.stdout?.toString().trim().length ?? 0) > 0;
   }
-  // Linux
-  const r = spawnSync('pgrep', ['-f', 'chrome'], { stdio: 'pipe' });
+  const r = nodeSpawnSync('pgrep', ['-f', 'chrome'], { stdio: 'pipe' });
   return r.status === 0 && (r.stdout?.toString().trim().length ?? 0) > 0;
 }
 
@@ -62,3 +63,7 @@ export const QUIT_CHROME_HINT = IS_WIN
   : IS_MAC
     ? 'Cmd+Q on the Chrome menu, then close Activity Monitor entries if any.'
     : 'Close all Chrome windows or `pkill chrome`.';
+
+// Re-export node's native spawn for callers that explicitly need it
+// (e.g. spawning Chrome itself, where path is fully resolved already).
+export { nodeSpawn, nodeSpawnSync };

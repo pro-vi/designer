@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { xspawn } from './cross-platform.ts';
 
 const BIN = process.env.DESIGNER_AGENT_BROWSER_BIN || 'agent-browser';
 const DEFAULT_SESSION = process.env.DESIGNER_SESSION_NAME || 'designer';
@@ -80,11 +80,11 @@ export function createBrowser({
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const finalArgs = [...connectFlags(), ...args];
-      const child = spawn(BIN, finalArgs, { env: baseEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = xspawn(BIN, finalArgs, { env: baseEnv, stdio: ['pipe', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
-      child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
-      child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+      child.stdout!.on('data', (d: Buffer) => (stdout += d.toString()));
+      child.stderr!.on('data', (d: Buffer) => (stderr += d.toString()));
       child.on('error', (err: Error) => reject(err));
       child.on('close', (code: number | null) => {
         if (code !== 0) {
@@ -100,8 +100,8 @@ export function createBrowser({
         }
       });
       if (input != null) {
-        child.stdin.write(input);
-        child.stdin.end();
+        child.stdin!.write(input);
+        child.stdin!.end();
       }
     });
   }
@@ -152,9 +152,14 @@ export function createBrowser({
       if (full) args.push('--full');
       return run(args);
     },
-    eval: (js) => run(['eval', js]),
+    // Pipe JS via stdin (agent-browser's `--stdin` flag) instead of argv.
+    // Argv-passed JS gets mangled by every shell layer (parens, quotes,
+    // newlines all suffer) — most painfully on Windows where cmd.exe
+    // doesn't preserve multiline strings — but this is the correct cross-
+    // platform path: no escaping required, JS goes through verbatim.
+    eval: (js) => run(['eval', '--stdin'], { input: js }),
     evalValue: async <T = unknown>(js: string): Promise<T> => {
-      const out = await run(['eval', js]);
+      const out = await run(['eval', '--stdin'], { input: js });
       try {
         return JSON.parse(out) as T;
       } catch (e) {

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { IS_WIN, IS_MAC, shimSpawnOpts } from './cross-platform.ts';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { IS_WIN, IS_MAC, xspawn, xspawnSync } from './cross-platform.ts';
 
 // Pick an available Python launcher for this OS.
 // Windows ships with `py` (the launcher) and may have `python` in PATH.
@@ -9,7 +9,7 @@ import { IS_WIN, IS_MAC, shimSpawnOpts } from './cross-platform.ts';
 function findPython(): string | null {
   const candidates = IS_WIN ? ['py', 'python', 'python3'] : ['python3', 'python'];
   for (const c of candidates) {
-    const r = spawnSync(c, ['--version'], shimSpawnOpts({ stdio: 'pipe' }));
+    const r = xspawnSync(c, ['--version'], { stdio: 'pipe' });
     if (r.status === 0) return c;
   }
   return null;
@@ -134,11 +134,11 @@ export async function serveAndOpen(
   if (!python) {
     throw new Error('tasting requires Python 3. Install python3 (macOS/Linux) or Python 3 from python.org (Windows).');
   }
-  const child: ChildProcess = spawn(python, ['-m', 'http.server', String(chosenPort)], shimSpawnOpts({
+  const child: ChildProcess = xspawn(python, ['-m', 'http.server', String(chosenPort)], {
     cwd: projectDir,
     stdio: 'ignore',
     detached: true
-  }));
+  });
   child.unref();
   await sleep(500);
   const url = `http://127.0.0.1:${chosenPort}/${encodeURI(file)}`;

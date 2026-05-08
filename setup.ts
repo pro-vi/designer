@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { REPO_ROOT } from './repo-root.ts';
-import { defaultChromeBin, isChromeRunning, shimSpawnOpts, WHICH, IS_WIN, QUIT_CHROME_HINT } from './cross-platform.ts';
+import { defaultChromeBin, isChromeRunning, xspawnSync, WHICH, IS_WIN, QUIT_CHROME_HINT } from './cross-platform.ts';
 
 const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
 const SKILL_DEST_DIR = path.join(os.homedir(), '.claude', 'skills', 'designer-loop');
@@ -117,7 +117,7 @@ async function step1NpmInstall(): Promise<boolean> {
   } else {
     log('deps', 'wait', 'running npm install...');
   }
-  const r = spawnSync('npm', ['install'], shimSpawnOpts({ cwd: REPO_ROOT, stdio: 'inherit' }));
+  const r = xspawnSync('npm', ['install'], { cwd: REPO_ROOT, stdio: 'inherit' });
   if (r.status !== 0) {
     log('deps', 'fail', `npm install exited ${r.status}`);
     return false;
@@ -127,7 +127,7 @@ async function step1NpmInstall(): Promise<boolean> {
 }
 
 function step2AgentBrowser(): boolean {
-  const r = spawnSync('agent-browser', ['--version'], shimSpawnOpts({ stdio: 'pipe' }));
+  const r = xspawnSync('agent-browser', ['--version'], { stdio: 'pipe' });
   if (r.status !== 0) {
     log('agent-browser', 'fail', 'not found on PATH. Install: npm i -g agent-browser');
     return false;
@@ -220,12 +220,12 @@ function step5Skill(): boolean {
 }
 
 function step6Mcp(port: string): boolean {
-  const claudeBin = spawnSync(WHICH, ['claude'], shimSpawnOpts({ stdio: 'pipe' }));
+  const claudeBin = xspawnSync(WHICH, ['claude'], { stdio: 'pipe' });
   if (claudeBin.status !== 0) {
     log('mcp', 'wait', 'claude CLI not on PATH; skipping MCP registration. Install Claude Code to register.');
     return true;
   }
-  const list = spawnSync('claude', ['mcp', 'list'], shimSpawnOpts({ stdio: 'pipe' }));
+  const list = xspawnSync('claude', ['mcp', 'list'], { stdio: 'pipe' });
   const stdout = list.stdout?.toString() || '';
   if (/(\s|^)designer\b/i.test(stdout)) {
     log('mcp', 'ok', 'Already registered.');
@@ -242,7 +242,7 @@ function step6Mcp(port: string): boolean {
   const envFlags = port === '9222' ? [] : ['-e', `DESIGNER_CDP=${port}`];
   const cmd = ['mcp', 'add', '--scope', 'user', '--transport', 'stdio', ...envFlags, 'designer', '--', 'designer', 'mcp', 'serve'];
   log('mcp', 'wait', `Registering: claude ${cmd.join(' ')}`);
-  const reg = spawnSync('claude', cmd, shimSpawnOpts({ stdio: 'inherit' }));
+  const reg = xspawnSync('claude', cmd, { stdio: 'inherit' });
   if (reg.status !== 0) {
     log('mcp', 'fail', `claude mcp add exited ${reg.status}. Run manually:\n   claude ${cmd.join(' ')}`);
     return false;
