@@ -1,6 +1,32 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { IS_WIN, IS_MAC, shimSpawnOpts } from './cross-platform.ts';
+
+// Pick an available Python launcher for this OS.
+// Windows ships with `py` (the launcher) and may have `python` in PATH.
+// macOS/Linux typically have `python3`.
+function findPython(): string | null {
+  const candidates = IS_WIN ? ['py', 'python', 'python3'] : ['python3', 'python'];
+  for (const c of candidates) {
+    const r = spawnSync(c, ['--version'], shimSpawnOpts({ stdio: 'pipe' }));
+    if (r.status === 0) return c;
+  }
+  return null;
+}
+
+// Cross-platform "open this URL in the user's default browser".
+function openUrl(url: string): void {
+  if (IS_WIN) {
+    // `start` is a cmd built-in, not an exe — needs shell. The empty "" is the
+    // window title positional that `start` consumes when the next arg is quoted.
+    spawn('cmd', ['/c', 'start', '""', url], { stdio: 'ignore', detached: true }).unref();
+  } else if (IS_MAC) {
+    spawn('open', [url], { stdio: 'ignore', detached: true }).unref();
+  } else {
+    spawn('xdg-open', [url], { stdio: 'ignore', detached: true }).unref();
+  }
+}
 
 export interface TastingOptions {
   projectDir: string;
@@ -104,15 +130,19 @@ export async function serveAndOpen(
   { file = 'tasting.html', port }: { file?: string; port?: number } = {}
 ): Promise<{ url: string; port: number; pid: number }> {
   const chosenPort = port || (await pickFreePort(8765));
-  const child: ChildProcess = spawn('python3', ['-m', 'http.server', String(chosenPort)], {
+  const python = findPython();
+  if (!python) {
+    throw new Error('tasting requires Python 3. Install python3 (macOS/Linux) or Python 3 from python.org (Windows).');
+  }
+  const child: ChildProcess = spawn(python, ['-m', 'http.server', String(chosenPort)], shimSpawnOpts({
     cwd: projectDir,
     stdio: 'ignore',
     detached: true
-  });
+  }));
   child.unref();
   await sleep(500);
   const url = `http://127.0.0.1:${chosenPort}/${encodeURI(file)}`;
-  spawn('open', [url], { stdio: 'ignore', detached: true }).unref();
+  openUrl(url);
   const pid = child.pid ?? -1;
   servers.set(projectDir, { port: chosenPort, pid });
   return { url, port: chosenPort, pid };

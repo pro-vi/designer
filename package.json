@@ -23,7 +23,7 @@
     "anthropic"
   ],
   "bin": {
-    "designer": "./bin/designer"
+    "designer": "./bin/designer.mjs"
   },
   "scripts": {
     "mcp": "tsx mcp-server.ts",
@@ -53,6 +53,7 @@
     "bin/",
     "skills/",
     "scripts/designer-chrome.sh",
+    "scripts/designer-chrome.ps1",
     "scripts/postinstall.mjs",
     "selectors.json",
     "README.md",

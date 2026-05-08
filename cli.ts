@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { shimSpawnOpts, WHICH, IS_WIN } from './cross-platform.ts';
 import { DesignerController } from './designer-controller.ts';
 import { listSessions, getSession } from './session-store.ts';
 import { createBrowser } from './browser.ts';
@@ -556,7 +557,7 @@ function checkDeps(): DoctorCheck {
 
 async function checkAgentBrowser(): Promise<DoctorCheck> {
   return new Promise((resolve) => {
-    const c = spawn('agent-browser', ['--version'], { stdio: 'pipe' });
+    const c = spawn('agent-browser', ['--version'], shimSpawnOpts({ stdio: 'pipe' }));
     let v = '';
     c.stdout.on('data', (d: Buffer) => (v += d.toString()));
     c.on('error', () => resolve({ name: 'agent-browser installed', status: 'fail', detail: 'binary not found on PATH; install from https://github.com/agent-browser/agent-browser' }));
@@ -575,7 +576,7 @@ async function checkCdp(): Promise<DoctorCheck> {
     return {
       name: `CDP at port ${port}`,
       status: 'fail',
-      detail: `not reachable. Run: ./scripts/designer-chrome.sh (launches Chrome with --remote-debugging-port=${port} in a dedicated profile)`
+      detail: `not reachable. Run: ${IS_WIN ? 'powershell scripts\\designer-chrome.ps1' : './scripts/designer-chrome.sh'} (launches Chrome with --remote-debugging-port=${port} in a dedicated profile)`
     };
   }
 }
@@ -620,11 +621,11 @@ function checkSkillInstalled(): DoctorCheck {
 }
 
 async function checkMcpRegistered(): Promise<DoctorCheck> {
-  const which = spawnSync('which', ['claude'], { stdio: 'pipe' });
+  const which = spawnSync(WHICH, ['claude'], shimSpawnOpts({ stdio: 'pipe' }));
   if (which.status !== 0) {
     return { name: 'MCP registered with Claude Code', status: 'warn', detail: 'claude CLI not on PATH; install Claude Code to verify' };
   }
-  const list = spawnSync('claude', ['mcp', 'list'], { stdio: 'pipe' });
+  const list = spawnSync('claude', ['mcp', 'list'], shimSpawnOpts({ stdio: 'pipe' }));
   if (list.status !== 0) {
     return { name: 'MCP registered with Claude Code', status: 'fail', detail: `\`claude mcp list\` exited ${list.status}` };
   }
