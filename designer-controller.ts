@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { xspawn } from './cross-platform.ts';
 import { createBrowser, type Browser } from './browser.ts';
 import { sessionDir, saveIteration, type IterationRecord } from './artifact-store.ts';
 import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
@@ -748,9 +748,9 @@ export class DesignerController {
     fs.writeFileSync(tgzPath, buf);
 
     await new Promise<void>((resolve, reject) => {
-      const child = spawn('tar', ['-xzf', tgzPath, '-C', bundleDir], { stdio: 'pipe' });
+      const child = xspawn('tar', ['-xzf', tgzPath, '-C', bundleDir], { stdio: 'pipe' });
       let err = '';
-      child.stderr.on('data', (d: Buffer) => (err += d.toString()));
+      child.stderr!.on('data', (d: Buffer) => (err += d.toString()));
       child.on('close', (code: number | null) =>
         code === 0 ? resolve() : reject(new Error(`tar exited ${code}: ${err}`))
       );

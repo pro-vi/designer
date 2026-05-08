@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { defaultChromeBin, isChromeRunning, QUIT_CHROME_HINT } from './cross-platform.ts';
 
 const PORT = process.env.DESIGNER_CDP || '9222';
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
-const CHROME_BIN = process.env.CHROME_BIN || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME_BIN = process.env.CHROME_BIN || defaultChromeBin();
 
 async function isCdpUp(): Promise<boolean> {
   try {
@@ -14,11 +15,6 @@ async function isCdpUp(): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function chromeRunning(): boolean {
-  const r = spawnSync('pgrep', ['-f', 'Google Chrome.app/Contents/MacOS/Google Chrome'], { stdio: 'pipe' });
-  return r.status === 0 && (r.stdout?.toString().trim().length ?? 0) > 0;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -40,9 +36,9 @@ export async function ensureCdpUp(): Promise<void> {
     );
   }
 
-  if (chromeRunning()) {
+  if (isChromeRunning()) {
     throw new Error(
-      `CDP not up on :${PORT} and a non-debug Chrome is already running. Quit Chrome (Cmd+Q) and retry, or run: designer setup`
+      `CDP not up on :${PORT} and a non-debug Chrome is already running. ${QUIT_CHROME_HINT} Then retry, or run: designer setup`
     );
   }
 
