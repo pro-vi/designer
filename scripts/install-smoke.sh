@@ -22,11 +22,19 @@ TARBALL="$(npm pack --silent | tail -n1)"
 mv "$TARBALL" "$WORK_HOST/$TARBALL"
 echo "[smoke] Tarball: $WORK_HOST/$TARBALL"
 
-# The pre-pack hook (prepublishOnly: tsc check + build) must have populated
-# dist/. Validate before we hand the bytes to Docker — failing here gives a
-# clearer error than a downstream "cannot find module" inside the container.
-if ! tar tzf "$WORK_HOST/$TARBALL" | grep -q '^package/dist/cli\.js$'; then
+# The pre-pack hook (prepack: tsc check + build) must have populated dist/.
+# Validate before we hand the bytes to Docker — failing here gives a clearer
+# error than a downstream "cannot find module" inside the container.
+#
+# We capture tar's output to a file rather than piping into grep -q, because
+# `set -o pipefail` + grep -q's early exit causes SIGPIPE on tar, which makes
+# the pipeline look like a failure even on a successful match.
+TAR_LIST="$WORK_HOST/tar-list.txt"
+tar tzf "$WORK_HOST/$TARBALL" > "$TAR_LIST"
+if ! grep -q '^package/dist/cli\.js$' "$TAR_LIST"; then
   echo "[smoke] FAIL: dist/cli.js missing from tarball. Did 'npm run build' succeed?" >&2
+  echo "[smoke] tarball contents:" >&2
+  sed 's/^/  /' "$TAR_LIST" >&2
   exit 1
 fi
 
