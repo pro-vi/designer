@@ -1,38 +1,70 @@
 name: dependabot-automerge
 
-on:
-  pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review]
+# Triggered when CI completes — that way we KNOW whether the PR is green
+# before deciding to merge, rather than calling `gh pr merge --auto` and
+# hoping branch protection enforces the gate. This keeps things safe even
+# if branch protection isn't set up yet.
+#
+# Still requires the repo settings:
+#   Settings → General → Pull Requests → "Allow auto-merge"
+#   Settings → Actions → Workflow permissions → "Allow Actions to create PRs"
 
-# Auto-merges patch + minor dependabot PRs after CI green. Major bumps need a
-# human eye on the changelog, so they're explicitly excluded.
-#
-# Requires repo settings:
-#   Settings → General → Pull Requests → "Allow auto-merge" enabled
-#   Branch protection on main → require status checks (ci / check, ci / smoke)
-#
-# pull_request_target gives us write access for `gh pr merge` even though the
-# PR is from the dependabot-bot user. Safe here because we only act on the
-# dependabot actor and inspect metadata, not run untrusted code.
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  automerge:
-    if: github.actor == 'dependabot[bot]'
+  evaluate:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect dependabot metadata
-        id: meta
-        uses: dependabot/fetch-metadata@v2
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Enable auto-merge for patch + minor
-        if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
-        run: gh pr merge --auto --squash "$PR_URL"
+      - name: Resolve PR + check label
+        id: gate
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # workflow_run carries the head_sha of the run; we look up the PR
+          # that head_sha belongs to and read dependabot's auto-applied
+          # `version-update:semver-*` label to decide major vs minor vs patch.
+          # We use labels rather than the dependabot/fetch-metadata action
+          # because that action needs pull_request event context, which
+          # workflow_run does not provide.
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR_JSON=$(gh pr list \
+            --repo "$REPO" \
+            --search "$HEAD_SHA" \
+            --state open \
+            --json number,headRefOid,labels)
+          PR_NUMBER=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .number" | head -n1)
+          if [ -z "$PR_NUMBER" ]; then
+            echo "no open PR for $HEAD_SHA — bailing"
+            exit 0
+          fi
+          LABELS=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .labels[].name")
+          UPDATE_TYPE=$(echo "$LABELS" | grep '^version-update:semver-' | head -n1 || true)
+          echo "PR #$PR_NUMBER labels: $UPDATE_TYPE"
+          if [ "$UPDATE_TYPE" = "version-update:semver-patch" ] || [ "$UPDATE_TYPE" = "version-update:semver-minor" ]; then
+            echo "merge=true" >> "$GITHUB_OUTPUT"
+            echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          else
+            echo "skipping (label=$UPDATE_TYPE)"
+          fi
+
+      - name: Squash-merge
+        if: steps.gate.outputs.merge == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge "${{ steps.gate.outputs.number }}" \
+            --repo "${{ github.repository }}" \
+            --squash \
+            --delete-branch
