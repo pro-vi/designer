@@ -81,6 +81,12 @@ jobs:
             health
             selectors-drift
           body: |
+            **Diagnostic PR — no CI runs on this.** PRs created with the
+            default `GITHUB_TOKEN` do not trigger downstream workflows; this
+            PR carries probe evidence for human review only. Do not merge it
+            into main without rebasing to attach a real CI run, or fix the
+            regression on a separate branch and let this PR close.
+
             Daily health probe failed against `claude.ai/design`.
 
             **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -93,7 +99,8 @@ jobs:
             1. Open `claude.ai/design` in your debug Chrome.
             2. Inspect the failing selectors (see `health.results[].id`).
             3. If Claude moved a button/data-testid: update `ui-anchors.ts` and
-               any consumer in `designer-controller.ts` / `selectors.json`.
+               any consumer in `designer-controller.ts` / `selectors.json` on
+               a fresh branch — that branch's CI will run.
             4. If the change is a real regression in the live UI: file upstream
                + bump the patch version when the workaround lands.
-            5. Merge or close this PR — the next green run will not reopen it.
+            5. Close this PR once the fix lands or once `chromeUrl` recovers.

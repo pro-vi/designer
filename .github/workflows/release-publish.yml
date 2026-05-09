@@ -28,9 +28,9 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
-      # prepublishOnly handles `npm run check && npm run build`, but we run
-      # them explicitly here so a failure surfaces in a named step rather than
-      # buried in npm publish's output.
+      # The package's prepack hook runs check + build during `npm publish`,
+      # but we run them explicitly here so a failure surfaces in a named step
+      # rather than buried in npm publish's output.
       - run: npm run check
       - run: npm run build
 

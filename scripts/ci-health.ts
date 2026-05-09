@@ -7,11 +7,16 @@
 // Output: artifacts/health/<YYYY-MM-DD>.json. Exit code 2 on any health fail.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createBrowser } from '../browser.ts';
 import { runHealth } from '../ui-anchors.ts';
 import { REPO_ROOT } from '../repo-root.ts';
+
+const CDP_PORT = process.env.DESIGNER_CDP || '9222';
+const CHROME_PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
+const CHROME_APP = '/Applications/Google Chrome.app';
 
 interface DoctorRun {
   exitCode: number;
@@ -44,6 +49,56 @@ function ensureDir(p: string): void {
   fs.mkdirSync(p, { recursive: true });
 }
 
+interface CdpStatus {
+  alive: boolean;
+  attemptedRestart: boolean;
+  detail: string;
+}
+
+async function pingCdp(): Promise<{ ok: boolean; detail: string }> {
+  // CDP exposes /json/version unauthenticated when --remote-debugging-port is
+  // bound. A 200 with a Browser field is the canonical "yes, we're alive".
+  // Use a short timeout — CDP either answers in <1s or it's not there.
+  try {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 2000);
+    const r = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`, { signal: ac.signal });
+    clearTimeout(t);
+    if (!r.ok) return { ok: false, detail: `HTTP ${r.status}` };
+    const j = await r.json().catch(() => null) as { Browser?: string } | null;
+    return { ok: !!j?.Browser, detail: j?.Browser || 'no Browser field' };
+  } catch (e) {
+    return { ok: false, detail: (e as Error).message };
+  }
+}
+
+async function ensureCdp(): Promise<CdpStatus> {
+  // Most likely failure mode at first daily run: Mac mini rebooted, debug
+  // Chrome not relaunched. Try a narrow restart — same flags `designer setup`
+  // would use, but without touching auth state. If still dead after one
+  // attempt, fail loud rather than chase deeper recovery.
+  const first = await pingCdp();
+  if (first.ok) return { alive: true, attemptedRestart: false, detail: first.detail };
+
+  console.log(`[ci-health] CDP unreachable on :${CDP_PORT} (${first.detail}) — attempting narrow Chrome relaunch`);
+  spawn('open', [
+    '-na',
+    CHROME_APP,
+    '--args',
+    `--remote-debugging-port=${CDP_PORT}`,
+    `--user-data-dir=${CHROME_PROFILE}`
+  ], { detached: true, stdio: 'ignore' }).unref();
+
+  // Chrome takes ~2-5s to bind the CDP port. Poll up to 15s.
+  for (let i = 0; i < 8; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const r = await pingCdp();
+    if (r.ok) return { alive: true, attemptedRestart: true, detail: r.detail };
+  }
+  const final = await pingCdp();
+  return { alive: false, attemptedRestart: true, detail: final.detail };
+}
+
 async function maybeSnapshot(): Promise<{ url: string; htmlBytes: number; screenshotPath?: string } | null> {
   // Only fired when health regressed — gives a human enough state to diagnose
   // a Claude Design selector drift without us having to ssh into the runner.
@@ -69,6 +124,29 @@ async function maybeSnapshot(): Promise<{ url: string; htmlBytes: number; screen
 
 async function main(): Promise<void> {
   const startedAt = new Date().toISOString();
+
+  // CDP must be alive before doctor or runHealth — both fail confusingly
+  // (timeouts, "browser is null") if Chrome never launched after reboot.
+  // Surface that failure mode explicitly with one shot at recovery.
+  const cdp = await ensureCdp();
+  if (!cdp.alive) {
+    const payload = {
+      ok: false,
+      generatedAt: startedAt,
+      finishedAt: new Date().toISOString(),
+      designerVersion: pkgVersion(),
+      reason: 'cdp-unreachable',
+      cdp,
+      hint: `Chrome with --remote-debugging-port=${CDP_PORT} could not be reached or relaunched. On the runner, run \`designer setup\` interactively to re-establish the session, then re-run this workflow.`
+    };
+    const outDir = path.join(REPO_ROOT, 'artifacts', 'health');
+    ensureDir(outDir);
+    fs.writeFileSync(path.join(outDir, `${todayUtc()}.json`), JSON.stringify(payload, null, 2));
+    console.error(`[ci-health] FAIL — CDP unreachable on :${CDP_PORT} (${cdp.detail}); restart attempted=${cdp.attemptedRestart}`);
+    process.exit(2);
+  }
+  console.log(`[ci-health] CDP alive — ${cdp.detail}${cdp.attemptedRestart ? ' (restarted)' : ''}`);
+
   const doctor = runDoctor();
 
   const browser = createBrowser({ session: 'designer-default' });

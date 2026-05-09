@@ -50,6 +50,7 @@
   "engines": {
     "node": ">=20"
   },
+  "os": ["darwin", "linux"],
   "files": [
     "dist/",
     "bin/",

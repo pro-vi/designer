@@ -59,12 +59,26 @@ jobs:
             echo "skipping (label=$UPDATE_TYPE)"
           fi
 
-      - name: Squash-merge
+      - name: Re-verify head + squash-merge
         if: steps.gate.outputs.merge == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PR_NUMBER: ${{ steps.gate.outputs.number }}
         run: |
-          gh pr merge "${{ steps.gate.outputs.number }}" \
-            --repo "${{ github.repository }}" \
+          # Race-condition guard: dependabot may have rebased the PR between
+          # CI completion and this step, advancing headRefOid past the SHA the
+          # green CI run actually validated. Re-read the PR right now and
+          # bail if the live head no longer matches HEAD_SHA. --match-head-commit
+          # adds the same protection at the merge API itself.
+          LIVE_HEAD=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          if [ "$LIVE_HEAD" != "$HEAD_SHA" ]; then
+            echo "PR #$PR_NUMBER head moved ($HEAD_SHA -> $LIVE_HEAD) since CI ran — skipping"
+            exit 0
+          fi
+          gh pr merge "$PR_NUMBER" \
+            --repo "$REPO" \
             --squash \
-            --delete-branch
+            --delete-branch \
+            --match-head-commit "$HEAD_SHA"

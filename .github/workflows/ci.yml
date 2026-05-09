@@ -40,7 +40,7 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci --no-audit --no-fund
-      # install-smoke.sh runs npm pack (which triggers prepublishOnly =
+      # install-smoke.sh runs npm pack (which triggers the prepack hook =
       # check + build) then installs the tarball into a stock node:20
       # container. ubuntu-latest already has docker available.
       - run: bash scripts/install-smoke.sh
