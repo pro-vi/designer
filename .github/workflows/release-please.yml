@@ -1,0 +1,30 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# release-please opens a single "release PR" against main that accumulates
+# every conventional-commit since the last tag. When the human merges that PR,
+# release-please cuts a tag + creates a GH release; that release event triggers
+# .github/workflows/release-publish.yml which runs `npm publish`.
+#
+# Why "open a PR, human merges" rather than auto-publish: dependency-bump-only
+# weeks shouldn't ship; the PR is the human's "yes, this is worth a version".
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          # release-type lives in release-please-config.json. Only the manifest
+          # paths and the token need to be wired here; both files default to the
+          # repo root names so we omit them for clarity.
+          token: ${{ secrets.GITHUB_TOKEN }}

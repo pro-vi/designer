@@ -1,0 +1,99 @@
+name: daily-health
+
+on:
+  schedule:
+    # 14:00 UTC = 07:00 PDT / 06:00 PST. Roughly the start of the user's day —
+    # a UI regression caught here lands as a PR they see with their first cup
+    # of coffee, before the day's design work would have hit it.
+    - cron: '0 14 * * *'
+  workflow_dispatch:
+    inputs:
+      open-pr-on-fail:
+        description: 'Open selectors-drift PR if health fails'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  health:
+    name: probe claude.ai/design UI anchors
+    # The auth-required UI probe needs the dedicated Chrome profile (Cloudflare-
+    # passed, signed into claude.ai). Datacenter runners can't replicate that, so
+    # we run on a self-hosted macOS runner the user installs once on their
+    # personal machine. Add the labels [self-hosted, macOS, designer-health]
+    # when configuring the runner.
+    runs-on: [self-hosted, macOS, designer-health]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The runner already has a node, but pinning it here keeps the Mac mini's
+      # global node version free to drift without breaking this job.
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run check
+
+      - name: Compute date stamp
+        id: stamp
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Run health probe
+        id: probe
+        run: npm run -s probe:health
+        continue-on-error: true
+
+      - name: Upload health artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-${{ github.run_id }}
+          path: artifacts/health/
+          retention-days: 30
+
+      - name: Open selectors-drift PR
+        if: steps.probe.outcome == 'failure' && (github.event_name != 'workflow_dispatch' || inputs.open-pr-on-fail)
+        uses: peter-evans/create-pull-request@v6
+        with:
+          # Keep this checked into the repo so a human can compare what the
+          # probe saw today vs what was expected. Branch name is stable per-day
+          # so re-runs of the same day update one PR.
+          branch: health/drift-${{ steps.stamp.outputs.date }}
+          base: main
+          add-paths: |
+            artifacts/health/**
+          title: 'chore(health): selector drift detected'
+          commit-message: 'chore(health): capture failing UI-anchor probe'
+          labels: |
+            health
+            selectors-drift
+          body: |
+            Daily health probe failed against `claude.ai/design`.
+
+            **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            **Artifact**: `health-${{ github.run_id }}` (attached to the run for 30 days)
+
+            The committed `artifacts/health/<date>.json` records every UI anchor
+            checked, which ones regressed, and a screenshot/HTML capture of the
+            page Chrome was on. To resolve:
+
+            1. Open `claude.ai/design` in your debug Chrome.
+            2. Inspect the failing selectors (see `health.results[].id`).
+            3. If Claude moved a button/data-testid: update `ui-anchors.ts` and
+               any consumer in `designer-controller.ts` / `selectors.json`.
+            4. If the change is a real regression in the live UI: file upstream
+               + bump the patch version when the workaround lands.
+            5. Merge or close this PR — the next green run will not reopen it.

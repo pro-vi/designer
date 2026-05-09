@@ -34,7 +34,9 @@
     "build": "tsc -p tsconfig.build.json",
     "prepublishOnly": "npm run check && npm run build",
     "postinstall": "node scripts/postinstall.mjs",
-    "probe": "tsx scripts/probe.ts"
+    "probe": "tsx scripts/probe.ts",
+    "probe:health": "tsx scripts/ci-health.ts",
+    "smoke": "bash scripts/install-smoke.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
