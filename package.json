@@ -32,7 +32,7 @@
     "doctor": "tsx cli.ts doctor",
     "check": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "prepublishOnly": "npm run check && npm run build",
+    "prepack": "npm run check && npm run build",
     "postinstall": "node scripts/postinstall.mjs",
     "probe": "tsx scripts/probe.ts",
     "probe:health": "tsx scripts/ci-health.ts",
