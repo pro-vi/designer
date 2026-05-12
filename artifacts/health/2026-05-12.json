@@ -1,0 +1,171 @@
+{
+  "ok": false,
+  "generatedAt": "2026-05-12T16:25:20.580Z",
+  "finishedAt": "2026-05-12T16:25:21.721Z",
+  "designerVersion": "0.3.6",
+  "chromeUrl": "about:blank",
+  "doctor": {
+    "exitCode": 0,
+    "stdout": "⚠ dependencies installed — node_modules stale (lockfile mismatch) — run `npm install`\n✓ agent-browser installed — agent-browser 0.27.0\n✓ CDP at port 9222 — Chrome/148.0.7778.97\n⚠ claude.ai/design tab — no tab on claude.ai/design in the debug Chrome window. Open https://claude.ai/design THERE (not in your normal Chrome — they are separate profiles with separate cookies).\n✓ selectors.json present\n✓ designer-loop skill installed — /Users/provi/.claude/skills/designer-loop → /Users/provi/Development/_setup/bootstrap/skills/shared/designer-loop\n⚠ MCP registered with Claude Code — claude CLI not on PATH; install Claude Code to verify\n",
+    "stderr": ""
+  },
+  "health": {
+    "ok": false,
+    "counts": {
+      "ok": 0,
+      "fail": 1,
+      "skip": 17
+    },
+    "results": [
+      {
+        "id": "home.creator",
+        "category": "home",
+        "description": "project-creator container",
+        "requires": "home",
+        "status": "skip",
+        "detail": "needs home state; current=other"
+      },
+      {
+        "id": "home.nameInput",
+        "category": "home",
+        "description": "project-name input",
+        "requires": "home",
+        "status": "skip",
+        "detail": "needs home state; current=other"
+      },
+      {
+        "id": "home.wireframeButton",
+        "category": "home",
+        "description": "Wireframe fidelity button",
+        "requires": "home",
+        "status": "skip",
+        "detail": "needs home state; current=other"
+      },
+      {
+        "id": "home.highFiButton",
+        "category": "home",
+        "description": "High fidelity button",
+        "requires": "home",
+        "status": "skip",
+        "detail": "needs home state; current=other"
+      },
+      {
+        "id": "home.createButton",
+        "category": "home",
+        "description": "create-project button",
+        "requires": "home",
+        "status": "skip",
+        "detail": "needs home state; current=other"
+      },
+      {
+        "id": "home.projectsList",
+        "category": "home",
+        "description": "projects-list container",
+        "requires": "home",
+        "status": "skip",
+        "detail": "needs home state; current=other"
+      },
+      {
+        "id": "home.projectCard",
+        "category": "home",
+        "description": "project-card (at least one)",
+        "requires": "home",
+        "status": "skip",
+        "detail": "needs home state; current=other"
+      },
+      {
+        "id": "session.promptTextarea",
+        "category": "session",
+        "description": "chat composer textarea",
+        "requires": "session",
+        "status": "skip",
+        "detail": "needs session state; current=other"
+      },
+      {
+        "id": "session.sendButton",
+        "category": "session",
+        "description": "send button",
+        "requires": "session",
+        "status": "skip",
+        "detail": "needs session state; current=other"
+      },
+      {
+        "id": "session.htmlViewerIframe",
+        "category": "session",
+        "description": "html-viewer-iframe (design preview)",
+        "requires": "session",
+        "status": "skip",
+        "detail": "needs session state; current=other"
+      },
+      {
+        "id": "session.chatMessages",
+        "category": "session",
+        "description": "chat-messages container",
+        "requires": "session",
+        "status": "skip",
+        "detail": "needs session state; current=other"
+      },
+      {
+        "id": "session.iframeSrcPattern",
+        "category": "pattern",
+        "description": "iframe src is claudeusercontent.com with signed ?t= token",
+        "requires": "session",
+        "status": "skip",
+        "detail": "needs session state; current=other"
+      },
+      {
+        "id": "session.chatTurnPrefix",
+        "category": "pattern",
+        "description": "chat turns prefixed with 'You\\n' / 'Claude\\n'",
+        "requires": "session",
+        "status": "skip",
+        "detail": "needs session state; current=other"
+      },
+      {
+        "id": "share.shareButton",
+        "category": "share",
+        "description": "Share button (opens the dropdown containing handoff/export actions)",
+        "requires": "session",
+        "status": "skip",
+        "detail": "needs session state; current=other"
+      },
+      {
+        "id": "share.handoffMenuItem",
+        "category": "share",
+        "description": "Handoff-to-Claude-Code menu item (inside Share dropdown)",
+        "requires": "session",
+        "status": "skip",
+        "detail": "needs session state; current=other"
+      },
+      {
+        "id": "pattern.sessionUrl",
+        "category": "pattern",
+        "description": "session URL matches /design/p/<uuid>",
+        "requires": "any",
+        "status": "fail",
+        "detail": "url=about:blank"
+      },
+      {
+        "id": "pattern.fileQueryParam",
+        "category": "pattern",
+        "description": "?file=<name> opens a specific file (URL-based file switching)",
+        "requires": "session",
+        "status": "skip",
+        "detail": "needs session state; current=other"
+      },
+      {
+        "id": "session.fileListScrape",
+        "category": "session",
+        "description": "filename text nodes detectable (listFiles scrape still works)",
+        "requires": "session",
+        "status": "skip",
+        "detail": "needs session state; current=other"
+      }
+    ]
+  },
+  "diagnostics": {
+    "url": "about:blank",
+    "htmlBytes": 39,
+    "screenshotPath": "artifacts/health/2026-05-12/page.png"
+  }
+}
