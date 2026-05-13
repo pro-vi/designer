@@ -10,13 +10,23 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { createBrowser } from '../browser.ts';
-import { runHealth } from '../ui-anchors.ts';
+import { createBrowser, type Browser } from '../browser.ts';
+import { runHealth, type ProbeResult } from '../ui-anchors.ts';
 import { REPO_ROOT } from '../repo-root.ts';
 
 const CDP_PORT = process.env.DESIGNER_CDP || '9222';
 const CHROME_PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
 const CHROME_APP = '/Applications/Google Chrome.app';
+
+// Two-phase probe targets. Home covers home.* anchors + any-state anchors;
+// session covers session.* / share.* anchors + any-state again (we concatenate
+// rather than dedup so a state-sensitive regression in either phase shows up
+// loudly). 15s adaptive wait — claude.ai/design's SPA usually paints in 2-4s;
+// 15s is the runner-cold-load ceiling before we proceed and let anchors fail.
+const HOME_URL = 'https://claude.ai/design';
+const HOME_READY_SEL = '[data-testid="project-creator"]';
+const SESSION_READY_SEL = '[data-testid="chat-composer-input"]';
+const BROWSER_TIMEOUT_MS = 15_000;
 
 interface DoctorRun {
   exitCode: number;
@@ -99,11 +109,25 @@ async function ensureCdp(): Promise<CdpStatus> {
   return { alive: false, attemptedRestart: true, detail: final.detail };
 }
 
-async function maybeSnapshot(): Promise<{ url: string; htmlBytes: number; screenshotPath?: string } | null> {
+async function adaptiveWait(browser: Browser, sel: string, label: string): Promise<void> {
+  // Wraps agent-browser `wait <selector>` (driven by AGENT_BROWSER_DEFAULT_TIMEOUT
+  // = BROWSER_TIMEOUT_MS). On timeout we log + proceed — downstream anchor
+  // checks will fail loudly with their own detail strings, which is more
+  // useful than aborting the whole run on a slow paint.
+  try {
+    await browser.waitFor(sel);
+  } catch (e) {
+    console.log(`[ci-health] ${label} ready-selector ${sel} not seen within ${BROWSER_TIMEOUT_MS}ms — proceeding (${(e as Error).message})`);
+  }
+}
+
+async function maybeSnapshot(browser: Browser): Promise<{ url: string; htmlBytes: number; screenshotPath?: string } | null> {
   // Only fired when health regressed — gives a human enough state to diagnose
   // a Claude Design selector drift without us having to ssh into the runner.
+  // In two-phase mode this captures whichever page Chrome ended on (session
+  // when probeUrl is set, home otherwise). Consult `health.results[].phase`
+  // to know which phase a specific failure came from.
   try {
-    const browser = createBrowser({ session: 'designer-default' });
     const url = (await browser.url().catch(() => '')) || '';
     const html = await browser.evalValue<string>('document.documentElement.outerHTML').catch(() => '');
     const dir = path.join(REPO_ROOT, 'artifacts', 'health', todayUtc());
@@ -149,39 +173,59 @@ async function main(): Promise<void> {
 
   const doctor = runDoctor();
 
-  const browser = createBrowser({ session: 'designer-default' });
+  const browser = createBrowser({ session: 'designer-default', timeoutMs: BROWSER_TIMEOUT_MS });
 
-  // Optional: navigate into a "canary" project before probing so the
-  // session-state anchors (chat composer, share dropdown, handoff menu,
-  // file-list scrape) get exercised. Without this, those 10 anchors skip
-  // because the runner sits on the home page. Workflow sets
-  // DESIGNER_PROBE_PROJECT_URL to a project the user commits to keeping
-  // around — if it 404s or vanishes, the probe will catch that as a hard
-  // signal that the canary needs replacing.
+  // Phase 1 — home page. Covers home.* anchors + the one `any`-state anchor
+  // (pattern.sessionUrl). Always runs; the home page is reachable without a
+  // canary project, and home-state regressions are exactly what today's
+  // single-phase probe was missing.
+  let homeNav: { target: string; landedOn: string; error?: string } | null = null;
+  try {
+    await browser.open(HOME_URL);
+    await adaptiveWait(browser, HOME_READY_SEL, 'home');
+    const landedOn = (await browser.url().catch(() => '')) || '';
+    homeNav = { target: HOME_URL, landedOn };
+    console.log(`[ci-health] navigated to home — landed=${landedOn}`);
+  } catch (e) {
+    homeNav = { target: HOME_URL, landedOn: '', error: (e as Error).message };
+    console.log(`[ci-health] home navigation failed — ${(e as Error).message}; home anchors will fail loudly`);
+  }
+  const homeResults = await runHealth(browser, { phase: 'home' });
+
+  // Phase 2 — session (canary project). Covers session.* / share.* anchors
+  // + the `any`-state anchor again. Only runs when DESIGNER_PROBE_PROJECT_URL
+  // is set. Workflow sets it to a project the user commits to keeping
+  // around; if it 404s or vanishes, session anchors fail loudly which is
+  // the signal to pick a new canary.
   const probeUrl = process.env.DESIGNER_PROBE_PROJECT_URL;
-  let navigated: { target: string; landedOn: string; error?: string } | null = null;
+  let sessionNav: { target: string; landedOn: string; error?: string } | null = null;
+  let sessionResults: ProbeResult[] = [];
   if (probeUrl) {
     try {
       await browser.open(probeUrl);
-      await new Promise((r) => setTimeout(r, 3000));
+      await adaptiveWait(browser, SESSION_READY_SEL, 'session');
       const landedOn = (await browser.url().catch(() => '')) || '';
-      navigated = { target: probeUrl, landedOn };
+      sessionNav = { target: probeUrl, landedOn };
       console.log(`[ci-health] navigated to canary — landed=${landedOn}`);
     } catch (e) {
-      navigated = { target: probeUrl, landedOn: '', error: (e as Error).message };
-      console.log(`[ci-health] canary navigation failed — ${(e as Error).message}; continuing with home-state probe`);
+      sessionNav = { target: probeUrl, landedOn: '', error: (e as Error).message };
+      console.log(`[ci-health] canary navigation failed — ${(e as Error).message}; session anchors will fail loudly`);
     }
+    sessionResults = await runHealth(browser, { phase: 'session' });
+  } else {
+    console.log('[ci-health] DESIGNER_PROBE_PROJECT_URL unset — skipping session phase');
   }
 
-  const results = await runHealth(browser);
-  const counts = results.reduce<Record<string, number>>((acc, r) => {
-    acc[r.status] = (acc[r.status] || 0) + 1;
-    return acc;
-  }, {});
-  const fail = results.some((r) => r.status === 'fail');
+  const results: ProbeResult[] = [...homeResults, ...sessionResults];
+  const counts = {
+    ok: results.filter((r) => r.status === 'ok').length,
+    fail: results.filter((r) => r.status === 'fail').length,
+    skip: results.filter((r) => r.status === 'skip').length
+  };
+  const fail = counts.fail > 0;
   const url = (await browser.url().catch(() => '')) || '';
 
-  const diag = fail ? await maybeSnapshot() : null;
+  const diag = fail ? await maybeSnapshot(browser) : null;
 
   const payload = {
     ok: !fail,
@@ -189,11 +233,15 @@ async function main(): Promise<void> {
     finishedAt: new Date().toISOString(),
     designerVersion: pkgVersion(),
     chromeUrl: url,
-    canary: navigated,
+    // `canary` retains its V1 shape (session-navigation record) for back-compat
+    // with the drift PR body + any existing artifact reader. The home-phase
+    // navigation is captured in `homeNav` alongside it.
+    canary: sessionNav,
+    homeNav,
     doctor,
     health: {
       ok: !fail,
-      counts: { ok: counts['ok'] || 0, fail: counts['fail'] || 0, skip: counts['skip'] || 0 },
+      counts,
       results
     },
     diagnostics: diag
@@ -205,7 +253,7 @@ async function main(): Promise<void> {
   fs.writeFileSync(outFile, JSON.stringify(payload, null, 2));
 
   // One-line summary for the workflow log.
-  const summary = `[ci-health] ${payload.ok ? 'OK' : 'FAIL'} — health ${counts['ok'] || 0} ok / ${counts['fail'] || 0} fail / ${counts['skip'] || 0} skip · doctor exit ${doctor.exitCode} · v${payload.designerVersion}`;
+  const summary = `[ci-health] ${payload.ok ? 'OK' : 'FAIL'} — health ${counts.ok} ok / ${counts.fail} fail / ${counts.skip} skip · doctor exit ${doctor.exitCode} · v${payload.designerVersion}`;
   console.log(summary);
   if (fail) {
     const failed = results.filter((r) => r.status === 'fail').map((r) => `  ${r.id} — ${r.detail || r.description}`);

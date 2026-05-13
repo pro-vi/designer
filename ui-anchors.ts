@@ -7,6 +7,7 @@ import type { Browser } from './browser.ts';
 export type AnchorCategory = 'home' | 'session' | 'share' | 'pattern';
 export type AnchorState = 'home' | 'session' | 'any';
 export type ProbeStatus = 'ok' | 'fail' | 'skip';
+export type ProbePhase = 'home' | 'session';
 
 export interface ProbeResult {
   id: string;
@@ -15,6 +16,11 @@ export interface ProbeResult {
   requires: AnchorState;
   status: ProbeStatus;
   detail?: string;
+  // Present only when runHealth was invoked with an explicit `opts.phase` —
+  // tags which navigation state the result was captured in. `any`-anchors
+  // probe in both phases, so the same id may appear twice with different
+  // phase tags.
+  phase?: ProbePhase;
 }
 
 interface AnchorDef {
@@ -250,9 +256,45 @@ export const UI_ANCHORS: AnchorDef[] = [
 
 export async function runHealth(
   browser: Browser,
-  opts: { sessionProbeUrl?: string } = {}
+  opts: { phase?: ProbePhase } = {}
 ): Promise<ProbeResult[]> {
   const currentUrl = (await browser.url().catch(() => '')) || '';
+
+  // When `opts.phase` is supplied the caller has already navigated to the
+  // matching surface — filter strictly by that phase, tag every result with
+  // it, and suppress skips (a `home`-only anchor probed during a `session`
+  // phase isn't a skip-with-detail, it's just not part of this phase's run).
+  // When omitted, fall back to URL-inferred state for back-compat with
+  // single-phase callers (cli.ts `designer health`).
+  if (opts.phase) {
+    const phase = opts.phase;
+    const results: ProbeResult[] = [];
+    for (const a of UI_ANCHORS) {
+      const applicable =
+        a.requires === 'any' ||
+        (phase === 'home' && a.requires === 'home') ||
+        (phase === 'session' && a.requires === 'session');
+      if (!applicable) continue;
+      const base = {
+        id: a.id,
+        category: a.category,
+        description: a.description,
+        requires: a.requires,
+        phase
+      };
+      try {
+        const r = await a.check(browser, currentUrl);
+        results.push({ ...base, status: r.ok ? 'ok' : 'fail', detail: r.detail });
+      } catch (e) {
+        results.push({ ...base, status: 'fail', detail: `threw: ${(e as Error).message}` });
+      }
+    }
+    return results;
+  }
+
+  // Legacy URL-inferred path. Single-phase callers see the same behavior as
+  // before — skips emitted for anchors that don't match the inferred state,
+  // no `phase` field on results.
   const inSession = /\/design\/p\/[a-f0-9-]+/i.test(currentUrl);
   const onHome = /\/design\/?$/.test(currentUrl) || currentUrl.endsWith('/design');
   const state: 'home' | 'session' | 'other' = inSession ? 'session' : onHome ? 'home' : 'other';
