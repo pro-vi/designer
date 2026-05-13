@@ -43,20 +43,37 @@ jobs:
             --repo "$REPO" \
             --search "$HEAD_SHA" \
             --state open \
-            --json number,headRefOid,labels)
+            --json number,headRefOid,labels,title)
           PR_NUMBER=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .number" | head -n1)
           if [ -z "$PR_NUMBER" ]; then
             echo "no open PR for $HEAD_SHA — bailing"
             exit 0
           fi
+          TITLE=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .title")
           LABELS=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .labels[].name")
           UPDATE_TYPE=$(echo "$LABELS" | grep '^version-update:semver-' | head -n1 || true)
           echo "PR #$PR_NUMBER labels: $UPDATE_TYPE"
+          echo "PR #$PR_NUMBER title: $TITLE"
+          # Single-update PRs carry version-update:semver-{patch,minor,major}.
+          # Grouped PRs (dependabot.yml `groups:` config) do NOT — the label is
+          # ambiguous because a group can contain multiple updates. We trust
+          # the group name we configured (patch-and-minor) to mean "only patch
+          # + minor updates are in here" and auto-merge on title match.
+          MERGE=false
+          REASON=""
           if [ "$UPDATE_TYPE" = "version-update:semver-patch" ] || [ "$UPDATE_TYPE" = "version-update:semver-minor" ]; then
+            MERGE=true
+            REASON="$UPDATE_TYPE"
+          elif echo "$TITLE" | grep -qE "in the patch-and-minor group"; then
+            MERGE=true
+            REASON="grouped:patch-and-minor"
+          else
+            REASON="label=$UPDATE_TYPE title-not-grouped"
+          fi
+          echo "decision: merge=$MERGE ($REASON)"
+          if [ "$MERGE" = "true" ]; then
             echo "merge=true" >> "$GITHUB_OUTPUT"
             echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-          else
-            echo "skipping (label=$UPDATE_TYPE)"
           fi
 
       - name: Re-verify head + squash-merge

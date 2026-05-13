@@ -72,6 +72,31 @@ jobs:
           path: artifacts/health/
           retention-days: 30
 
+      - name: Close stale drift PRs on green
+        if: steps.probe.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TODAY: ${{ steps.stamp.outputs.date }}
+          REPO: ${{ github.repository }}
+        # If today's probe is green, any `health/drift-*` PR from a previous
+        # date is by definition stale evidence — close it and delete the
+        # branch. Keeps the open-PR list signal-rich.
+        run: |
+          gh pr list --repo "$REPO" --state open --label selectors-drift \
+            --json number,headRefName | \
+            jq -r --arg today "$TODAY" '
+              .[] |
+              select(.headRefName | startswith("health/drift-")) |
+              select((.headRefName | sub("^health/drift-"; "")) != $today) |
+              "\(.number)\t\(.headRefName)"
+            ' | \
+            while IFS=$'\t' read -r NUM BRANCH; do
+              [ -z "$NUM" ] && continue
+              echo "closing stale #$NUM ($BRANCH)"
+              gh pr close "$NUM" --repo "$REPO" --delete-branch \
+                --comment "Superseded by today's green daily-health run (${TODAY})." || true
+            done
+
       - name: Open selectors-drift PR
         if: steps.probe.outcome == 'failure' && (github.event_name != 'workflow_dispatch' || inputs.open-pr-on-fail)
         uses: peter-evans/create-pull-request@v6
