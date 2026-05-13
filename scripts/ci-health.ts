@@ -150,6 +150,29 @@ async function main(): Promise<void> {
   const doctor = runDoctor();
 
   const browser = createBrowser({ session: 'designer-default' });
+
+  // Optional: navigate into a "canary" project before probing so the
+  // session-state anchors (chat composer, share dropdown, handoff menu,
+  // file-list scrape) get exercised. Without this, those 10 anchors skip
+  // because the runner sits on the home page. Workflow sets
+  // DESIGNER_PROBE_PROJECT_URL to a project the user commits to keeping
+  // around — if it 404s or vanishes, the probe will catch that as a hard
+  // signal that the canary needs replacing.
+  const probeUrl = process.env.DESIGNER_PROBE_PROJECT_URL;
+  let navigated: { target: string; landedOn: string; error?: string } | null = null;
+  if (probeUrl) {
+    try {
+      await browser.open(probeUrl);
+      await new Promise((r) => setTimeout(r, 3000));
+      const landedOn = (await browser.url().catch(() => '')) || '';
+      navigated = { target: probeUrl, landedOn };
+      console.log(`[ci-health] navigated to canary — landed=${landedOn}`);
+    } catch (e) {
+      navigated = { target: probeUrl, landedOn: '', error: (e as Error).message };
+      console.log(`[ci-health] canary navigation failed — ${(e as Error).message}; continuing with home-state probe`);
+    }
+  }
+
   const results = await runHealth(browser);
   const counts = results.reduce<Record<string, number>>((acc, r) => {
     acc[r.status] = (acc[r.status] || 0) + 1;
@@ -166,6 +189,7 @@ async function main(): Promise<void> {
     finishedAt: new Date().toISOString(),
     designerVersion: pkgVersion(),
     chromeUrl: url,
+    canary: navigated,
     doctor,
     health: {
       ok: !fail,

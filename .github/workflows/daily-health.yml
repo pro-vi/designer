@@ -53,6 +53,14 @@ jobs:
 
       - name: Run health probe
         id: probe
+        # DESIGNER_PROBE_PROJECT_URL is the "canary" project the probe opens
+        # before running session-state anchors. It must be a project the user
+        # commits to keeping around (named "designer smoke test" today). If it
+        # gets deleted, the probe will catch it via session anchors that no
+        # longer find the chat composer / share dropdown, which is the signal
+        # to pick a new canary.
+        env:
+          DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/72e73856-7b63-4aed-b95a-caca5e3c0e05
         run: npm run -s probe:health
         continue-on-error: true
 
