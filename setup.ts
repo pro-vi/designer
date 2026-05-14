@@ -4,6 +4,7 @@ import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { REPO_ROOT } from './repo-root.ts';
+import { createBrowser, type Browser } from './browser.ts';
 
 const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
 const SKILL_DEST_DIR = path.join(os.homedir(), '.claude', 'skills', 'designer-loop');
@@ -32,25 +33,39 @@ async function isCdpUp(port: string): Promise<boolean> {
   }
 }
 
-async function getDesignTab(port: string): Promise<{ url: string; title: string } | null> {
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(2000) });
-    if (!res.ok) return null;
-    const tabs = (await res.json()) as Array<{ url?: string; title?: string }>;
-    for (const t of tabs) {
-      if (t.url && /claude\.ai\/design/.test(t.url) && !/login/i.test(t.url)) {
-        return { url: t.url, title: t.title || '' };
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
+async function verifySignedIn(browser: Browser): Promise<boolean> {
+  // A signed-in claude.ai/design session renders one of these app-shell
+  // anchors — `project-creator` on the home surface, `chat-composer-input`
+  // inside a project. A logged-out visit to claude.ai/design renders a
+  // login wall with neither.
+  //
+  // This replaces the old URL-only check (URL matches /design && !/login/).
+  // That check passed the login wall served AT the /design URL — the URL
+  // stays `/design` when logged out, no `/login` substring — which is the
+  // #16 false positive. The DOM is the only reliable signal.
+  const js =
+    '!!(document.querySelector(\'[data-testid="project-creator"]\') || document.querySelector(\'[data-testid="chat-composer-input"]\'))';
+  return browser.evalValue<boolean>(js).catch(() => false);
 }
 
 function chromeRunning(): boolean {
   const r = spawnSync('pgrep', ['-f', 'Google Chrome.app/Contents/MacOS/Google Chrome'], { stdio: 'pipe' });
   return r.status === 0 && (r.stdout?.toString().trim().length ?? 0) > 0;
+}
+
+function chromeDebugProfile(port: string): string | null {
+  // Best-effort: read the --user-data-dir of the Chrome bound to this CDP
+  // port. Returns null when it can't be determined (non-digit port, no
+  // match, ps unavailable) — callers treat null as "unknown, proceed".
+  if (!/^\d+$/.test(port)) return null;
+  const r = spawnSync(
+    'sh',
+    ['-c', `ps -Axww -o command | grep -- '--remote-debugging-port=${port}' | grep -v grep`],
+    { stdio: 'pipe' }
+  );
+  if (r.status !== 0) return null;
+  const m = (r.stdout?.toString() ?? '').match(/--user-data-dir=(\S+)/);
+  return m?.[1] ?? null;
 }
 
 async function pollUntil(
@@ -138,7 +153,25 @@ function step2AgentBrowser(): boolean {
 
 async function step3Chrome(port: string): Promise<boolean> {
   if (await isCdpUp(port)) {
-    log('chrome', 'ok', `CDP already up on :${port}`);
+    // CDP being reachable doesn't prove it's OUR debug Chrome. If a debug
+    // Chrome is on this port under a different --user-data-dir, adopting it
+    // means the sign-in step lands in the wrong profile — and future runs
+    // with the right profile stay logged out. Fail loud on a profile
+    // mismatch; proceed when it matches or can't be determined (step4's
+    // DOM-marker check is the backstop for the can't-determine case).
+    const runningProfile = chromeDebugProfile(port);
+    if (runningProfile && runningProfile !== PROFILE) {
+      log(
+        'chrome',
+        'fail',
+        `A debug Chrome is on :${port} but using a different profile:\n` +
+          `   running:  ${runningProfile}\n` +
+          `   expected: ${PROFILE}\n` +
+          `   Quit that Chrome and re-run setup, or set DESIGNER_CDP to a free port.`
+      );
+      return false;
+    }
+    log('chrome', 'ok', `CDP already up on :${port}${runningProfile ? ' (profile matches)' : ''}`);
     return true;
   }
   if (chromeRunning()) {
@@ -177,23 +210,29 @@ async function step3Chrome(port: string): Promise<boolean> {
 }
 
 async function step4SignIn(port: string): Promise<boolean> {
-  const tab = await getDesignTab(port);
-  if (tab) {
-    log('login', 'ok', `Signed in. Tab on ${tab.url.replace(/\?.*$/, '')}`);
-    return true;
-  }
-  log('login', 'wait', 'Sign in to Claude in the DEBUG Chrome window I just opened (it is a separate window with no extensions/bookmarks — NOT your normal Chrome; the two have separate cookie jars). Then navigate to claude.ai/design. I am polling.');
-  const ok = await pollUntil('login', async () => (await getDesignTab(port)) !== null, {
+  const browser = createBrowser({ session: 'designer-setup', cdp: port });
+  // Normalize: the adopted Chrome's tab could be anywhere (about:blank, a
+  // stale page, a project). Land it on the design home so the poll has a
+  // consistent surface, then let the SPA paint before the first check.
+  await browser.open('https://claude.ai/design').catch(() => undefined);
+  await sleep(2500);
+
+  // pollUntil checks the predicate before emitting any reminder — so an
+  // already-signed-in session returns true on the first iteration and the
+  // user never sees the sign-in prompt.
+  const ok = await pollUntil('login', () => verifySignedIn(browser), {
     intervalMs: 2000,
     timeoutMs: 10 * 60_000,
-    reminder: 'Still waiting for a tab on claude.ai/design in the debug window (signing into your normal Chrome will not help — different profile).',
+    reminder:
+      'Sign in to Claude in the DEBUG Chrome window I just opened (a separate window with no extensions/bookmarks — NOT your normal Chrome; the two have separate cookie jars). Then return to claude.ai/design. I am polling.',
     hint60s: "If Chrome shows a Google 'new device' or 2FA prompt, complete that first — setup is waiting on you."
   });
   if (!ok) {
-    log('login', 'fail', 'Timed out waiting for sign-in. Re-run setup when ready.');
+    log('login', 'fail', 'Timed out waiting for a signed-in claude.ai/design session. Re-run setup when ready.');
     return false;
   }
-  log('login', 'ok', 'Signed in.');
+  const url = (await browser.url().catch(() => '')) || 'claude.ai/design';
+  log('login', 'ok', `Signed in. Tab on ${url.replace(/\?.*$/, '')}`);
   return true;
 }
 
