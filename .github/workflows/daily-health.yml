@@ -18,6 +18,15 @@ permissions:
   pull-requests: write
   issues: write
 
+# Serialize runs. A manual workflow_dispatch firing during the cron run
+# would otherwise race the streak cache (both restore the same prior
+# state, compute divergent next states, save under separate run_id keys —
+# last-created-cache-wins, not serialized). cancel-in-progress: false so a
+# queued run waits rather than killing an in-flight probe.
+concurrency:
+  group: daily-health
+  cancel-in-progress: false
+
 jobs:
   health:
     name: probe claude.ai/design UI anchors
@@ -104,7 +113,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: health-${{ github.run_id }}
-          path: artifacts/health/
+          # JSON only — NOT the page.html / page.png snapshots in the
+          # artifacts/health/<date>/ subdir. This repo is public, so
+          # uploaded artifacts are world-downloadable; raw DOM + screenshots
+          # of a signed-in claude.ai session (which on the home phase
+          # includes the user's real project list) must not be published.
+          # auto-heal captures its own fresh snapshot on the runner instead.
+          path: artifacts/health/*.json
           retention-days: 30
 
       - name: Close stale drift PRs on green
