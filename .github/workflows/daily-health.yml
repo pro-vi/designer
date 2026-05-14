@@ -53,12 +53,18 @@ jobs:
 
       - name: Run health probe
         id: probe
-        # DESIGNER_PROBE_PROJECT_URL is the "canary" project the probe opens
-        # before running session-state anchors. It must be a project the user
-        # commits to keeping around (named "designer smoke test" today). If it
-        # gets deleted, the probe will catch it via session anchors that no
-        # longer find the chat composer / share dropdown, which is the signal
-        # to pick a new canary.
+        # DESIGNER_PROBE_PROJECT_URL is the "canary" project for session-state
+        # anchors. The probe opens it after the home-phase pass so session.*
+        # / share.* anchors get exercised. It must be a project the user
+        # commits to keeping around (named "designer smoke test" today).
+        #
+        # To swap canaries:
+        #   1. Create a fresh project on claude.ai/design with stable content.
+        #   2. Open one file in it so the htmlViewer anchor lands.
+        #   3. Replace the URL below + commit + `gh workflow run daily-health.yml`
+        #      to verify green before the next scheduled run.
+        # If the canary 404s or vanishes mid-cycle, session anchors fail loudly
+        # — that's the signal to swap.
         env:
           DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/72e73856-7b63-4aed-b95a-caca5e3c0e05
         run: npm run -s probe:health
