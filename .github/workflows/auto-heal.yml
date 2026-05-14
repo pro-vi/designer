@@ -21,11 +21,14 @@ permissions:
 
 jobs:
   heal:
-    # Only fire on the failure conclusion. Successful daily-health runs
-    # mean nothing regressed, so there's nothing to heal. Skipped /
-    # cancelled / startup_failure conclusions are infra issues, not
-    # selector drift — auto-heal would be guessing about state it can't see.
-    if: github.event.workflow_run.conclusion == 'failure'
+    # Fire on every daily-health completion regardless of conclusion.
+    # daily-health.yml marks the probe step `continue-on-error: true`, so
+    # the workflow's roll-up conclusion is `success` even when the probe
+    # fails — gating on `workflow_run.conclusion` here would never see a
+    # probe failure. `auto-heal.ts triage` reads the artifact and the
+    # streak file to decide; on green days it emits `action=skip` and the
+    # heal step is skipped via the per-step `if` below. Cost: ~30s of
+    # runner time on green days for triage + artifact download.
     name: propose ui-anchor patch on probe failure
     # Self-hosted so we can re-run the probe against the live CDP Chrome
     # (same runner that ran daily-health). Datacenter runners can't reach
