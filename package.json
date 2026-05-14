@@ -36,9 +36,11 @@
     "postinstall": "node scripts/postinstall.mjs",
     "probe": "tsx scripts/probe.ts",
     "probe:health": "tsx scripts/ci-health.ts",
+    "auto-heal": "tsx scripts/auto-heal.ts",
     "smoke": "bash scripts/install-smoke.sh"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.96.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "zod": "^3.23.8"
   },
@@ -50,7 +52,10 @@
   "engines": {
     "node": ">=20"
   },
-  "os": ["darwin", "linux"],
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "files": [
     "dist/",
     "bin/",

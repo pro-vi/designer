@@ -51,6 +51,23 @@ jobs:
         id: stamp
         run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
+      # actions/checkout creates a clean clone each run, so the streak file
+      # written by ci-health.ts (artifacts/health/streak.json) doesn't
+      # persist across runs by default. Without persistence the N=2 streak
+      # gate in auto-heal never fires — every run starts fresh at 0.
+      # Restore the most recent saved copy here; save after the probe
+      # completes (whether green or fail). save-key uses run_id so each
+      # run writes its own cache entry; restore-keys falls through to the
+      # latest streak- prefix.
+      - name: Restore streak file
+        id: streak-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: artifacts/health/streak.json
+          key: streak-${{ github.run_id }}
+          restore-keys: |
+            streak-
+
       - name: Run health probe
         id: probe
         # DESIGNER_PROBE_PROJECT_URL is the "canary" project for session-state
@@ -69,6 +86,18 @@ jobs:
           DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/72e73856-7b63-4aed-b95a-caca5e3c0e05
         run: npm run -s probe:health
         continue-on-error: true
+
+      - name: Save streak file
+        # Always save — green runs reset streak entries to 0, and we want
+        # the auto-heal workflow + future runs to see that. `actions/cache`
+        # writes only on cache miss; the key is unique per run_id so we
+        # always get a new cache entry, and old entries age out per
+        # GitHub's cache eviction policy.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: artifacts/health/streak.json
+          key: streak-${{ github.run_id }}
 
       - name: Upload health artifact
         if: always()
