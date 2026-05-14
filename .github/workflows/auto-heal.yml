@@ -11,6 +11,12 @@ on:
   workflow_run:
     workflows: ["daily-health"]
     types: [completed]
+    # Only respond to daily-health runs on the default branch. This job
+    # has write permissions + secrets and checks out + executes the
+    # triggering SHA on a self-hosted runner — without this filter, a
+    # manual workflow_dispatch of daily-health on any feature branch
+    # would let that branch's code run with elevated privileges.
+    branches: [main]
 
 permissions:
   contents: write
@@ -21,6 +27,12 @@ permissions:
 
 jobs:
   heal:
+    # Defense-in-depth alongside the `branches: [main]` trigger filter:
+    # also gate the job on the triggering run's branch. workflow_run only
+    # ever fires from the default-branch workflow definition, but this
+    # makes the "never run untrusted-branch code with our secrets"
+    # invariant explicit at the job level too.
+    if: github.event.workflow_run.head_branch == 'main'
     # Fire on every daily-health completion regardless of conclusion.
     # daily-health.yml marks the probe step `continue-on-error: true`, so
     # the workflow's roll-up conclusion is `success` even when the probe

@@ -21,10 +21,12 @@
 // by daily-health stays as the human-readable diagnostic regardless.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import { REPO_ROOT } from '../repo-root.ts';
+import { createBrowser } from '../browser.ts';
 import { canPatch, findAnchor, patchSelector } from './anchor-patcher.ts';
 
 const HEALTH_DIR = path.join(REPO_ROOT, 'artifacts', 'health');
@@ -35,6 +37,13 @@ const WHOLESALE_THRESHOLD = 5;
 const COOLDOWN_DAYS = 7;
 const CONFIDENCE_THRESHOLD = 0.7;
 const ANTHROPIC_MODEL = 'claude-opus-4-7';
+
+// Navigation targets for the fresh snapshot auto-heal captures on the runner
+// (daily-health no longer uploads page.html/page.png — see captureCurrentSnapshot).
+const HOME_URL = 'https://claude.ai/design';
+const HOME_READY_SEL = '[data-testid="project-creator"]';
+const SESSION_READY_SEL = '[data-testid="chat-composer-input"]';
+const HTML_CAP_BYTES = 60_000;
 
 // Priority: session anchors regressing breaks the canary loop hardest, so
 // heal them first. Pattern anchors are URL-shape — usually low-yield to
@@ -198,12 +207,17 @@ function findDriftPrNumber(date: string): number | null {
 // ---- triage ----
 
 function triage(): void {
+  // Exit-code discipline: genuine infra/contract failures (the artifact the
+  // download step provided is missing or malformed) exit 1 so the workflow
+  // goes red — they are NOT the same as an expected "nothing to heal" skip.
+  // Expected skips (below-threshold, cooldown, wholesale-redesign,
+  // cdp-unreachable) exit 0.
   const artifact = latestArtifact();
   if (!artifact) {
-    console.log('[auto-heal triage] no artifact found');
+    console.log('[auto-heal triage] no artifact found — download step should have provided one');
     ghOutput('action', 'skip');
     ghOutput('reason', 'no-artifact');
-    return;
+    process.exit(1);
   }
   const { data, date } = artifact;
   ghOutput('date', date);
@@ -216,15 +230,23 @@ function triage(): void {
   }
 
   if (!data.health || !Array.isArray(data.health.results)) {
-    console.log('[auto-heal triage] artifact has no health.results');
+    console.log('[auto-heal triage] artifact has no health.results — malformed');
     ghOutput('action', 'skip');
     ghOutput('reason', 'no-results');
-    return;
+    process.exit(1);
   }
 
   const streak = loadStreak();
+  // A candidate must be BOTH at streak >= threshold AND currently failing in
+  // this run's artifact. Without the current-fail cross-check, a stale streak
+  // entry (anchor that recovered but whose streak wasn't reset because it
+  // went 'skip') could trigger a heal that immediately no-ops — or worse,
+  // inflate the count past WHOLESALE_THRESHOLD and cause a false wholesale bail.
+  const failingNow = new Set(
+    data.health.results.filter((r) => r.status === 'fail').map((r) => r.id)
+  );
   const candidates = Object.entries(streak)
-    .filter(([, n]) => n >= STREAK_THRESHOLD)
+    .filter(([id, n]) => n >= STREAK_THRESHOLD && failingNow.has(id))
     .map(([id]) => id);
 
   if (candidates.length === 0) {
@@ -317,23 +339,51 @@ function isBrittleSelector(sel: string): boolean {
   return false;
 }
 
-function loadSnapshotHtml(date: string): string {
-  const p = path.join(HEALTH_DIR, date, 'page.html');
-  if (!fs.existsSync(p)) return '';
-  const raw = fs.readFileSync(p, 'utf8');
+function capHtml(raw: string): string {
   // Cap at ~60KB — the prompt budget is finite and most of <head> is style/font
   // boilerplate. The anchor selector inference cares about the rendered tree
   // around testids, role attrs, button text — usually <body>'s first ~60KB.
-  if (raw.length <= 60_000) return raw;
+  if (raw.length <= HTML_CAP_BYTES) return raw;
   const bodyStart = raw.search(/<body[\s>]/i);
-  if (bodyStart > 0) return raw.slice(bodyStart, bodyStart + 60_000);
-  return raw.slice(0, 60_000);
+  if (bodyStart > 0) return raw.slice(bodyStart, bodyStart + HTML_CAP_BYTES);
+  return raw.slice(0, HTML_CAP_BYTES);
 }
 
-function loadScreenshotBase64(date: string): string | null {
-  const p = path.join(HEALTH_DIR, date, 'page.png');
-  if (!fs.existsSync(p)) return null;
-  return fs.readFileSync(p).toString('base64');
+async function captureCurrentSnapshot(
+  phase: 'home' | 'session'
+): Promise<{ html: string; screenshotBase64: string | null }> {
+  // daily-health no longer uploads page.html / page.png — this is a public
+  // repo and those are raw DOM + screenshots of a signed-in claude.ai
+  // session (the home phase's DOM includes the user's real project list).
+  // auto-heal runs on the same self-hosted runner with the live CDP Chrome,
+  // so it captures its own snapshot fresh. Bonus: this is the *current* DOM,
+  // which is the right input for selector inference anyway (the heal
+  // re-probes against live state regardless).
+  const target = phase === 'home' ? HOME_URL : process.env.DESIGNER_PROBE_PROJECT_URL;
+  const readySel = phase === 'home' ? HOME_READY_SEL : SESSION_READY_SEL;
+  if (!target) {
+    console.log(`[auto-heal heal] no navigation target for phase=${phase} — proceeding without snapshot`);
+    return { html: '', screenshotBase64: null };
+  }
+  const browser = createBrowser({ session: 'designer-default', timeoutMs: 15_000 });
+  try {
+    await browser.open(target);
+    await browser.waitFor(readySel).catch(() => undefined);
+    const rawHtml = await browser
+      .evalValue<string>('document.documentElement.outerHTML')
+      .catch(() => '');
+    const shotPath = path.join(os.tmpdir(), `auto-heal-snapshot-${Date.now()}.png`);
+    await browser.screenshot(shotPath, { full: true }).catch(() => null);
+    let screenshotBase64: string | null = null;
+    if (fs.existsSync(shotPath)) {
+      screenshotBase64 = fs.readFileSync(shotPath).toString('base64');
+      fs.rmSync(shotPath, { force: true });
+    }
+    return { html: capHtml(typeof rawHtml === 'string' ? rawHtml : ''), screenshotBase64 };
+  } catch (e) {
+    console.log(`[auto-heal heal] snapshot capture failed: ${(e as Error).message}`);
+    return { html: '', screenshotBase64: null };
+  }
 }
 
 async function heal(anchorId: string): Promise<void> {
@@ -345,21 +395,26 @@ async function heal(anchorId: string): Promise<void> {
   const apiKey = process.env.ANTHROPIC_API_KEY ?? undefined;
   const authToken =
     process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.CLAUDE_CODE_OAUTH_TOKEN ?? undefined;
+  // Exit-code discipline (mirrors triage): infra/auth/contract failures
+  // exit 1 so the workflow goes red. A silently-caught auth 401 turning
+  // into a green no-op is exactly the failure class this guards against.
+  // Expected non-heal outcomes (not-failing, low-confidence, brittle-
+  // selector, re-probe-still-failing, ...) stay exit 0.
   if (!apiKey && !authToken) {
-    console.log(
-      '[auto-heal heal] no Anthropic credential (need ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) — exiting without patch'
+    console.error(
+      '[auto-heal heal] no Anthropic credential (need ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) — automation unavailable'
     );
     ghOutput('patched', 'false');
     ghOutput('reason', 'no-credential');
-    return;
+    process.exit(1);
   }
 
   const artifact = latestArtifact();
   if (!artifact) {
-    console.log('[auto-heal heal] no artifact');
+    console.error('[auto-heal heal] no artifact — download step should have provided one');
     ghOutput('patched', 'false');
     ghOutput('reason', 'no-artifact');
-    return;
+    process.exit(1);
   }
   const { date, data } = artifact;
 
@@ -380,11 +435,15 @@ async function heal(anchorId: string): Promise<void> {
     return;
   }
 
-  const html = loadSnapshotHtml(date);
-  const screenshot = loadScreenshotBase64(date);
-
   const anchor = data.health?.results.find((r) => r.id === anchorId);
   const phaseHint = failed.phase ?? anchor?.requires ?? 'unknown';
+
+  // Capture a fresh snapshot on the runner (daily-health no longer uploads
+  // page.html/page.png). Navigate to the phase the anchor failed in; for
+  // `any`-state anchors with no phase tag, default to the session page.
+  const snapshotPhase: 'home' | 'session' =
+    failed.phase ?? (failed.requires === 'home' ? 'home' : 'session');
+  const { html, screenshotBase64: screenshot } = await captureCurrentSnapshot(snapshotPhase);
 
   const promptText = [
     `# Failed UI anchor`,
@@ -463,18 +522,20 @@ async function heal(anchorId: string): Promise<void> {
       messages: [{ role: 'user', content: userContent }]
     });
   } catch (e) {
-    console.log(`[auto-heal heal] Anthropic API error: ${(e as Error).message}`);
+    // Includes a 401 if CLAUDE_CODE_OAUTH_TOKEN turns out not to authenticate
+    // raw /v1/messages calls — that's "automation broken", not "nothing to do".
+    console.error(`[auto-heal heal] Anthropic API error: ${(e as Error).message}`);
     ghOutput('patched', 'false');
     ghOutput('reason', 'api-error');
-    return;
+    process.exit(1);
   }
 
   const toolUse = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
   if (!toolUse) {
-    console.log(`[auto-heal heal] model did not call the propose_selector tool`);
+    console.error(`[auto-heal heal] model did not call the propose_selector tool — prompt/contract drift`);
     ghOutput('patched', 'false');
     ghOutput('reason', 'no-tool-call');
-    return;
+    process.exit(1);
   }
   const input = toolUse.input as Partial<ProposeSelectorInput>;
   if (
@@ -482,10 +543,10 @@ async function heal(anchorId: string): Promise<void> {
     typeof input.confidence !== 'number' ||
     typeof input.rationale !== 'string'
   ) {
-    console.log(`[auto-heal heal] propose_selector input malformed: ${JSON.stringify(input)}`);
+    console.error(`[auto-heal heal] propose_selector input malformed: ${JSON.stringify(input)}`);
     ghOutput('patched', 'false');
     ghOutput('reason', 'malformed-tool-input');
-    return;
+    process.exit(1);
   }
 
   const { newSelector, confidence, rationale } = input as ProposeSelectorInput;
@@ -536,26 +597,26 @@ async function heal(anchorId: string): Promise<void> {
   // claim victory.
   const reArtifact = latestArtifact();
   if (!reArtifact) {
-    console.log(`[auto-heal heal] re-probe produced no artifact — reverting`);
+    console.error(`[auto-heal heal] re-probe produced no artifact — reverting (infra failure)`);
     revertAnchors();
     ghOutput('patched', 'false');
     ghOutput('reason', 're-probe-no-artifact');
-    return;
+    process.exit(1);
   }
   if (reArtifact.data.reason === 'cdp-unreachable') {
-    console.log(`[auto-heal heal] re-probe hit cdp-unreachable — cannot verify, reverting`);
+    console.error(`[auto-heal heal] re-probe hit cdp-unreachable — cannot verify, reverting (infra failure)`);
     revertAnchors();
     ghOutput('patched', 'false');
     ghOutput('reason', 're-probe-cdp-unreachable');
-    return;
+    process.exit(1);
   }
   const reResults = reArtifact.data.health?.results;
   if (!Array.isArray(reResults) || reResults.length === 0) {
-    console.log(`[auto-heal heal] re-probe artifact has no health.results — reverting`);
+    console.error(`[auto-heal heal] re-probe artifact has no health.results — reverting (malformed)`);
     revertAnchors();
     ghOutput('patched', 'false');
     ghOutput('reason', 're-probe-no-results');
-    return;
+    process.exit(1);
   }
   const entriesForAnchor = reResults.filter((r) => r.id === anchorId);
   if (entriesForAnchor.length === 0) {
@@ -637,9 +698,11 @@ async function main(): Promise<void> {
 }
 
 main().catch((e: Error) => {
-  console.error(`[auto-heal] threw: ${e.message}`);
-  // Auto-heal is best-effort. Surface the error but exit 0 so the workflow
-  // doesn't go red on a recoverable script bug — the drift PR is still the
-  // human-readable fallback.
-  process.exit(0);
+  // An uncaught exception is a programmer error (bad artifact shape, missing
+  // tool, SDK contract drift). Exit 1 so the workflow goes red — masking it
+  // as exit 0 would put it in the same silent-no-op class the expected-skip
+  // paths are carefully kept out of. Expected non-heal outcomes never reach
+  // here; they emit their `reason` and return/exit explicitly.
+  console.error(`[auto-heal] threw: ${e.stack || e.message}`);
+  process.exit(1);
 });
