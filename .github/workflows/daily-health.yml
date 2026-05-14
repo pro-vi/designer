@@ -134,7 +134,7 @@ jobs:
 
       - name: Open selectors-drift PR
         if: steps.probe.outcome == 'failure' && (github.event_name != 'workflow_dispatch' || inputs.open-pr-on-fail)
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           # Keep this checked into the repo so a human can compare what the
           # probe saw today vs what was expected. Branch name is stable per-day
