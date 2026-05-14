@@ -337,10 +337,20 @@ function loadScreenshotBase64(date: string): string | null {
 }
 
 async function heal(anchorId: string): Promise<void> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.log('[auto-heal heal] ANTHROPIC_API_KEY unset — exiting without patch');
+  // Two auth paths: API key (x-api-key header, metered per-token billing) OR
+  // OAuth token via Claude Pro/Max subscription (Bearer header, subscription
+  // quota). CLAUDE_CODE_OAUTH_TOKEN is the secret name the official Claude
+  // Code Action installs; pass it as authToken to the SDK. The SDK supports
+  // both via separate constructor options — apiKey wins if both are set.
+  const apiKey = process.env.ANTHROPIC_API_KEY ?? undefined;
+  const authToken =
+    process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.CLAUDE_CODE_OAUTH_TOKEN ?? undefined;
+  if (!apiKey && !authToken) {
+    console.log(
+      '[auto-heal heal] no Anthropic credential (need ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) — exiting without patch'
+    );
     ghOutput('patched', 'false');
-    ghOutput('reason', 'no-api-key');
+    ghOutput('reason', 'no-credential');
     return;
   }
 
@@ -431,7 +441,7 @@ async function heal(anchorId: string): Promise<void> {
     }
   };
 
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const client = new Anthropic({ apiKey, authToken });
   const userContent: Anthropic.MessageParam['content'] = [{ type: 'text', text: promptText }];
   if (screenshot) {
     userContent.unshift({
