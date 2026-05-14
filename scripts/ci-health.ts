@@ -109,6 +109,64 @@ async function ensureCdp(): Promise<CdpStatus> {
   return { alive: false, attemptedRestart: true, detail: final.detail };
 }
 
+function updateStreak(outDir: string, results: ProbeResult[]): void {
+  const streakPath = path.join(outDir, 'streak.json');
+  let streak: Record<string, number> = {};
+  if (fs.existsSync(streakPath)) {
+    try {
+      const raw = fs.readFileSync(streakPath, 'utf8');
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        // Only keep numeric values; anything else is corrupt + gets dropped.
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof v === 'number' && Number.isFinite(v) && v >= 0) streak[k] = v;
+        }
+      }
+    } catch (e) {
+      console.log(`[ci-health] streak.json unreadable (${(e as Error).message}); resetting`);
+      streak = {};
+    }
+  }
+
+  // Group results by id. `any`-anchors run in both phases — a fail in either
+  // phase wins; ok-in-all-probed-phases resets to 0. Skipped anchors do not
+  // influence the streak (they didn't really probe).
+  const verdict = new Map<string, 'fail' | 'ok'>();
+  for (const r of results) {
+    if (r.status === 'skip') continue;
+    const prev = verdict.get(r.id);
+    if (r.status === 'fail') {
+      verdict.set(r.id, 'fail'); // fail wins over ok
+    } else if (r.status === 'ok' && prev !== 'fail') {
+      verdict.set(r.id, 'ok');
+    }
+  }
+
+  for (const [id, v] of verdict) {
+    if (v === 'fail') {
+      streak[id] = (streak[id] ?? 0) + 1;
+    } else {
+      streak[id] = 0;
+    }
+  }
+
+  // Best-effort write: a transient I/O failure here would (un-caught)
+  // bubble to main().catch() and replace the canonical probe-fail exit code
+  // 2 with a generic-throw exit code 3, changing the workflow's
+  // steps.probe.outcome semantics. The streak file is auto-heal's input
+  // signal, not the probe's contract — log + proceed.
+  try {
+    fs.writeFileSync(streakPath, JSON.stringify(streak, null, 2) + '\n');
+  } catch (e) {
+    console.log(`[ci-health] streak.json write failed (${(e as Error).message}); continuing`);
+    return;
+  }
+  const flagged = Object.entries(streak).filter(([, n]) => n >= 2);
+  if (flagged.length > 0) {
+    console.log(`[ci-health] streak >= 2: ${flagged.map(([id, n]) => `${id}=${n}`).join(', ')}`);
+  }
+}
+
 async function adaptiveWait(browser: Browser, sel: string, label: string): Promise<void> {
   // Wraps agent-browser `wait <selector>` (driven by AGENT_BROWSER_DEFAULT_TIMEOUT
   // = BROWSER_TIMEOUT_MS). On timeout we log + proceed — downstream anchor
@@ -251,6 +309,12 @@ async function main(): Promise<void> {
   ensureDir(outDir);
   const outFile = path.join(outDir, `${todayUtc()}.json`);
   fs.writeFileSync(outFile, JSON.stringify(payload, null, 2));
+
+  // Streak tracker — input to the auto-heal workflow's N=2 gate. Dedups
+  // across phases (a pattern.* anchor probed in both home + session counts
+  // as one fail-day if either phase failed, one ok-day only if both passed).
+  // Anchors not probed this run keep their existing streak value untouched.
+  updateStreak(outDir, results);
 
   // One-line summary for the workflow log.
   const summary = `[ci-health] ${payload.ok ? 'OK' : 'FAIL'} — health ${counts.ok} ok / ${counts.fail} fail / ${counts.skip} skip · doctor exit ${doctor.exitCode} · v${payload.designerVersion}`;
