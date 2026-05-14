@@ -53,19 +53,32 @@ function chromeRunning(): boolean {
   return r.status === 0 && (r.stdout?.toString().trim().length ?? 0) > 0;
 }
 
-function chromeDebugProfile(port: string): string | null {
-  // Best-effort: read the --user-data-dir of the Chrome bound to this CDP
-  // port. Returns null when it can't be determined (non-digit port, no
-  // match, ps unavailable) — callers treat null as "unknown, proceed".
-  if (!/^\d+$/.test(port)) return null;
+type ProfileStatus = 'match' | 'mismatch' | 'unknown';
+
+function cdpChromeProfileStatus(port: string): ProfileStatus {
+  // Does the Chrome bound to this CDP port use OUR profile (PROFILE)?
+  //
+  // We deliberately do NOT try to parse an arbitrary --user-data-dir value
+  // out of `ps`'s output: ps renders the command line flat and unquoted, so
+  // a `/(\S+)/` capture truncates any path containing a space (e.g. a macOS
+  // home dir like `/Users/First Last/...`) and yields a false mismatch.
+  // Instead, since PROFILE is known, test for that exact path as a complete
+  // token. Returns 'unknown' when there's no Chrome / no --user-data-dir /
+  // ps failed; callers treat 'unknown' like 'match' (adopt-ok) because
+  // step4's DOM-marker check is the backstop.
+  if (!/^\d+$/.test(port)) return 'unknown';
   const r = spawnSync(
     'sh',
     ['-c', `ps -Axww -o command | grep -- '--remote-debugging-port=${port}' | grep -v grep`],
     { stdio: 'pipe' }
   );
-  if (r.status !== 0) return null;
-  const m = (r.stdout?.toString() ?? '').match(/--user-data-dir=(\S+)/);
-  return m?.[1] ?? null;
+  if (r.status !== 0) return 'unknown';
+  const out = r.stdout?.toString() ?? '';
+  if (!out.includes('--user-data-dir=')) return 'unknown';
+  // Literal match of PROFILE with a trailing boundary (space = next flag/URL,
+  // or end of line). Escaping handles regex metacharacters in the path.
+  const escaped = PROFILE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`--user-data-dir=${escaped}(?= |$)`, 'm').test(out) ? 'match' : 'mismatch';
 }
 
 async function pollUntil(
@@ -156,9 +169,9 @@ async function step3Chrome(port: string): Promise<boolean> {
     // CDP being reachable doesn't prove it's OUR debug Chrome. Adopt only
     // when the profile matches (or can't be determined — step4's DOM-marker
     // check backstops that case).
-    const runningProfile = chromeDebugProfile(port);
-    if (!runningProfile || runningProfile === PROFILE) {
-      log('chrome', 'ok', `CDP already up on :${port}${runningProfile ? ' (profile matches)' : ''}`);
+    const profileStatus = cdpChromeProfileStatus(port);
+    if (profileStatus !== 'mismatch') {
+      log('chrome', 'ok', `CDP already up on :${port}${profileStatus === 'match' ? ' (profile matches)' : ''}`);
       return true;
     }
     // A debug Chrome on this port under a different --user-data-dir can't be
@@ -170,9 +183,7 @@ async function step3Chrome(port: string): Promise<boolean> {
     log(
       'chrome',
       'wait',
-      `A debug Chrome is on :${port} with a different profile:\n` +
-        `   running:  ${runningProfile}\n` +
-        `   expected: ${PROFILE}\n` +
+      `A debug Chrome is on :${port} with a different --user-data-dir (expected ${PROFILE}).\n` +
         `   Quit it — I'll launch one with the right profile once it's gone. (Or set DESIGNER_CDP to a free port.)`
     );
     const freed = await pollUntil('chrome', async () => !(await isCdpUp(port)), {
