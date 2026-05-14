@@ -153,26 +153,38 @@ function step2AgentBrowser(): boolean {
 
 async function step3Chrome(port: string): Promise<boolean> {
   if (await isCdpUp(port)) {
-    // CDP being reachable doesn't prove it's OUR debug Chrome. If a debug
-    // Chrome is on this port under a different --user-data-dir, adopting it
-    // means the sign-in step lands in the wrong profile — and future runs
-    // with the right profile stay logged out. Fail loud on a profile
-    // mismatch; proceed when it matches or can't be determined (step4's
-    // DOM-marker check is the backstop for the can't-determine case).
+    // CDP being reachable doesn't prove it's OUR debug Chrome. Adopt only
+    // when the profile matches (or can't be determined — step4's DOM-marker
+    // check backstops that case).
     const runningProfile = chromeDebugProfile(port);
-    if (runningProfile && runningProfile !== PROFILE) {
-      log(
-        'chrome',
-        'fail',
-        `A debug Chrome is on :${port} but using a different profile:\n` +
-          `   running:  ${runningProfile}\n` +
-          `   expected: ${PROFILE}\n` +
-          `   Quit that Chrome and re-run setup, or set DESIGNER_CDP to a free port.`
-      );
+    if (!runningProfile || runningProfile === PROFILE) {
+      log('chrome', 'ok', `CDP already up on :${port}${runningProfile ? ' (profile matches)' : ''}`);
+      return true;
+    }
+    // A debug Chrome on this port under a different --user-data-dir can't be
+    // adopted — sign-in would land in the wrong profile. Don't bail outright:
+    // mirror the non-debug-Chrome branch below — ask the user to quit it,
+    // poll, then fall through and launch one with the right profile. Same
+    // safety (we still never adopt the wrong profile) without forcing a
+    // manual re-run of setup.
+    log(
+      'chrome',
+      'wait',
+      `A debug Chrome is on :${port} with a different profile:\n` +
+        `   running:  ${runningProfile}\n` +
+        `   expected: ${PROFILE}\n` +
+        `   Quit it — I'll launch one with the right profile once it's gone. (Or set DESIGNER_CDP to a free port.)`
+    );
+    const freed = await pollUntil('chrome', async () => !(await isCdpUp(port)), {
+      intervalMs: 1000,
+      timeoutMs: 5 * 60_000,
+      reminder: `Still waiting for the wrong-profile debug Chrome on :${port} to quit.`
+    });
+    if (!freed) {
+      log('chrome', 'fail', `Timed out waiting for the debug Chrome on :${port} to quit. Quit it manually, then re-run setup.`);
       return false;
     }
-    log('chrome', 'ok', `CDP already up on :${port}${runningProfile ? ' (profile matches)' : ''}`);
-    return true;
+    // fall through to the launch path
   }
   if (chromeRunning()) {
     log('chrome', 'wait', 'A non-debug Chrome is running. Quit it (Cmd+Q on the Chrome menu, then close Activity Monitor entries if any). I am polling.');
