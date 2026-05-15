@@ -147,18 +147,20 @@ export const UI_ANCHORS: AnchorDef[] = [
     }
   },
   {
+    // Legacy id (kept to avoid resetting the persisted streak counter). The
+    // original check asserted a 'You\n' / 'Claude\n' text prefix on each
+    // chat turn, but Claude's May 2026 chat redesign removed the in-text
+    // speaker label — turns are now visually distinguished by wrapper
+    // styling, not by a text prefix. Replace with an assertion against
+    // Claude's intentional `data-index="N"` API on each turn row: matching
+    // [data-index="1"] confirms the conversation has >=2 turns AND that the
+    // indexing API still exists. Shape is now simple-hasSelector so future
+    // drift of this anchor is auto-heal-patchable.
     id: 'session.chatTurnPrefix',
     category: 'pattern',
-    description: "chat turns prefixed with 'You\\n' / 'Claude\\n'",
+    description: 'chat-messages renders >=2 turn rows (data-index API)',
     requires: 'session',
-    check: async (b) => {
-      const sample = await b.evalValue<string>(
-        `(() => { const c = document.querySelector('[data-testid="chat-messages"]'); const inner = c && c.children[0]; if (!inner) return ''; return Array.from(inner.children).slice(0, 3).map(d => (d.innerText||'').slice(0, 40)).join('|'); })()`
-      ).catch(() => '');
-      if (!sample) return { ok: false, detail: 'no chat turns' };
-      const ok = /(^|\|)(You|Claude)(\\n|\n|$)/.test(sample) || /You\n|Claude\n/.test(sample);
-      return { ok, detail: ok ? undefined : `first turns: ${sample.slice(0, 120)}` };
-    }
+    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-messages"] [data-index="1"]') })
   },
 
   // --- share dialog (formerly the Export dropdown; moved under Share ~2026-04-19) ---
