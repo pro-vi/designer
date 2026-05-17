@@ -50,7 +50,7 @@ jobs:
 
     steps:
       - name: Checkout at triggering SHA
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           # Run against the exact commit daily-health probed. If main has
           # advanced since, the probe artifact reflects the old code and
