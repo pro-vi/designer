@@ -57,7 +57,7 @@ jobs:
       # The runner already has a node, but pinning it here keeps the Mac mini's
       # global node version free to drift without breaking this job.
       - name: Setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
