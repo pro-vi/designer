@@ -42,6 +42,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup gh PATH
+        # The self-hosted Mac mini runner has gh at /opt/homebrew/bin/gh
+        # (Homebrew), but the workflow's non-interactive bash doesn't inherit
+        # that PATH from ~/.zshrc — it only gets nvm's node bin. Prepend
+        # Homebrew's bin to $GITHUB_PATH so every subsequent step (including
+        # npm-spawned subprocesses that inherit process.env, e.g.
+        # scripts/auto-heal.ts's gh() helper) can find gh. Without this, the
+        # `Close stale drift PRs on green` step + auto-heal's `Ensure labels
+        # exist` step + the script's cooldown / wholesale-redesign checks
+        # silently no-op (`|| true` hides the failure; step exits "success").
+        run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+
       # The runner already has a node, but pinning it here keeps the Mac mini's
       # global node version free to drift without breaking this job.
       - name: Setup node
