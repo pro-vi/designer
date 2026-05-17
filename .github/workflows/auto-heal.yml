@@ -58,6 +58,16 @@ jobs:
           # rebase as needed when opening the PR.
           ref: ${{ github.event.workflow_run.head_sha }}
 
+      - name: Setup gh PATH
+        # The self-hosted Mac mini runner has gh at /opt/homebrew/bin/gh
+        # (Homebrew), but the workflow's non-interactive bash doesn't inherit
+        # that PATH from ~/.zshrc — it only gets nvm's node bin. Prepend
+        # Homebrew's bin to $GITHUB_PATH so every subsequent step (including
+        # the npm-spawned auto-heal script's gh() helper) can find gh.
+        # Without this, `Ensure labels exist` + the script's cooldown /
+        # wholesale-redesign / findDriftPrNumber checks silently no-op.
+        run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+
       - name: Ensure labels exist (idempotent)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
