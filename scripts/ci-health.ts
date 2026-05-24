@@ -55,6 +55,36 @@ function todayUtc(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Scrub privacy-sensitive substrings before serializing to the artifact JSON
+// (which is uploaded as a public-repo artifact, world-downloadable for 30 days).
+// The signed-in Claude session can land Chrome on URLs containing private
+// project UUIDs, ?file= deep links, and per-user absolute paths under $HOME.
+// Strategy: redact UUID-shaped path segments (/p/<uuid> + similar), drop query
+// strings + fragments from URLs, and replace absolute home-dir paths with a
+// stable token so reading the artifact later still tells a maintainer
+// "doctor saw <something under home>" without exposing the username.
+function scrubArtifact(s: string): string {
+  if (!s) return s;
+  return s
+    // /p/<hex-uuid> → /p/<redacted>. Matches both project UUIDs and any other
+    // /<single-letter>/<uuid> shape Claude Design may add later.
+    .replace(/\/[a-z]\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi, (m) => m.slice(0, 3) + '<redacted>')
+    // Strip query strings and fragments from URLs (claude.ai/design?file=foo).
+    .replace(/(https?:\/\/[^\s?#]+)[?#][^\s]*/g, '$1')
+    // macOS home dirs (/Users/<name>/...) and Linux (/home/<name>/...).
+    .replace(/\/Users\/[^\/\s]+/g, '/Users/<redacted>')
+    .replace(/\/home\/[^\/\s]+/g, '/home/<redacted>');
+}
+
+function scrubNav(n: { target: string; landedOn: string; error?: string } | null): typeof n {
+  if (!n) return n;
+  return {
+    target: scrubArtifact(n.target),
+    landedOn: scrubArtifact(n.landedOn),
+    ...(n.error !== undefined ? { error: scrubArtifact(n.error) } : {})
+  };
+}
+
 function ensureDir(p: string): void {
   fs.mkdirSync(p, { recursive: true });
 }
@@ -207,6 +237,12 @@ async function maybeSnapshot(browser: Browser): Promise<{ url: string; htmlBytes
 async function main(): Promise<void> {
   const startedAt = new Date().toISOString();
 
+  // Re-probe mode (set by auto-heal heal) writes to a suffixed filename and
+  // skips updateStreak so a heal-verification run does not overwrite the
+  // canonical daily-health artifact or perturb the streak counter mid-day.
+  const isReprobe = process.env.DESIGNER_REPROBE === '1';
+  const artifactName = isReprobe ? `${todayUtc()}.reprobe.json` : `${todayUtc()}.json`;
+
   // CDP must be alive before doctor or runHealth — both fail confusingly
   // (timeouts, "browser is null") if Chrome never launched after reboot.
   // Surface that failure mode explicitly with one shot at recovery.
@@ -223,7 +259,7 @@ async function main(): Promise<void> {
     };
     const outDir = path.join(REPO_ROOT, 'artifacts', 'health');
     ensureDir(outDir);
-    fs.writeFileSync(path.join(outDir, `${todayUtc()}.json`), JSON.stringify(payload, null, 2));
+    fs.writeFileSync(path.join(outDir, artifactName), JSON.stringify(payload, null, 2));
     console.error(`[ci-health] FAIL — CDP unreachable on :${CDP_PORT} (${cdp.detail}); restart attempted=${cdp.attemptedRestart}`);
     process.exit(2);
   }
@@ -290,13 +326,17 @@ async function main(): Promise<void> {
     generatedAt: startedAt,
     finishedAt: new Date().toISOString(),
     designerVersion: pkgVersion(),
-    chromeUrl: url,
+    chromeUrl: scrubArtifact(url),
     // `canary` retains its V1 shape (session-navigation record) for back-compat
     // with the drift PR body + any existing artifact reader. The home-phase
     // navigation is captured in `homeNav` alongside it.
-    canary: sessionNav,
-    homeNav,
-    doctor,
+    canary: scrubNav(sessionNav),
+    homeNav: scrubNav(homeNav),
+    doctor: {
+      exitCode: doctor.exitCode,
+      stdout: scrubArtifact(doctor.stdout),
+      stderr: scrubArtifact(doctor.stderr)
+    },
     health: {
       ok: !fail,
       counts,
@@ -307,14 +347,22 @@ async function main(): Promise<void> {
 
   const outDir = path.join(REPO_ROOT, 'artifacts', 'health');
   ensureDir(outDir);
-  const outFile = path.join(outDir, `${todayUtc()}.json`);
+  const outFile = path.join(outDir, artifactName);
   fs.writeFileSync(outFile, JSON.stringify(payload, null, 2));
 
   // Streak tracker — input to the auto-heal workflow's N=2 gate. Dedups
   // across phases (a pattern.* anchor probed in both home + session counts
   // as one fail-day if either phase failed, one ok-day only if both passed).
   // Anchors not probed this run keep their existing streak value untouched.
-  updateStreak(outDir, results);
+  // Skipped in re-probe mode: auto-heal verifies its patch against a fresh
+  // probe in the same UTC day, and we don't want that verification run to
+  // double-increment fail-streaks or reset a streak the daily-health run
+  // already booked.
+  if (!isReprobe) {
+    updateStreak(outDir, results);
+  } else {
+    console.log('[ci-health] re-probe mode — skipping updateStreak + writing to .reprobe.json');
+  }
 
   // One-line summary for the workflow log.
   const summary = `[ci-health] ${payload.ok ? 'OK' : 'FAIL'} — health ${counts.ok} ok / ${counts.fail} fail / ${counts.skip} skip · doctor exit ${doctor.exitCode} · v${payload.designerVersion}`;

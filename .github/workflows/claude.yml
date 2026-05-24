@@ -12,11 +12,26 @@ on:
 
 jobs:
   claude:
+    # Two gates AND'd together:
+    # 1. The body contains '@claude' (intent)
+    # 2. The author is OWNER / MEMBER / COLLABORATOR on this repo (authorization)
+    #
+    # Without the author gate, anyone on the public web can drive the
+    # CLAUDE_CODE_OAUTH_TOKEN by leaving an '@claude' comment — burning the
+    # Pro/Max subscription quota (cost-DoS) and potentially using whatever
+    # write scopes the Claude Code GitHub App was installed with (which can
+    # exceed this workflow's read-only `permissions:` declaration).
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
-      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') &&
+         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') &&
+         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') &&
+         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)) ||
+        (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')) &&
+         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read

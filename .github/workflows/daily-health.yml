@@ -169,7 +169,7 @@ jobs:
           branch: health/drift-${{ steps.stamp.outputs.date }}
           base: main
           add-paths: |
-            artifacts/health/**
+            artifacts/health/*.json
           title: 'chore(health): selector drift detected'
           commit-message: 'chore(health): capture failing UI-anchor probe'
           labels: |

@@ -29,7 +29,13 @@ function parseFlags(args: string[]): Flags {
     if (a.startsWith('--')) {
       const parts = a.slice(2).split('=');
       const k = parts[0] ?? '';
-      const v = parts[1] ?? args[++i] ?? true;
+      // Only consume the next arg as this flag's value when the next arg
+      // isn't itself a flag — otherwise `--json --key foo` would swallow
+      // `--key` as `json`'s value and `--key` would never be parsed.
+      const next = args[i + 1];
+      const v =
+        parts[1] ??
+        (next !== undefined && !next.startsWith('--') ? args[++i] : true);
       if (k) out[k] = v as FlagValue;
     } else {
       (out._ as string[]).push(a);
