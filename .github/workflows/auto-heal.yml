@@ -25,6 +25,15 @@ permissions:
   # different workflow run (the triggering daily-health run).
   actions: read
 
+# Serialize auto-heal runs. Two daily-health completions firing close
+# together (cron + manual workflow_dispatch) would otherwise queue two
+# auto-heal jobs that race the self-hosted runner's workspace (shared
+# checkout dir) and streak.json. cancel-in-progress: false so a queued
+# run waits rather than killing an in-flight heal mid-patch.
+concurrency:
+  group: auto-heal
+  cancel-in-progress: false
+
 jobs:
   heal:
     # Defense-in-depth alongside the `branches: [main]` trigger filter:
@@ -121,7 +130,12 @@ jobs:
           # mirror of daily-health.yml's value in sync if you swap canaries
           # — both workflows reference the same project URL by convention.
           DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/72e73856-7b63-4aed-b95a-caca5e3c0e05
-        run: npm run -s auto-heal -- heal "${{ steps.triage.outputs.anchor-id }}"
+          # Pipe the triage output through env (not `${{ }}` substitution into
+          # the shell command body) so an anchor-id with unexpected characters
+          # cannot inject. auto-heal.ts also re-validates the id via
+          # isValidAnchorId() before doing anything with it.
+          ANCHOR_ID: ${{ steps.triage.outputs.anchor-id }}
+        run: npm run -s auto-heal -- heal "$ANCHOR_ID"
 
       - name: Open auto-heal PR
         if: steps.heal.outputs.patched == 'true'
