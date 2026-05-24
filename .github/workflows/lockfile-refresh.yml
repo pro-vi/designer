@@ -34,7 +34,7 @@ jobs:
           npm run check
           npm run build
 
-      - uses: peter-evans/create-pull-request@v6
+      - uses: peter-evans/create-pull-request@v8
         with:
           branch: chore/lockfile-refresh
           title: 'chore(deps): weekly lockfile refresh'
