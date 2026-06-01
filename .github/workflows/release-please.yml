@@ -44,7 +44,7 @@ jobs:
       # normal commit pushes the release step opens/updates the release PR
       # and emits release_created=false, so the publish steps are skipped.
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: steps.release.outputs.release_created
         with:
           ref: ${{ steps.release.outputs.tag_name }}
