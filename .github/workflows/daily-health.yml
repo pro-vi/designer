@@ -122,7 +122,7 @@ jobs:
 
       - name: Upload health artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: health-${{ github.run_id }}
           # JSON only — NOT the page.html / page.png snapshots in the
