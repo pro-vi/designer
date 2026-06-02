@@ -40,7 +40,7 @@
     "smoke": "bash scripts/install-smoke.sh"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.98.0",
+    "@anthropic-ai/sdk": "^0.100.1",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "zod": "^4.4.3"
   },
