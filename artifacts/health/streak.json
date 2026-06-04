@@ -1,0 +1,20 @@
+{
+  "home.creator": 0,
+  "home.nameInput": 0,
+  "home.wireframeButton": 0,
+  "home.highFiButton": 0,
+  "home.createButton": 0,
+  "home.projectsList": 0,
+  "home.projectCard": 0,
+  "pattern.sessionUrl": 0,
+  "session.promptTextarea": 0,
+  "session.sendButton": 0,
+  "session.htmlViewerIframe": 0,
+  "session.chatMessages": 0,
+  "session.iframeSrcPattern": 0,
+  "session.chatTurnPrefix": 0,
+  "share.shareButton": 0,
+  "share.handoffMenuItem": 4,
+  "pattern.fileQueryParam": 0,
+  "session.fileListScrape": 0
+}
