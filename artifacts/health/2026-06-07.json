@@ -1,0 +1,193 @@
+{
+  "ok": false,
+  "generatedAt": "2026-06-07T15:27:21.711Z",
+  "finishedAt": "2026-06-07T15:30:02.367Z",
+  "designerVersion": "0.3.7",
+  "chromeUrl": "https://claude.ai/design/p/<redacted>",
+  "canary": {
+    "target": "https://claude.ai/design/p/<redacted>",
+    "landedOn": "https://claude.ai/design/p/<redacted>"
+  },
+  "homeNav": {
+    "target": "https://claude.ai/design",
+    "landedOn": "https://claude.ai/design"
+  },
+  "doctor": {
+    "exitCode": 0,
+    "stdout": "⚠ dependencies installed — node_modules stale (lockfile mismatch) — run `npm install`\n✓ agent-browser installed — agent-browser 0.26.0\n✓ CDP at port 9222 — Chrome/148.0.7778.97\n✓ signed in to claude.ai/design — https://claude.ai/design/p/<redacted>\n✓ selectors.json present\n✓ designer-loop skill installed — /Users/<redacted>/.claude/skills/designer-loop → /Users/<redacted>/Development/_setup/bootstrap/skills/shared/designer-loop\n⚠ MCP registered with Claude Code — claude CLI not on PATH; install Claude Code to verify\n",
+    "stderr": ""
+  },
+  "health": {
+    "ok": false,
+    "counts": {
+      "ok": 18,
+      "fail": 1,
+      "skip": 0
+    },
+    "results": [
+      {
+        "id": "home.creator",
+        "category": "home",
+        "description": "project-creator container",
+        "requires": "home",
+        "phase": "home",
+        "status": "ok"
+      },
+      {
+        "id": "home.nameInput",
+        "category": "home",
+        "description": "project-name input",
+        "requires": "home",
+        "phase": "home",
+        "status": "ok"
+      },
+      {
+        "id": "home.wireframeButton",
+        "category": "home",
+        "description": "Wireframe fidelity button",
+        "requires": "home",
+        "phase": "home",
+        "status": "ok"
+      },
+      {
+        "id": "home.highFiButton",
+        "category": "home",
+        "description": "High fidelity button",
+        "requires": "home",
+        "phase": "home",
+        "status": "ok"
+      },
+      {
+        "id": "home.createButton",
+        "category": "home",
+        "description": "create-project button",
+        "requires": "home",
+        "phase": "home",
+        "status": "ok"
+      },
+      {
+        "id": "home.projectsList",
+        "category": "home",
+        "description": "projects-list container",
+        "requires": "home",
+        "phase": "home",
+        "status": "ok"
+      },
+      {
+        "id": "home.projectCard",
+        "category": "home",
+        "description": "project-card (at least one)",
+        "requires": "home",
+        "phase": "home",
+        "status": "ok"
+      },
+      {
+        "id": "pattern.sessionUrl",
+        "category": "pattern",
+        "description": "session URL matches /design/p/<uuid>",
+        "requires": "any",
+        "phase": "home",
+        "status": "ok",
+        "detail": "url=https://claude.ai/design"
+      },
+      {
+        "id": "session.promptTextarea",
+        "category": "session",
+        "description": "chat composer textarea",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok"
+      },
+      {
+        "id": "session.sendButton",
+        "category": "session",
+        "description": "send button",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok"
+      },
+      {
+        "id": "session.htmlViewerIframe",
+        "category": "session",
+        "description": "html-viewer-iframe (design preview)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok",
+        "detail": "(no file open — iframe not expected)"
+      },
+      {
+        "id": "session.chatMessages",
+        "category": "session",
+        "description": "chat-messages container",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok"
+      },
+      {
+        "id": "session.iframeSrcPattern",
+        "category": "pattern",
+        "description": "iframe src is claudeusercontent.com with signed ?t= token",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok",
+        "detail": "(no file open — iframe not expected)"
+      },
+      {
+        "id": "session.chatTurnPrefix",
+        "category": "pattern",
+        "description": "chat-messages renders >=2 turn rows (data-index API)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok"
+      },
+      {
+        "id": "share.shareButton",
+        "category": "share",
+        "description": "Share button (opens the dropdown containing handoff/export actions)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok"
+      },
+      {
+        "id": "share.handoffMenuItem",
+        "category": "share",
+        "description": "Handoff-to-Claude-Code menu item (inside Share dropdown)",
+        "requires": "session",
+        "phase": "session",
+        "status": "fail",
+        "detail": "Share opened but no Handoff-to-Claude-Code item"
+      },
+      {
+        "id": "pattern.sessionUrl",
+        "category": "pattern",
+        "description": "session URL matches /design/p/<uuid>",
+        "requires": "any",
+        "phase": "session",
+        "status": "ok",
+        "detail": "url=https://claude.ai/design/p/72e73856-7b63-4aed-b95a-caca5e3c0e05"
+      },
+      {
+        "id": "pattern.fileQueryParam",
+        "category": "pattern",
+        "description": "?file=<name> opens a specific file (URL-based file switching)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok",
+        "detail": "(no file open — not a regression)"
+      },
+      {
+        "id": "session.fileListScrape",
+        "category": "session",
+        "description": "filename text nodes detectable (listFiles scrape still works)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok",
+        "detail": "6 file(s) detected"
+      }
+    ]
+  },
+  "diagnostics": {
+    "url": "https://claude.ai/design/p/72e73856-7b63-4aed-b95a-caca5e3c0e05",
+    "htmlBytes": 61590
+  }
+}
