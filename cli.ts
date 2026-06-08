@@ -12,6 +12,7 @@ import { runSetup } from './setup.ts';
 import { startMcpServer } from './mcp-server.ts';
 import { REPO_ROOT } from './repo-root.ts';
 import { runHealth } from './ui-anchors.ts';
+import { PACKAGE_VERSION } from './package-meta.ts';
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -48,6 +49,11 @@ const flags = parseFlags(rest);
 const key = (flags.key as string) || 'default';
 
 async function main(): Promise<void> {
+  if (cmd === '--version' || cmd === '-v' || cmd === 'version' || flags.version === true || flags.v === true) {
+    console.log(PACKAGE_VERSION);
+    return;
+  }
+
   // Honor --help / -h at the top: `designer <verb> --help` prints just that verb's
   // expanded docs. Done here rather than in each case so every verb gets it free.
   if (flags.help === true || flags.h === true) {
