@@ -30,6 +30,7 @@
     "cli": "tsx cli.ts",
     "setup": "tsx cli.ts setup",
     "doctor": "tsx cli.ts doctor",
+    "test": "npm run build && node --test tests/cli-metadata.test.mjs",
     "check": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run check && npm run build",
