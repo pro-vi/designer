@@ -1,0 +1,108 @@
+name: dependabot-automerge
+
+# Triggered when CI completes — that way we KNOW whether the PR is green
+# before deciding to merge, rather than calling `gh pr merge --auto` and
+# hoping branch protection enforces the gate. This keeps things safe even
+# if branch protection isn't set up yet.
+#
+# Still requires the repo settings:
+#   Settings → General → Pull Requests → "Allow auto-merge"
+#   Settings → Actions → Workflow permissions → "Allow Actions to create PRs"
+
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  evaluate:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve PR + check label
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # workflow_run carries the head_sha of the run; we look up the PR
+          # that head_sha belongs to and read dependabot's auto-applied
+          # `version-update:semver-*` label to decide major vs minor vs patch.
+          # We use labels rather than the dependabot/fetch-metadata action
+          # because that action needs pull_request event context, which
+          # workflow_run does not provide.
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR_JSON=$(gh pr list \
+            --repo "$REPO" \
+            --search "$HEAD_SHA" \
+            --state open \
+            --json number,headRefOid,labels,title,headRefName)
+          PR_NUMBER=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .number" | head -n1)
+          if [ -z "$PR_NUMBER" ]; then
+            echo "no open PR for $HEAD_SHA — bailing"
+            exit 0
+          fi
+          TITLE=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .title")
+          HEAD_REF=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .headRefName")
+          LABELS=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .labels[].name")
+          UPDATE_TYPE=$(echo "$LABELS" | grep '^version-update:semver-' | head -n1 || true)
+          echo "PR #$PR_NUMBER labels: $UPDATE_TYPE"
+          echo "PR #$PR_NUMBER title: $TITLE"
+          # Single-update PRs carry version-update:semver-{patch,minor,major}.
+          # Grouped PRs (dependabot.yml `groups:` config) do NOT — the label is
+          # ambiguous because a group can contain multiple updates. We trust
+          # the group name we configured (patch-and-minor) to mean "only patch
+          # + minor updates are in here" and auto-merge on title match.
+          MERGE=false
+          REASON=""
+          if [ "$UPDATE_TYPE" = "version-update:semver-patch" ] || [ "$UPDATE_TYPE" = "version-update:semver-minor" ]; then
+            MERGE=true
+            REASON="$UPDATE_TYPE"
+          elif echo "$TITLE" | grep -qE "in the patch-and-minor group"; then
+            MERGE=true
+            REASON="grouped:patch-and-minor"
+          elif echo "$HEAD_REF" | grep -q '^dependabot/github_actions/'; then
+            # GitHub Actions bumps are routine tag moves (checkout 4→6 etc.) —
+            # CI just proved the workflows still run on the bumped versions,
+            # so majors are as safe to auto-merge as minors here.
+            MERGE=true
+            REASON="github-actions-bump"
+          else
+            REASON="label=$UPDATE_TYPE title-not-grouped"
+          fi
+          echo "decision: merge=$MERGE ($REASON)"
+          if [ "$MERGE" = "true" ]; then
+            echo "merge=true" >> "$GITHUB_OUTPUT"
+            echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Re-verify head + squash-merge
+        if: steps.gate.outputs.merge == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PR_NUMBER: ${{ steps.gate.outputs.number }}
+        run: |
+          # Race-condition guard: dependabot may have rebased the PR between
+          # CI completion and this step, advancing headRefOid past the SHA the
+          # green CI run actually validated. Re-read the PR right now and
+          # bail if the live head no longer matches HEAD_SHA. --match-head-commit
+          # adds the same protection at the merge API itself.
+          LIVE_HEAD=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          if [ "$LIVE_HEAD" != "$HEAD_SHA" ]; then
+            echo "PR #$PR_NUMBER head moved ($HEAD_SHA -> $LIVE_HEAD) since CI ran — skipping"
+            exit 0
+          fi
+          gh pr merge "$PR_NUMBER" \
+            --repo "$REPO" \
+            --squash \
+            --delete-branch \
+            --match-head-commit "$HEAD_SHA"

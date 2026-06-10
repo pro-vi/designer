@@ -1,0 +1,201 @@
+name: daily-health
+
+on:
+  schedule:
+    # 14:00 UTC = 07:00 PDT / 06:00 PST. Roughly the start of the user's day —
+    # a UI regression caught here lands as a PR they see with their first cup
+    # of coffee, before the day's design work would have hit it.
+    - cron: '0 14 * * *'
+  workflow_dispatch:
+    inputs:
+      open-pr-on-fail:
+        description: 'Open selectors-drift PR if health fails'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+# Serialize runs. A manual workflow_dispatch firing during the cron run
+# would otherwise race the streak cache (both restore the same prior
+# state, compute divergent next states, save under separate run_id keys —
+# last-created-cache-wins, not serialized). cancel-in-progress: false so a
+# queued run waits rather than killing an in-flight probe.
+concurrency:
+  group: daily-health
+  cancel-in-progress: false
+
+jobs:
+  health:
+    name: probe claude.ai/design UI anchors
+    # The auth-required UI probe needs the dedicated Chrome profile (Cloudflare-
+    # passed, signed into claude.ai). Datacenter runners can't replicate that, so
+    # we run on a self-hosted macOS runner the user installs once on their
+    # personal machine. Add the labels [self-hosted, macOS, designer-health]
+    # when configuring the runner.
+    runs-on: [self-hosted, macOS, designer-health]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup gh PATH
+        # The self-hosted Mac mini runner has gh at /opt/homebrew/bin/gh
+        # (Homebrew), but the workflow's non-interactive bash doesn't inherit
+        # that PATH from ~/.zshrc — it only gets nvm's node bin. Prepend
+        # Homebrew's bin to $GITHUB_PATH so every subsequent step (including
+        # npm-spawned subprocesses that inherit process.env, e.g.
+        # scripts/auto-heal.ts's gh() helper) can find gh. Without this, the
+        # `Close stale drift PRs on green` step + auto-heal's `Ensure labels
+        # exist` step + the script's cooldown / wholesale-redesign checks
+        # silently no-op (`|| true` hides the failure; step exits "success").
+        run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+
+      # The runner already has a node, but pinning it here keeps the Mac mini's
+      # global node version free to drift without breaking this job.
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run check
+
+      - name: Compute date stamp
+        id: stamp
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      # actions/checkout creates a clean clone each run, so the streak file
+      # written by ci-health.ts (artifacts/health/streak.json) doesn't
+      # persist across runs by default. Without persistence the N=2 streak
+      # gate in auto-heal never fires — every run starts fresh at 0.
+      # Restore the most recent saved copy here; save after the probe
+      # completes (whether green or fail). save-key uses run_id so each
+      # run writes its own cache entry; restore-keys falls through to the
+      # latest streak- prefix.
+      - name: Restore streak file
+        id: streak-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: artifacts/health/streak.json
+          key: streak-${{ github.run_id }}
+          restore-keys: |
+            streak-
+
+      - name: Run health probe
+        id: probe
+        # DESIGNER_PROBE_PROJECT_URL is the "canary" project for session-state
+        # anchors. The probe opens it after the home-phase pass so session.*
+        # / share.* anchors get exercised. It must be a project the user
+        # commits to keeping around (named "designer smoke test" today).
+        #
+        # To swap canaries:
+        #   1. Create a fresh project on claude.ai/design with stable content.
+        #   2. Open one file in it so the htmlViewer anchor lands.
+        #   3. Replace the URL below + commit + `gh workflow run daily-health.yml`
+        #      to verify green before the next scheduled run.
+        # If the canary 404s or vanishes mid-cycle, session anchors fail loudly
+        # — that's the signal to swap.
+        env:
+          DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/72e73856-7b63-4aed-b95a-caca5e3c0e05
+        run: npm run -s probe:health
+        continue-on-error: true
+
+      - name: Save streak file
+        # Always save — green runs reset streak entries to 0, and we want
+        # the auto-heal workflow + future runs to see that. `actions/cache`
+        # writes only on cache miss; the key is unique per run_id so we
+        # always get a new cache entry, and old entries age out per
+        # GitHub's cache eviction policy.
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: artifacts/health/streak.json
+          key: streak-${{ github.run_id }}
+
+      - name: Upload health artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: health-${{ github.run_id }}
+          # JSON only — NOT the page.html / page.png snapshots in the
+          # artifacts/health/<date>/ subdir. This repo is public, so
+          # uploaded artifacts are world-downloadable; raw DOM + screenshots
+          # of a signed-in claude.ai session (which on the home phase
+          # includes the user's real project list) must not be published.
+          # auto-heal captures its own fresh snapshot on the runner instead.
+          path: artifacts/health/*.json
+          retention-days: 30
+
+      - name: Close stale drift PRs on green
+        if: steps.probe.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TODAY: ${{ steps.stamp.outputs.date }}
+          REPO: ${{ github.repository }}
+        # If today's probe is green, any `health/drift-*` PR from a previous
+        # date is by definition stale evidence — close it and delete the
+        # branch. Keeps the open-PR list signal-rich.
+        run: |
+          gh pr list --repo "$REPO" --state open --label selectors-drift \
+            --json number,headRefName | \
+            jq -r --arg today "$TODAY" '
+              .[] |
+              select(.headRefName | startswith("health/drift-")) |
+              select((.headRefName | sub("^health/drift-"; "")) != $today) |
+              "\(.number)\t\(.headRefName)"
+            ' | \
+            while IFS=$'\t' read -r NUM BRANCH; do
+              [ -z "$NUM" ] && continue
+              echo "closing stale #$NUM ($BRANCH)"
+              gh pr close "$NUM" --repo "$REPO" --delete-branch \
+                --comment "Superseded by today's green daily-health run (${TODAY})." || true
+            done
+
+      - name: Open selectors-drift PR
+        if: steps.probe.outcome == 'failure' && (github.event_name != 'workflow_dispatch' || inputs.open-pr-on-fail)
+        uses: peter-evans/create-pull-request@v8
+        with:
+          # Keep this checked into the repo so a human can compare what the
+          # probe saw today vs what was expected. Branch name is stable per-day
+          # so re-runs of the same day update one PR.
+          branch: health/drift-${{ steps.stamp.outputs.date }}
+          base: main
+          add-paths: |
+            artifacts/health/*.json
+          title: 'chore(health): selector drift detected'
+          commit-message: 'chore(health): capture failing UI-anchor probe'
+          labels: |
+            health
+            selectors-drift
+          body: |
+            **Diagnostic PR — no CI runs on this.** PRs created with the
+            default `GITHUB_TOKEN` do not trigger downstream workflows; this
+            PR carries probe evidence for human review only. Do not merge it
+            into main without rebasing to attach a real CI run, or fix the
+            regression on a separate branch and let this PR close.
+
+            Daily health probe failed against `claude.ai/design`.
+
+            **Run**: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            **Artifact**: `health-${{ github.run_id }}` (attached to the run for 30 days)
+
+            The committed `artifacts/health/<date>.json` records every UI anchor
+            checked, which ones regressed, and a screenshot/HTML capture of the
+            page Chrome was on. To resolve:
+
+            1. Open `claude.ai/design` in your debug Chrome.
+            2. Inspect the failing selectors (see `health.results[].id`).
+            3. If Claude moved a button/data-testid: update `ui-anchors.ts` and
+               any consumer in `designer-controller.ts` / `selectors.json` on
+               a fresh branch — that branch's CI will run.
+            4. If the change is a real regression in the live UI: file upstream
+               + bump the patch version when the workaround lands.
+            5. Close this PR once the fix lands or once `chromeUrl` recovers.

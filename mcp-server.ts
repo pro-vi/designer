@@ -7,8 +7,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { DesignerController } from './designer-controller.ts';
 import { sessionDir } from './artifact-store.ts';
+import { PACKAGE_VERSION } from './package-meta.ts';
 
-const server = new McpServer({ name: 'designer', version: '0.3.0' });
+const server = new McpServer({ name: 'designer', version: PACKAGE_VERSION });
 const controllers = new Map<string, DesignerController>();
 
 function getController(key: string | undefined): DesignerController {

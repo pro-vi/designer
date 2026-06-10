@@ -1,0 +1,34 @@
+version: 2
+
+# Weekly cadence — daily would create more PR noise than this single-package
+# repo can absorb. Lockfile-refresh.yml catches any transitive drift dependabot
+# misses.
+updates:
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: America/Los_Angeles
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    # Group patch + minor bumps so a chatty week doesn't drown out feature PRs.
+    # Major bumps stay one-per-PR so we can review breaking-change notes.
+    groups:
+      patch-and-minor:
+        update-types: [patch, minor]
+    commit-message:
+      # release-please ignores `chore(deps):` for version bumps but they show
+      # up in the `Other Changes` block of the changelog — exactly right.
+      prefix: 'chore(deps)'
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - github-actions

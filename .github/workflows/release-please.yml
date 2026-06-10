@@ -1,0 +1,85 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# release-please opens a single "release PR" against main that accumulates
+# every conventional-commit since the last tag. When the human merges that PR,
+# release-please cuts a tag + creates a GH release; we then publish to npm
+# inline in this same job.
+#
+# Why inline (not a separate `on: release` workflow): the GitHub release
+# release-please creates is signed by the default GITHUB_TOKEN, and per
+# GitHub policy events emitted by that token do NOT trigger downstream
+# workflows. A separate `on: release` listener would silently never fire —
+# which is exactly what happened to the previous release-publish.yml (zero
+# runs across v0.3.5..v0.3.7). Keeping the publish in this same job avoids
+# the trigger gotcha entirely.
+#
+# Why "open a PR, human merges" rather than auto-publish: dependency-bump-only
+# weeks shouldn't ship; the PR is the human's "yes, this is worth a version".
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write   # required for npm publish --provenance
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          # release-type lives in release-please-config.json. Only the manifest
+          # paths and the token need to be wired here; both files default to the
+          # repo root names so we omit them for clarity.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---- publish gate ----
+      # Everything below only runs when release-please actually created a
+      # release this push (i.e. the human just merged the release PR). On
+      # normal commit pushes the release step opens/updates the release PR
+      # and emits release_created=false, so the publish steps are skipped.
+
+      - uses: actions/checkout@v6
+        if: steps.release.outputs.release_created
+        with:
+          ref: ${{ steps.release.outputs.tag_name }}
+
+      - uses: actions/setup-node@v6
+        if: steps.release.outputs.release_created
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+
+      - if: steps.release.outputs.release_created
+        run: npm ci --no-audit --no-fund
+
+      # The package's prepack hook runs check + build during `npm publish`,
+      # but we run them explicitly here so a failure surfaces in a named step
+      # rather than buried in npm publish's output.
+      - if: steps.release.outputs.release_created
+        run: npm run check
+      - if: steps.release.outputs.release_created
+        run: npm run build
+
+      - name: Verify version matches tag
+        if: steps.release.outputs.release_created
+        run: |
+          PKG_V=$(node -p "require('./package.json').version")
+          TAG="${{ steps.release.outputs.tag_name }}"
+          TAG=${TAG#v}
+          if [ "$PKG_V" != "$TAG" ]; then
+            echo "package.json version ($PKG_V) does not match release tag ($TAG)" >&2
+            exit 1
+          fi
+
+      - name: Publish to npm
+        if: steps.release.outputs.release_created
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

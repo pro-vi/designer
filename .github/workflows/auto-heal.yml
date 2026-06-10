@@ -1,0 +1,177 @@
+name: auto-heal
+
+# Fires after daily-health concludes. On failure, downloads the failing
+# probe's artifact, runs `scripts/auto-heal.ts triage` to pick a single
+# anchor with streak >= 2 (and not in 7-day cooldown), then `heal` it via
+# LLM inference + local re-probe. If green after patch, opens a PR for
+# human review. Auto-heal PRs are NEVER auto-merged — that's an explicit
+# constraint from issue #17.
+
+on:
+  workflow_run:
+    workflows: ["daily-health"]
+    types: [completed]
+    # Only respond to daily-health runs on the default branch. This job
+    # has write permissions + secrets and checks out + executes the
+    # triggering SHA on a self-hosted runner — without this filter, a
+    # manual workflow_dispatch of daily-health on any feature branch
+    # would let that branch's code run with elevated privileges.
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  # Required for actions/download-artifact@v8 to fetch artifacts from a
+  # different workflow run (the triggering daily-health run).
+  actions: read
+
+# Serialize auto-heal runs. Two daily-health completions firing close
+# together (cron + manual workflow_dispatch) would otherwise queue two
+# auto-heal jobs that race the self-hosted runner's workspace (shared
+# checkout dir) and streak.json. cancel-in-progress: false so a queued
+# run waits rather than killing an in-flight heal mid-patch.
+concurrency:
+  group: auto-heal
+  cancel-in-progress: false
+
+jobs:
+  heal:
+    # Defense-in-depth alongside the `branches: [main]` trigger filter:
+    # also gate the job on the triggering run's branch. workflow_run only
+    # ever fires from the default-branch workflow definition, but this
+    # makes the "never run untrusted-branch code with our secrets"
+    # invariant explicit at the job level too.
+    if: github.event.workflow_run.head_branch == 'main'
+    # Fire on every daily-health completion regardless of conclusion.
+    # daily-health.yml marks the probe step `continue-on-error: true`, so
+    # the workflow's roll-up conclusion is `success` even when the probe
+    # fails — gating on `workflow_run.conclusion` here would never see a
+    # probe failure. `auto-heal.ts triage` reads the artifact and the
+    # streak file to decide; on green days it emits `action=skip` and the
+    # heal step is skipped via the per-step `if` below. Cost: ~30s of
+    # runner time on green days for triage + artifact download.
+    name: propose ui-anchor patch on probe failure
+    # Self-hosted so we can re-run the probe against the live CDP Chrome
+    # (same runner that ran daily-health). Datacenter runners can't reach
+    # the signed-in Chrome profile.
+    runs-on: [self-hosted, macOS, designer-health]
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout at triggering SHA
+        uses: actions/checkout@v6
+        with:
+          # Run against the exact commit daily-health probed. If main has
+          # advanced since, the probe artifact reflects the old code and
+          # the patch needs to land on the same base — peter-evans will
+          # rebase as needed when opening the PR.
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup gh PATH
+        # The self-hosted Mac mini runner has gh at /opt/homebrew/bin/gh
+        # (Homebrew), but the workflow's non-interactive bash doesn't inherit
+        # that PATH from ~/.zshrc — it only gets nvm's node bin. Prepend
+        # Homebrew's bin to $GITHUB_PATH so every subsequent step (including
+        # the npm-spawned auto-heal script's gh() helper) can find gh.
+        # Without this, `Ensure labels exist` + the script's cooldown /
+        # wholesale-redesign / findDriftPrNumber checks silently no-op.
+        run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+
+      - name: Ensure labels exist (idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create auto-heal \
+            --color B7E4C7 \
+            --description "LLM-proposed selector recovery from daily-health drift" \
+            2>/dev/null || true
+          gh label create wholesale-redesign-suspected \
+            --color FFB4A2 \
+            --description ">=5 anchors regressed at once — needs human triage" \
+            2>/dev/null || true
+
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Download health artifact from triggering run
+        # Cross-workflow artifact download. `run-id` + `github-token` are
+        # what differentiates this from a same-run download.
+        uses: actions/download-artifact@v8
+        with:
+          name: health-${{ github.event.workflow_run.id }}
+          path: artifacts/health/
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Triage candidate anchor
+        id: triage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run -s auto-heal -- triage
+
+      - name: Heal selected anchor
+        id: heal
+        if: steps.triage.outputs.action == 'heal'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Either credential is sufficient — auto-heal.ts prefers OAuth when
+          # both are set. ANTHROPIC_API_KEY is per-token metered billing;
+          # CLAUDE_CODE_OAUTH_TOKEN is Claude Pro/Max subscription quota
+          # (installed by the official Claude Code GitHub App, see #20).
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Re-probe needs the same canary the original run probed. Keep this
+          # mirror of daily-health.yml's value in sync if you swap canaries
+          # — both workflows reference the same project URL by convention.
+          DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/72e73856-7b63-4aed-b95a-caca5e3c0e05
+          # Pipe the triage output through env (not `${{ }}` substitution into
+          # the shell command body) so an anchor-id with unexpected characters
+          # cannot inject. auto-heal.ts also re-validates the id via
+          # isValidAnchorId() before doing anything with it.
+          ANCHOR_ID: ${{ steps.triage.outputs.anchor-id }}
+        run: npm run -s auto-heal -- heal "$ANCHOR_ID"
+
+      - name: Open auto-heal PR
+        if: steps.heal.outputs.patched == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: health/auto-heal-${{ steps.heal.outputs.anchor-id }}-${{ steps.heal.outputs.date }}
+          base: main
+          add-paths: |
+            ui-anchors.ts
+          commit-message: |
+            chore(ui-anchors): auto-heal ${{ steps.heal.outputs.anchor-id }}
+
+            Replaces selector for ${{ steps.heal.outputs.anchor-id }} from
+            `${{ steps.heal.outputs.old-selector }}` to `${{ steps.heal.outputs.new-selector }}`.
+            LLM confidence: ${{ steps.heal.outputs.confidence }}. Re-probe green.
+          title: "chore(ui-anchors): auto-heal ${{ steps.heal.outputs.anchor-id }}"
+          labels: |
+            auto-heal
+          body: |
+            ## Auto-heal proposal
+
+            - **Anchor**: `${{ steps.heal.outputs.anchor-id }}`
+            - **Before**: `${{ steps.heal.outputs.old-selector }}`
+            - **After**: `${{ steps.heal.outputs.new-selector }}`
+            - **Confidence**: ${{ steps.heal.outputs.confidence }}
+            - **Local re-probe**: green after patch
+            - **Originating drift PR**: ${{ steps.heal.outputs.drift-pr-number != '' && format('#{0}', steps.heal.outputs.drift-pr-number) || '(none found)' }}
+            - **Triggered by run**: [daily-health #${{ github.event.workflow_run.id }}](${{ github.event.workflow_run.html_url }})
+
+            ### LLM rationale
+
+            > ${{ steps.heal.outputs.rationale }}
+
+            ---
+
+            **Human review required.** This PR is NOT auto-merged. Verify the
+            new selector matches the intended element before merging — auto-
+            heal validates that the *anchor probes green*, not that the
+            selector targets the *right* DOM node.

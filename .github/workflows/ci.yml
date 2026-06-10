@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch — saves runner minutes when a
+# series of pushes lands quickly.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check
+      - run: npm run build
+      - name: Verify dist/ is intact
+        run: test -f dist/cli.js && test -f dist/mcp-server.js
+
+  smoke:
+    name: clean-room install smoke
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci --no-audit --no-fund
+      # install-smoke.sh runs npm pack (which triggers the prepack hook =
+      # check + build) then installs the tarball into a stock node:20
+      # container. ubuntu-latest already has docker available.
+      - run: bash scripts/install-smoke.sh

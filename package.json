@@ -1,6 +1,6 @@
 {
   "name": "@pro-vi/designer",
-  "version": "0.3.5",
+  "version": "0.3.8",
   "type": "module",
   "description": "MCP + CLI for autonomous iteration of claude.ai/design — drives the design surface via agent-browser, downloads handoff bundles, and exposes a tasting harness for full-viewport variant comparison.",
   "license": "MIT",
@@ -30,16 +30,21 @@
     "cli": "tsx cli.ts",
     "setup": "tsx cli.ts setup",
     "doctor": "tsx cli.ts doctor",
+    "test": "npm run build && node --test tests/cli-metadata.test.mjs",
     "check": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "prepublishOnly": "npm run check && npm run build",
+    "prepack": "npm run check && npm run build",
     "postinstall": "node scripts/postinstall.mjs",
-    "probe": "tsx scripts/probe.ts"
+    "probe": "tsx scripts/probe.ts",
+    "probe:health": "tsx scripts/ci-health.ts",
+    "auto-heal": "tsx scripts/auto-heal.ts",
+    "smoke": "bash scripts/install-smoke.sh"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.102.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "cross-spawn": "^7.0.6",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/cross-spawn": "^6.0.6",
@@ -50,6 +55,11 @@
   "engines": {
     "node": ">=20"
   },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
   "files": [
     "dist/",
     "bin/",

@@ -321,24 +321,48 @@ export class DesignerController {
   async _submitPrompt(prompt: string): Promise<void> {
     const { promptTextarea, sendButton } = this.selectors.composer;
     await this.browser.waitFor(promptTextarea);
-    // React-controlled textarea: bypass React's value ownership via the native
-    // HTMLTextAreaElement setter, then fire a bubbling input event. This is
-    // the canonical React-safe programmatic input pattern.
+    // The composer has shipped as both a React-controlled <textarea> and a
+    // ProseMirror contenteditable <div> — branch on what's actually there.
     await this.browser.evalValue<boolean>(
       `(() => {
-        const ta = document.querySelector(${JSON.stringify(promptTextarea)});
-        if (!ta) throw new Error('textarea not found');
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-        setter.call(ta, ${JSON.stringify(prompt)});
-        ta.dispatchEvent(new Event('input', { bubbles: true }));
-        ta.focus();
-        return true;
+        const el = document.querySelector(${JSON.stringify(promptTextarea)});
+        if (!el) throw new Error('composer input not found');
+        const text = ${JSON.stringify(prompt)};
+        if (el instanceof HTMLTextAreaElement) {
+          // Bypass React's value ownership via the native setter, then fire a
+          // bubbling input event.
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+          setter.call(el, text);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.focus();
+          return true;
+        }
+        if (el.isContentEditable) {
+          // Deliver the text as a synthetic paste so the editor's own paste
+          // pipeline updates its internal state; execCommand('insertText')
+          // flattens multi-line prompts into one paragraph.
+          el.focus();
+          const sel = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          const dt = new DataTransfer();
+          dt.setData('text/plain', text);
+          const unhandled = el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+          if (unhandled) {
+            // No editor intercepted the paste — plain contenteditable fallback.
+            document.execCommand('insertText', false, text);
+          }
+          return true;
+        }
+        throw new Error('composer input is neither textarea nor contenteditable: ' + el.tagName);
       })()`
     );
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 150));
       const disabled = await this.browser.evalValue<boolean>(
-        `(() => { const b = document.querySelector(${JSON.stringify(sendButton)}); return !b || b.disabled; })()`
+        `(() => { const b = document.querySelector(${JSON.stringify(sendButton)}); return !b || b.disabled || b.getAttribute('aria-disabled') === 'true'; })()`
       );
       if (!disabled) break;
     }
@@ -718,7 +742,11 @@ export class DesignerController {
     const opened = await this._clickButtonByText(/^Share$/).catch(() => null);
     if (!opened) await this._clickButtonByText(/^Export$/);
     await new Promise((r) => setTimeout(r, 400));
-    await this._clickButtonByText(/handoff to claude code/i);
+    // ~2026-06: Share opens a tabbed dialog; handoff lives under the
+    // "Send to…" tab as a "Claude Code" destination row. Older builds had a
+    // direct "Handoff to Claude Code" menu item — keep it as the fallback.
+    const viaSendTo = await this._clickClaudeCodeSendTo().catch(() => false);
+    if (!viaSendTo) await this._clickButtonByText(/handoff to claude code/i);
 
     let handoffUrl = '';
     for (let i = 0; i < 30; i++) {
@@ -787,6 +815,38 @@ export class DesignerController {
         const btn = Array.from(document.querySelectorAll('button')).find(b => re.test((b.textContent || '').trim()));
         if (!btn) throw new Error('button not found: ' + ${JSON.stringify(re.source)});
         btn.click();
+        return true;
+      })()`
+    );
+  }
+
+  // Navigate the tabbed Share dialog (2026-06 layout): "Send to…" tab →
+  // "Claude Code" destination row → its Send button. The row's Send button
+  // has no testid and its label text ("Claude Code", "Hand off the project
+  // to your terminal") lives in sibling elements, so match by walking up to
+  // the row container. Returns false if the tab or row isn't there, so the
+  // caller can fall back to the legacy direct menu item.
+  async _clickClaudeCodeSendTo(): Promise<boolean> {
+    const tabClicked = await this.browser.evalValue<boolean>(
+      `(() => {
+        const tab = Array.from(document.querySelectorAll('button[role="tab"]')).find(t => /send to/i.test(t.textContent || ''));
+        if (!tab) return false;
+        tab.click();
+        return true;
+      })()`
+    );
+    if (!tabClicked) return false;
+    await new Promise((r) => setTimeout(r, 400));
+    return this.browser.evalValue<boolean>(
+      `(() => {
+        const sends = Array.from(document.querySelectorAll('button')).filter(b => (b.textContent || '').trim() === 'Send');
+        const target = sends.find(b => {
+          let row = b;
+          for (let i = 0; i < 3 && row.parentElement; i++) row = row.parentElement;
+          return /claude code/i.test(row.textContent || '');
+        });
+        if (!target) return false;
+        target.click();
         return true;
       })()`
     );
