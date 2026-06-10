@@ -110,7 +110,9 @@ export const UI_ANCHORS: AnchorDef[] = [
     category: 'session',
     description: 'send button',
     requires: 'session',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-send-button"]') })
+    // The 2026-06 build dropped data-testid="chat-send-button"; the button is
+    // now only identifiable by its title="Send (Enter)". Match either.
+    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-send-button"], button[title^="Send ("]') })
   },
   {
     id: 'session.htmlViewerIframe',
@@ -174,7 +176,7 @@ export const UI_ANCHORS: AnchorDef[] = [
   {
     id: 'share.handoffMenuItem',
     category: 'share',
-    description: 'Handoff-to-Claude-Code menu item (inside Share dropdown)',
+    description: 'Handoff-to-Claude-Code action (Share → Send to… tab → Claude Code row, or the legacy dropdown item)',
     requires: 'session',
     check: async (b) => {
       const opened = await b.evalValue<boolean>(
@@ -182,10 +184,32 @@ export const UI_ANCHORS: AnchorDef[] = [
       ).catch(() => false);
       if (!opened) return { ok: false, detail: 'Share button not clickable' };
       await new Promise((r) => setTimeout(r, 400));
-      const found = await hasButtonMatching(b, /handoff to claude code/i);
-      // close dropdown
+      // Legacy layout (pre 2026-06): direct "Handoff to Claude Code" menu item.
+      let found = await hasButtonMatching(b, /handoff to claude code/i);
+      if (!found) {
+        // 2026-06 layout: Share opens a tabbed dialog; handoff lives under the
+        // "Send to…" tab as a "Claude Code" destination row with a Send button.
+        // Only assert the row exists — clicking Send would mint a handoff link.
+        const tabClicked = await b.evalValue<boolean>(
+          `(() => { const tab = Array.from(document.querySelectorAll('button[role="tab"]')).find(t => /send to/i.test(t.textContent || '')); if (!tab) return false; tab.click(); return true; })()`
+        ).catch(() => false);
+        if (tabClicked) {
+          await new Promise((r) => setTimeout(r, 400));
+          found = await b.evalValue<boolean>(
+            `(() => {
+              const sends = Array.from(document.querySelectorAll('button')).filter(x => (x.textContent || '').trim() === 'Send');
+              return sends.some(x => {
+                let row = x;
+                for (let i = 0; i < 3 && row.parentElement; i++) row = row.parentElement;
+                return /claude code/i.test(row.textContent || '');
+              });
+            })()`
+          ).catch(() => false);
+        }
+      }
+      // close dialog/dropdown
       await b.evalValue<boolean>(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`).catch(() => null);
-      return { ok: found, detail: found ? undefined : 'Share opened but no Handoff-to-Claude-Code item' };
+      return { ok: found, detail: found ? undefined : 'Share opened but no Claude Code handoff action (checked legacy item and Send to… tab)' };
     }
   },
 
