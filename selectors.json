@@ -18,7 +18,7 @@
   },
   "composer": {
     "promptTextarea": "[data-testid=\"chat-composer-input\"]",
-    "sendButton": "[data-testid=\"chat-send-button\"]",
+    "sendButton": "[data-testid=\"chat-send-button\"], button[title^=\"Send (\"]",
     "stopButton": null,
     "attachButton": "button[aria-label=\"Attach file\"]",
     "modelButton": "[data-testid=\"model-selector-button\"]"
