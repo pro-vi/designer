@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.9](https://github.com/pro-vi/designer/compare/v0.3.8...v0.3.9) (2026-06-10)
+
+
+### Features
+
+* **platform:** add Windows support — paths, spawn shims, Chrome launcher ([#2](https://github.com/pro-vi/designer/issues/2)) ([ad40bf2](https://github.com/pro-vi/designer/commit/ad40bf27ffe91392b94a57abad5f5532ca430717))
+
+
+### Bug Fixes
+
+* **cli:** print package version for --version/-v/version ([#46](https://github.com/pro-vi/designer/issues/46)) ([1606d84](https://github.com/pro-vi/designer/commit/1606d84d82cde71a91d0dbbd163f8c11640b41a3))
+
 ## [0.3.8](https://github.com/pro-vi/designer/compare/v0.3.7...v0.3.8) (2026-06-10)
 
 
