@@ -21,7 +21,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  # Required for actions/download-artifact@v4 to fetch artifacts from a
+  # Required for actions/download-artifact@v8 to fetch artifacts from a
   # different workflow run (the triggering daily-health run).
   actions: read
 
@@ -99,7 +99,7 @@ jobs:
       - name: Download health artifact from triggering run
         # Cross-workflow artifact download. `run-id` + `github-token` are
         # what differentiates this from a same-run download.
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: health-${{ github.event.workflow_run.id }}
           path: artifacts/health/
