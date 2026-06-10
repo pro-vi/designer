@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.8](https://github.com/pro-vi/designer/compare/v0.3.7...v0.3.8) (2026-06-10)
+
+
+### Bug Fixes
+
+* **drift:** track 2026-06 claude.ai/design layout ([#50](https://github.com/pro-vi/designer/issues/50)) ([45ff5a2](https://github.com/pro-vi/designer/commit/45ff5a2e6ad939835fbce439b6aa706d821c1271)), closes [#49](https://github.com/pro-vi/designer/issues/49)
+
 ## [0.3.7](https://github.com/pro-vi/designer/compare/v0.3.6...v0.3.7) (2026-05-24)
 
 
