@@ -43,13 +43,14 @@ jobs:
             --repo "$REPO" \
             --search "$HEAD_SHA" \
             --state open \
-            --json number,headRefOid,labels,title)
+            --json number,headRefOid,labels,title,headRefName)
           PR_NUMBER=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .number" | head -n1)
           if [ -z "$PR_NUMBER" ]; then
             echo "no open PR for $HEAD_SHA — bailing"
             exit 0
           fi
           TITLE=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .title")
+          HEAD_REF=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .headRefName")
           LABELS=$(echo "$PR_JSON" | jq -r ".[] | select(.headRefOid == \"$HEAD_SHA\") | .labels[].name")
           UPDATE_TYPE=$(echo "$LABELS" | grep '^version-update:semver-' | head -n1 || true)
           echo "PR #$PR_NUMBER labels: $UPDATE_TYPE"
@@ -67,6 +68,12 @@ jobs:
           elif echo "$TITLE" | grep -qE "in the patch-and-minor group"; then
             MERGE=true
             REASON="grouped:patch-and-minor"
+          elif echo "$HEAD_REF" | grep -q '^dependabot/github_actions/'; then
+            # GitHub Actions bumps are routine tag moves (checkout 4→6 etc.) —
+            # CI just proved the workflows still run on the bumped versions,
+            # so majors are as safe to auto-merge as minors here.
+            MERGE=true
+            REASON="github-actions-bump"
           else
             REASON="label=$UPDATE_TYPE title-not-grouped"
           fi
