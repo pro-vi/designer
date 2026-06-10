@@ -23,7 +23,7 @@
     "anthropic"
   ],
   "bin": {
-    "designer": "./bin/designer"
+    "designer": "./bin/designer.mjs"
   },
   "scripts": {
     "mcp": "tsx mcp-server.ts",
@@ -43,9 +43,11 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "cross-spawn": "^7.0.6",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/cross-spawn": "^6.0.6",
     "@types/node": "^25.6.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
@@ -55,13 +57,15 @@
   },
   "os": [
     "darwin",
-    "linux"
+    "linux",
+    "win32"
   ],
   "files": [
     "dist/",
     "bin/",
     "skills/",
     "scripts/designer-chrome.sh",
+    "scripts/designer-chrome.ps1",
     "scripts/postinstall.mjs",
     "selectors.json",
     "README.md",

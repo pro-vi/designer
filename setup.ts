@@ -1,15 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { REPO_ROOT } from './repo-root.ts';
+import { defaultChromeBin, isChromeRunning, xspawnSync, WHICH, IS_WIN, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { createBrowser, type Browser } from './browser.ts';
 
 const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
 const SKILL_DEST_DIR = path.join(os.homedir(), '.claude', 'skills', 'designer-loop');
 const SKILL_DEST = path.join(SKILL_DEST_DIR, 'SKILL.md');
-const CHROME_BIN = process.env.CHROME_BIN || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const CHROME_BIN = process.env.CHROME_BIN || defaultChromeBin();
 const DEFAULT_PORT = process.env.DESIGNER_CDP || '9222';
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
 
@@ -49,8 +50,7 @@ async function verifySignedIn(browser: Browser): Promise<boolean> {
 }
 
 function chromeRunning(): boolean {
-  const r = spawnSync('pgrep', ['-f', 'Google Chrome.app/Contents/MacOS/Google Chrome'], { stdio: 'pipe' });
-  return r.status === 0 && (r.stdout?.toString().trim().length ?? 0) > 0;
+  return isChromeRunning();
 }
 
 type ProfileStatus = 'match' | 'mismatch' | 'unknown';
@@ -67,7 +67,10 @@ function cdpChromeProfileStatus(port: string): ProfileStatus {
   // ps failed; callers treat 'unknown' like 'match' (adopt-ok) because
   // step4's DOM-marker check is the backstop.
   if (!/^\d+$/.test(port)) return 'unknown';
-  const r = spawnSync(
+  // No `ps`/`sh` on Windows; 'unknown' is adopt-ok and step4's DOM-marker
+  // check remains the backstop there.
+  if (IS_WIN) return 'unknown';
+  const r = xspawnSync(
     'sh',
     ['-c', `ps -Axww -o command | grep -- '--remote-debugging-port=${port}' | grep -v grep`],
     { stdio: 'pipe' }
@@ -145,7 +148,7 @@ async function step1NpmInstall(): Promise<boolean> {
   } else {
     log('deps', 'wait', 'running npm install...');
   }
-  const r = spawnSync('npm', ['install'], { cwd: REPO_ROOT, stdio: 'inherit' });
+  const r = xspawnSync('npm', ['install'], { cwd: REPO_ROOT, stdio: 'inherit' });
   if (r.status !== 0) {
     log('deps', 'fail', `npm install exited ${r.status}`);
     return false;
@@ -155,9 +158,9 @@ async function step1NpmInstall(): Promise<boolean> {
 }
 
 function step2AgentBrowser(): boolean {
-  const r = spawnSync('agent-browser', ['--version'], { stdio: 'pipe' });
+  const r = xspawnSync('agent-browser', ['--version'], { stdio: 'pipe' });
   if (r.status !== 0) {
-    log('agent-browser', 'fail', 'not found on PATH. Install: brew install agent-browser  OR  npm i -g agent-browser');
+    log('agent-browser', 'fail', 'not found on PATH. Install: npm i -g agent-browser');
     return false;
   }
   log('agent-browser', 'ok', r.stdout?.toString().trim() || 'present');
@@ -198,11 +201,11 @@ async function step3Chrome(port: string): Promise<boolean> {
     // fall through to the launch path
   }
   if (chromeRunning()) {
-    log('chrome', 'wait', 'A non-debug Chrome is running. Quit it (Cmd+Q on the Chrome menu, then close Activity Monitor entries if any). I am polling.');
+    log('chrome', 'wait', `A non-debug Chrome is running. ${QUIT_CHROME_HINT} I am polling.`);
     const quit = await pollUntil('chrome', () => !chromeRunning(), {
       intervalMs: 1000,
       timeoutMs: 5 * 60_000,
-      reminder: 'Still waiting for Chrome to fully quit. Cmd+Q on Chrome.'
+      reminder: `Still waiting for Chrome to fully quit. ${QUIT_CHROME_HINT}`
     });
     if (!quit) {
       log('chrome', 'fail', 'Timed out waiting for Chrome to quit. Quit manually then re-run setup.');
@@ -225,7 +228,8 @@ async function step3Chrome(port: string): Promise<boolean> {
     reminder: `Waiting for CDP at :${port}...`
   });
   if (!up) {
-    log('chrome', 'fail', 'Chrome launched but CDP did not come up. Try `./scripts/designer-chrome.sh` manually.');
+    const fallback = IS_WIN ? 'scripts\\designer-chrome.ps1' : './scripts/designer-chrome.sh';
+    log('chrome', 'fail', `Chrome launched but CDP did not come up. Try \`${fallback}\` manually.`);
     return false;
   }
   log('chrome', 'ok', `CDP up on :${port}`);
@@ -281,25 +285,29 @@ function step5Skill(): boolean {
 }
 
 function step6Mcp(port: string): boolean {
-  const claudeBin = spawnSync('which', ['claude'], { stdio: 'pipe' });
+  const claudeBin = xspawnSync(WHICH, ['claude'], { stdio: 'pipe' });
   if (claudeBin.status !== 0) {
     log('mcp', 'wait', 'claude CLI not on PATH; skipping MCP registration. Install Claude Code to register.');
     return true;
   }
-  const list = spawnSync('claude', ['mcp', 'list'], { stdio: 'pipe' });
+  const list = xspawnSync('claude', ['mcp', 'list'], { stdio: 'pipe' });
   const stdout = list.stdout?.toString() || '';
   if (/(\s|^)designer\b/i.test(stdout)) {
     log('mcp', 'ok', 'Already registered.');
     return true;
   }
-  const wrapper = path.join(REPO_ROOT, 'bin', 'designer');
-  if (!fs.existsSync(wrapper)) {
-    log('mcp', 'fail', `Missing wrapper ${wrapper}`);
-    return false;
-  }
-  const cmd = ['mcp', 'add', '--scope', 'user', '--transport', 'stdio', 'designer', '--', 'env', `DESIGNER_CDP=${port}`, wrapper, 'mcp', 'serve'];
+  // Register by command name (claude resolves via PATH; on Windows that's the
+  // npm-generated .cmd shim, on macOS/Linux the symlinked node script). This
+  // avoids encoding the absolute file path of a bash wrapper into the MCP
+  // config — which would break on Windows entirely.
+  //
+  // claude mcp add supports `-e KEY=VALUE` for env vars, which works on every
+  // OS — replaces the Unix-only `env DESIGNER_CDP=X` prefix the prior version
+  // used. We only emit it when the port is non-default to keep the config tidy.
+  const envFlags = port === '9222' ? [] : ['-e', `DESIGNER_CDP=${port}`];
+  const cmd = ['mcp', 'add', '--scope', 'user', '--transport', 'stdio', ...envFlags, 'designer', '--', 'designer', 'mcp', 'serve'];
   log('mcp', 'wait', `Registering: claude ${cmd.join(' ')}`);
-  const reg = spawnSync('claude', cmd, { stdio: 'inherit' });
+  const reg = xspawnSync('claude', cmd, { stdio: 'inherit' });
   if (reg.status !== 0) {
     log('mcp', 'fail', `claude mcp add exited ${reg.status}. Run manually:\n   claude ${cmd.join(' ')}`);
     return false;
