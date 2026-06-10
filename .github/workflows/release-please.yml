@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish-tag:
+        description: >-
+          Existing release tag to (re)publish to npm, e.g. v0.3.8. Rescue path
+          for a release that was tagged but whose npm publish step failed —
+          release-please won't re-emit release_created for an existing tag.
+        required: false
+        type: string
 
 # release-please opens a single "release PR" against main that accumulates
 # every conventional-commit since the last tag. When the human merges that PR,
@@ -20,11 +28,17 @@ on:
 #
 # Why "open a PR, human merges" rather than auto-publish: dependency-bump-only
 # weeks shouldn't ship; the PR is the human's "yes, this is worth a version".
+#
+# Auth: npm Trusted Publishing (OIDC) — no NPM_TOKEN secret. Tokens expire
+# (the 0.3.8 publish 404'd on a 30-day-old token); the OIDC exchange mints a
+# short-lived credential per run instead. One-time registry-side setup:
+# npmjs.com → @pro-vi/designer → Settings → Trusted Publisher → GitHub
+# Actions, repo pro-vi/designer, workflow release-please.yml, publish allowed.
 
 permissions:
   contents: write
   pull-requests: write
-  id-token: write   # required for npm publish --provenance
+  id-token: write   # OIDC: required for trusted publishing + provenance
 
 jobs:
   release-please:
@@ -39,39 +53,48 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       # ---- publish gate ----
-      # Everything below only runs when release-please actually created a
-      # release this push (i.e. the human just merged the release PR). On
-      # normal commit pushes the release step opens/updates the release PR
-      # and emits release_created=false, so the publish steps are skipped.
+      # Everything below runs when release-please actually created a release
+      # this push (i.e. the human just merged the release PR), OR when a
+      # human dispatched the workflow with publish-tag to rescue a tagged-
+      # but-unpublished release. On normal commit pushes the release step
+      # opens/updates the release PR and emits release_created=false, so the
+      # publish steps are skipped.
 
       - uses: actions/checkout@v6
-        if: steps.release.outputs.release_created
+        if: steps.release.outputs.release_created || inputs.publish-tag
         with:
-          ref: ${{ steps.release.outputs.tag_name }}
+          ref: ${{ inputs.publish-tag || steps.release.outputs.tag_name }}
 
       - uses: actions/setup-node@v6
-        if: steps.release.outputs.release_created
+        if: steps.release.outputs.release_created || inputs.publish-tag
         with:
           node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
           cache: 'npm'
+          # No registry-url: setup-node would write an .npmrc that references
+          # $NODE_AUTH_TOKEN, and npm hard-fails on unset env vars in config.
+          # Trusted publishing needs no token; default registry is npmjs.
 
-      - if: steps.release.outputs.release_created
+      # Trusted publishing needs npm >= 11.5.1; node 20 bundles npm 10.x.
+      # Pin to ^11 so a future npm major can't silently change behavior here.
+      - if: steps.release.outputs.release_created || inputs.publish-tag
+        run: npm install -g npm@^11.5.1
+
+      - if: steps.release.outputs.release_created || inputs.publish-tag
         run: npm ci --no-audit --no-fund
 
       # The package's prepack hook runs check + build during `npm publish`,
       # but we run them explicitly here so a failure surfaces in a named step
       # rather than buried in npm publish's output.
-      - if: steps.release.outputs.release_created
+      - if: steps.release.outputs.release_created || inputs.publish-tag
         run: npm run check
-      - if: steps.release.outputs.release_created
+      - if: steps.release.outputs.release_created || inputs.publish-tag
         run: npm run build
 
       - name: Verify version matches tag
-        if: steps.release.outputs.release_created
+        if: steps.release.outputs.release_created || inputs.publish-tag
         run: |
           PKG_V=$(node -p "require('./package.json').version")
-          TAG="${{ steps.release.outputs.tag_name }}"
+          TAG="${{ inputs.publish-tag || steps.release.outputs.tag_name }}"
           TAG=${TAG#v}
           if [ "$PKG_V" != "$TAG" ]; then
             echo "package.json version ($PKG_V) does not match release tag ($TAG)" >&2
@@ -79,7 +102,5 @@ jobs:
           fi
 
       - name: Publish to npm
-        if: steps.release.outputs.release_created
+        if: steps.release.outputs.release_created || inputs.publish-tag
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
