@@ -143,6 +143,53 @@ export const UI_ANCHORS: AnchorDef[] = [
     check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-composer-input"]') })
   },
   {
+    // Existence (above) isn't enough — _submitPrompt can only fill a composer
+    // that is a <textarea> or a contenteditable element, and it branches on
+    // exactly that. The 2026-06 build shipped the composer as a ProseMirror
+    // contenteditable <div>; if it drifts to a shape that's neither (a bare
+    // wrapper, a web component, a readonly node), submission silently stalls
+    // and callers fall back to driving the page by hand. That's the regression
+    // fract-ai hit on a pre-0.3.9 build (designer/.inbox 2026-06-10). This
+    // anchor asserts the composer is in a shape _submitPrompt actually handles.
+    //
+    // Scope: this checks the composer's SHAPE, not that a paste actually lands
+    // (verifying that would mean typing into a live session). A contenteditable
+    // whose editor rejects synthetic paste would still pass here.
+    //
+    // Maintenance: this is a block-bodied evalValue check, so it is NOT
+    // auto-heal-patchable (anchor-patcher's canPatch only rewrites the simple
+    // `hasSelector(b, '<sel>')` shape). The chat-composer-input selector is
+    // duplicated from session.promptTextarea above — if it drifts, auto-heal
+    // will self-heal promptTextarea but skip this one; update the selector in
+    // the eval below by hand to match. (Same limitation as the other rich
+    // anchors here: hasButtonMatching, iframeSrcPattern, fileListScrape.)
+    id: 'session.composerFillable',
+    category: 'session',
+    description: 'composer is fillable (textarea or contenteditable, per _submitPrompt)',
+    requires: 'session',
+    check: async (b) => {
+      type ComposerShape = { found: boolean; tag?: string; contentEditable?: boolean; fillable?: boolean };
+      const shape: ComposerShape = await b
+        .evalValue<ComposerShape>(
+          `(() => {
+            const el = document.querySelector('[data-testid="chat-composer-input"]');
+            if (!el) return { found: false };
+            const fillable = el instanceof HTMLTextAreaElement || el.isContentEditable;
+            return { found: true, tag: el.tagName, contentEditable: el.isContentEditable, fillable };
+          })()`
+        )
+        .catch((): ComposerShape => ({ found: false }));
+      if (!shape.found) return { ok: false, detail: 'composer not found' };
+      if (shape.fillable) {
+        return { ok: true, detail: shape.contentEditable ? 'contenteditable' : `<${(shape.tag || '').toLowerCase()}>` };
+      }
+      return {
+        ok: false,
+        detail: `composer is <${(shape.tag || '?').toLowerCase()}> — neither textarea nor contenteditable; _submitPrompt cannot fill it (composer shape drifted)`
+      };
+    }
+  },
+  {
     id: 'session.sendButton',
     category: 'session',
     description: 'send button',

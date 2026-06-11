@@ -118,7 +118,7 @@ Writes `tasting.html` with variant tabs + 1/2/3 shortcuts + persistent notes, se
 ## Operations
 
 - `designer doctor` — diagnose setup state. Exits 2 on failure.
-- `designer health [--json]` — probe 17 UI anchors. Wire into cron to catch claude.ai UI regressions.
+- `designer health [--json]` — probe every UI anchor designer depends on. Wire into cron to catch claude.ai UI regressions.
 - **Daily CI** in `.github/workflows/`: `daily-health.yml` runs the auth-required UI probe on a self-hosted macOS runner once per day; `ci.yml` typechecks + builds + does a Docker clean-room install smoke on every PR; `release-please.yml` opens a release PR on conventional commits, merging it tags + publishes via `release-publish.yml`. Selector regressions land as auto-opened PRs under the `selectors-drift` label.
 
 ## Known quirks
