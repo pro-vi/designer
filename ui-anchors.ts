@@ -151,6 +151,18 @@ export const UI_ANCHORS: AnchorDef[] = [
     // and callers fall back to driving the page by hand. That's the regression
     // fract-ai hit on a pre-0.3.9 build (designer/.inbox 2026-06-10). This
     // anchor asserts the composer is in a shape _submitPrompt actually handles.
+    //
+    // Scope: this checks the composer's SHAPE, not that a paste actually lands
+    // (verifying that would mean typing into a live session). A contenteditable
+    // whose editor rejects synthetic paste would still pass here.
+    //
+    // Maintenance: this is a block-bodied evalValue check, so it is NOT
+    // auto-heal-patchable (anchor-patcher's canPatch only rewrites the simple
+    // `hasSelector(b, '<sel>')` shape). The chat-composer-input selector is
+    // duplicated from session.promptTextarea above — if it drifts, auto-heal
+    // will self-heal promptTextarea but skip this one; update the selector in
+    // the eval below by hand to match. (Same limitation as the other rich
+    // anchors here: hasButtonMatching, iframeSrcPattern, fileListScrape.)
     id: 'session.composerFillable',
     category: 'session',
     description: 'composer is fillable (textarea or contenteditable, per _submitPrompt)',
