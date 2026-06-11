@@ -49,15 +49,37 @@ export const UI_ANCHORS: AnchorDef[] = [
   // --- login state (first so a signed-out session tops the report) ---
   {
     // Issue #32: signed out, `designer health` showed only skips/cryptic
-    // fails and read as "everything OK". A logged-out claude.ai/design
-    // redirects to /login — call that out explicitly.
+    // fails and read as "everything OK". This anchor calls the signed-out
+    // state out explicitly.
+    //
+    // A URL-only check is not enough: a logged-out visit to claude.ai/design
+    // sometimes redirects to /login, but sometimes renders the login wall AT
+    // the /design URL with no /login substring (the #16 false positive that
+    // setup's DOM-based verifier exists to catch — see setup.ts). So gate on
+    // the DOM app-shell marker setup uses, not the URL alone.
     id: 'login.signedIn',
     category: 'pattern',
-    description: 'signed in (claude.ai is not showing the login wall)',
+    description: 'signed in (claude.ai is rendering the app shell, not the login wall)',
     requires: 'any',
-    check: async (_b, url) => {
-      if (!/claude\.ai\/login/.test(url)) return { ok: true };
-      return { ok: false, detail: `signed out — Chrome is on the login wall (${url.slice(0, 80)}). Run: designer setup` };
+    check: async (b, url) => {
+      // Explicit login wall in the URL — unambiguously signed out.
+      if (/claude\.ai\/login/.test(url)) {
+        return { ok: false, detail: `signed out — Chrome is on the login wall (${url.slice(0, 80)}). Run: designer setup` };
+      }
+      // On a design surface, the signed-in app shell renders project-creator
+      // (home) or chat-composer-input (session). Their absence here means the
+      // login wall is being served at the /design URL — fail loudly.
+      if (/claude\.ai\/design/.test(url)) {
+        const signedIn =
+          (await hasSelector(b, '[data-testid="project-creator"]')) ||
+          (await hasSelector(b, '[data-testid="chat-composer-input"]'));
+        return signedIn
+          ? { ok: true }
+          : { ok: false, detail: `login wall rendered at ${url.slice(0, 80)} (no app shell) — signed out. Run: designer setup` };
+      }
+      // Off the claude.ai/design surface entirely (e.g. an unrelated tab) —
+      // sign-in can't be judged from this tab, so don't false-fail.
+      return { ok: true, detail: `not on a claude.ai/design surface (url=${url.slice(0, 60)}) — sign-in not checked here` };
     }
   },
 
