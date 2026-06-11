@@ -63,6 +63,7 @@ Still needs debug Chrome running (`npx -y @pro-vi/designer setup` handles it).
 - **Dedicated profile.** Chrome 136+ blocks `--remote-debugging-port` on the default profile. Login to `~/.chrome-designer-profile/` persists.
 - **Auto-launch.** MCP auto-launches debug Chrome on the first tool call if the profile exists.
 - **Bot detection.** Real Chrome + user-controlled login — not headless. Cloudflare + Google OAuth see a normal session. First login may trigger a Google new-device prompt.
+- **No password manager in the debug profile.** The dedicated profile ships with no extensions or saved logins, by design. If your Claude sign-in is bound to a passkey or password manager (e.g. a passkey stored in 1Password), it won't be available in the debug window. Use email-code login, or install your password-manager extension into the debug profile once — it persists. It's a one-time sign-in; the session sticks.
 - **`DESIGNER_CDP=9222`** is embedded in the MCP registration. Only export it in your shell if you invoke the CLI directly.
 
 ## CLI
@@ -118,7 +119,7 @@ Writes `tasting.html` with variant tabs + 1/2/3 shortcuts + persistent notes, se
 ## Operations
 
 - `designer doctor` — diagnose setup state. Exits 2 on failure.
-- `designer health [--json]` — probe 17 UI anchors. Wire into cron to catch claude.ai UI regressions.
+- `designer health [--json]` — probe every UI anchor designer depends on. Wire into cron to catch claude.ai UI regressions.
 - **Daily CI** in `.github/workflows/`: `daily-health.yml` runs the auth-required UI probe on a self-hosted macOS runner once per day; `ci.yml` typechecks + builds + does a Docker clean-room install smoke on every PR; `release-please.yml` opens a release PR on conventional commits, merging it tags + publishes via `release-publish.yml`. Selector regressions land as auto-opened PRs under the `selectors-drift` label.
 
 ## Known quirks
