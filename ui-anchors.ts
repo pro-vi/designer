@@ -46,6 +46,21 @@ async function hasButtonMatching(browser: Browser, pattern: RegExp): Promise<boo
 }
 
 export const UI_ANCHORS: AnchorDef[] = [
+  // --- login state (first so a signed-out session tops the report) ---
+  {
+    // Issue #32: signed out, `designer health` showed only skips/cryptic
+    // fails and read as "everything OK". A logged-out claude.ai/design
+    // redirects to /login — call that out explicitly.
+    id: 'login.signedIn',
+    category: 'pattern',
+    description: 'signed in (claude.ai is not showing the login wall)',
+    requires: 'any',
+    check: async (_b, url) => {
+      if (!/claude\.ai\/login/.test(url)) return { ok: true };
+      return { ok: false, detail: `signed out — Chrome is on the login wall (${url.slice(0, 80)}). Run: designer setup` };
+    }
+  },
+
   // --- home page ---
   {
     id: 'home.creator',

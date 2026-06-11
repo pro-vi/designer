@@ -217,10 +217,35 @@ async function step3Chrome(port: string): Promise<boolean> {
     log('chrome', 'fail', `Chrome not found at ${CHROME_BIN}. Set CHROME_BIN to override.`);
     return false;
   }
-  const child = spawn(CHROME_BIN, ['--remote-debugging-port=' + port, '--user-data-dir=' + PROFILE, 'https://claude.ai/design'], {
-    detached: true,
-    stdio: 'ignore'
-  });
+  // These flags suppress first-run interstitials that otherwise swallow the
+  // command-line URL on a brand-new profile (first install, or a user who
+  // deleted theirs — issue #32). When that happens CDP comes up with ZERO
+  // page targets, so step4's agent-browser connect creates its own background
+  // tab (visibilityState=hidden) and the login poll watches a stale invisible
+  // login wall forever.
+  //   --no-first-run                   skip the first-run setup flow
+  //   --no-default-browser-check       suppress the "make Chrome default" modal
+  //   --disable-search-engine-choice-screen  suppress the EU/region search-
+  //     engine-choice screen, which is a *separate* first-run intercept the
+  //     other two flags don't cover (flagged in the #32 cross-model review;
+  //     the reporter is on Linux where this screen is most likely to appear).
+  // Defense-in-depth only: step4 still backstops a stale/wrong tab below, so a
+  // first-run surface we haven't enumerated here can't silently hang setup.
+  const child = spawn(
+    CHROME_BIN,
+    [
+      '--remote-debugging-port=' + port,
+      '--user-data-dir=' + PROFILE,
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-search-engine-choice-screen',
+      'https://claude.ai/design'
+    ],
+    {
+      detached: true,
+      stdio: 'ignore'
+    }
+  );
   child.unref();
   const up = await pollUntil('chrome', () => isCdpUp(port), {
     intervalMs: 800,
@@ -244,10 +269,62 @@ async function step4SignIn(port: string): Promise<boolean> {
   await browser.open('https://claude.ai/design').catch(() => undefined);
   await sleep(2500);
 
+  // The poll can end up pinned to a stale tab the SPA never re-renders: a
+  // fresh profile's first-run swallows the launch URL, or the user completes
+  // an OAuth login in a different tab. The login succeeds (Claude's cookies
+  // are profile-wide, shared across every tab) but the watched tab stays on
+  // its logged-out snapshot — the #32 symptom: "Chrome shows up and I can
+  // login" yet the poll dots never stop.
+  //
+  // agent-browser's tab list is session-scoped (it can't see sibling tabs
+  // Chrome or OAuth opened), so switching tabs isn't an option. The robust,
+  // typing-safe signal is a profile-wide Claude auth cookie: it appears only
+  // AFTER login completes, no matter which tab was used. Gate on it, then
+  // navigate the pinned tab to claude.ai/design — a logged-in profile
+  // redirects straight through to the signed-in app. (Navigate, not reload: a
+  // stale tab could be on about:blank, which a reload leaves blank.)
+  //
+  // Two safety/robustness properties, both from the #32 cross-model review:
+  //   • Cookie presence only grants *permission to navigate*; the DOM marker
+  //     (verifySignedIn) remains the sole proof of signed-in. A stale/expired
+  //     cookie or a 2FA/onboarding redirect therefore can't false-complete
+  //     setup — we'd navigate, the marker still wouldn't appear, and the poll
+  //     keeps waiting. Match `sessionKey*` (covers sessionKey + sessionKeyV2)
+  //     so a newer auth-cookie name doesn't make recovery silently miss.
+  //   • Never navigate before the cookie exists: that's the only window in
+  //     which a half-typed login form (or an in-flight OAuth tab) could be the
+  //     thing we'd clobber.
+  //
+  // Recovery retries up to MAX_RECOVERY_NAVS (not once): the original bug is a
+  // navigation/target race, and a single latched attempt that doesn't take
+  // (slow redirect, transient network) would just create a new silent
+  // forever-poll. The poll interval is the natural backoff; the plain DOM
+  // check still runs every iteration regardless.
+  const MAX_RECOVERY_NAVS = 4;
+  const hasAuthCookie = async (): Promise<boolean> => {
+    try {
+      return (await browser.cookies()).some((c) => /^sessionKey/.test(c.name) && /claude\.ai$/.test(c.domain) && c.value.length > 20);
+    } catch {
+      return false;
+    }
+  };
+  let recoveryNavs = 0;
+  const checkSignedIn = async (): Promise<boolean> => {
+    if (await verifySignedIn(browser)) return true;
+    // Login done (cookie present) but this tab is stale: land it on design.
+    if (recoveryNavs < MAX_RECOVERY_NAVS && (await hasAuthCookie())) {
+      recoveryNavs++;
+      await browser.open('https://claude.ai/design').catch(() => undefined);
+      await sleep(3000);
+      return verifySignedIn(browser);
+    }
+    return false;
+  };
+
   // pollUntil checks the predicate before emitting any reminder — so an
   // already-signed-in session returns true on the first iteration and the
   // user never sees the sign-in prompt.
-  const ok = await pollUntil('login', () => verifySignedIn(browser), {
+  const ok = await pollUntil('login', checkSignedIn, {
     intervalMs: 2000,
     timeoutMs: 10 * 60_000,
     reminder:
@@ -256,6 +333,19 @@ async function step4SignIn(port: string): Promise<boolean> {
   });
   if (!ok) {
     log('login', 'fail', 'Timed out waiting for a signed-in claude.ai/design session. Re-run setup when ready.');
+    // Diagnostics for remote triage — #32 was undebuggable because we never
+    // knew the poll was pinned to a stale login tab. Report the watched URL
+    // and whether a Claude auth cookie exists. Note: cookies get is
+    // origin-scoped, so an off-origin watched tab (about:blank, chrome://)
+    // reads as 'absent' even if the profile has the cookie — the watched URL
+    // in this same line disambiguates that case.
+    const watched = await browser.url().catch(() => '(unreachable)');
+    const authCookie = await hasAuthCookie();
+    log(
+      'login',
+      'fail',
+      `Watched tab: ${watched} | Claude auth cookie: ${authCookie ? 'present — login succeeded but the tab stayed stale; re-run: designer setup' : 'absent (or watched tab is off claude.ai origin) — see watched URL above'}`
+    );
     return false;
   }
   const url = (await browser.url().catch(() => '')) || 'claude.ai/design';
