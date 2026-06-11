@@ -29,6 +29,13 @@ export interface TabInfo {
   url: string;
 }
 
+export interface CookieInfo {
+  name: string;
+  value: string;
+  domain: string;
+  path?: string;
+}
+
 export interface Browser {
   session: string;
   run(args: string[], opts?: { input?: string; parseJson?: boolean }): Promise<string>;
@@ -38,6 +45,8 @@ export interface Browser {
   title(): Promise<string>;
   tabs(): Promise<TabInfo[]>;
   activateTab(index: number): Promise<void>;
+  reload(): Promise<string>;
+  cookies(): Promise<CookieInfo[]>;
   snapshot<T = unknown>(opts?: SnapshotOptions): Promise<T>;
   snapshotText(opts?: SnapshotOptions): Promise<string>;
   click(sel: string): Promise<string>;
@@ -70,8 +79,15 @@ export function createBrowser({
 
   function connectFlags(): string[] {
     if (!cdp) return [];
-    if (cdp === 'auto' || cdp === '1' || cdp === 'true') return ['--auto-connect'];
-    return ['--cdp', cdp];
+    // agent-browser's daemon honors --cdp only when it first creates a
+    // session; an existing session keeps its original connection and
+    // silently ignores a different --cdp endpoint (verified on 0.21.4
+    // through 0.27.2). Scope the daemon session by endpoint so designer
+    // never inherits a connection to some other Chrome — e.g. the user's
+    // own agent-browser use against a different port (issue #32 triage).
+    const scope = ['--session', `designer-cdp-${cdp.replace(/[^a-zA-Z0-9.-]/g, '_')}`];
+    if (cdp === 'auto' || cdp === '1' || cdp === 'true') return [...scope, '--auto-connect'];
+    return [...scope, '--cdp', cdp];
   }
 
   function run(
@@ -123,6 +139,15 @@ export function createBrowser({
     },
     activateTab: async (index) => {
       await run(['tab', String(index)]);
+    },
+    reload: () => run(['reload']),
+    cookies: async () => {
+      const out = await run(['cookies', 'get', '--json']);
+      const env = JSON.parse(out) as { success?: boolean; data?: { cookies?: CookieInfo[] }; error?: unknown };
+      if (env.success === false) {
+        throw new Error(`agent-browser cookies get failed: ${JSON.stringify(env.error)}`);
+      }
+      return env.data?.cookies ?? [];
     },
     snapshot: <T = unknown>({ interactive = true, scope }: SnapshotOptions = {}) => {
       const args = ['snapshot', '--json'];
