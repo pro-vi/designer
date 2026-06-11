@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.10](https://github.com/pro-vi/designer/compare/v0.3.9...v0.3.10) (2026-06-11)
+
+
+### Features
+
+* **health:** assert composer is fillable, not just present ([#57](https://github.com/pro-vi/designer/issues/57)) ([5b7527e](https://github.com/pro-vi/designer/commit/5b7527ed5a1e60c8751445de428e24e99b3be096))
+
+
+### Bug Fixes
+
+* **setup:** detect sign-in on fresh Chrome profiles ([#32](https://github.com/pro-vi/designer/issues/32)) ([#55](https://github.com/pro-vi/designer/issues/55)) ([428a014](https://github.com/pro-vi/designer/commit/428a0149d5768aec27c53e8829daf26998d355b5))
+
 ## [0.3.9](https://github.com/pro-vi/designer/compare/v0.3.8...v0.3.9) (2026-06-10)
 
 
