@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Clean-room install smoke. Packs the current repo, installs the tarball into
-# a stock node:20 container with no host node_modules in scope, and asserts the
+# a stock node:22 container with no host node_modules in scope, and asserts the
 # bin runs end-to-end (help text + the parts of `doctor` that don't need Chrome).
 #
 # Detects fragility before publish: missing files in package.json, ESM ext bugs,
@@ -13,7 +13,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-DOCKER_IMAGE="${DOCKER_IMAGE:-node:20}"
+DOCKER_IMAGE="${DOCKER_IMAGE:-node:22}"
 WORK_HOST="$(mktemp -d -t designer-smoke-XXXXXX)"
 trap 'rm -rf "$WORK_HOST"' EXIT
 

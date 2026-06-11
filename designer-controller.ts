@@ -8,6 +8,7 @@ import { sessionDir, saveIteration, type IterationRecord } from './artifact-stor
 import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
 import { REPO_ROOT } from './repo-root.ts';
 import { ensureCdpUp } from './cdp-ensure.ts';
+import { RunStateObserver } from './run-state.ts';
 
 export interface Selectors {
   login: { signedInIndicator: string | null };
@@ -59,7 +60,18 @@ export interface SessionStatus {
   awaitingClarification: boolean;
 }
 
-export type FailureMode = null | 'timeout' | 'unstable' | 'no_change';
+export type FailureMode = null | 'timeout' | 'unstable' | 'no_change' | 'stalled' | 'blocked';
+
+interface GenerationDone {
+  ok: boolean;
+  elapsedMs: number;
+  url?: string;
+  iframeSrc?: string;
+  htmlBytes?: number;
+  html?: string;
+  error?: string;
+  reason?: string;
+}
 
 export interface IterateResult {
   done: { ok: boolean; elapsedMs: number; failureMode: FailureMode };
@@ -376,10 +388,14 @@ export class DesignerController {
     );
   }
 
-  async sendPrompt(prompt: string, { decisive = false }: { decisive?: boolean } = {}): Promise<{ ok: true }> {
+  async sendPrompt(
+    prompt: string,
+    { decisive = false, onBeforeSubmit }: { decisive?: boolean; onBeforeSubmit?: () => void } = {}
+  ): Promise<{ ok: true }> {
     const before = await this.fetchServedHtml();
     this._preSendHtml = before.html;
     const effective = prompt + FLAT_LAYOUT_SUFFIX + (decisive ? DECISIVE_SUFFIX : '');
+    onBeforeSubmit?.();
     await this._submitPrompt(effective);
     const suffixApplied = decisive ? 'flat_layout+decisive' : 'flat_layout';
     appendHistory(this.key, { kind: 'prompt', prompt, suffixApplied });
@@ -390,15 +406,15 @@ export class DesignerController {
     timeoutMs = 20 * 60_000,
     stabilityMs = 4000,
     pollMs = 1500
-  }: { timeoutMs?: number; stabilityMs?: number; pollMs?: number } = {}): Promise<{
-    ok: boolean;
-    elapsedMs: number;
-    url?: string;
-    iframeSrc?: string;
-    htmlBytes?: number;
-    html?: string;
-    error?: string;
-  }> {
+  }: { timeoutMs?: number; stabilityMs?: number; pollMs?: number } = {}): Promise<GenerationDone> {
+    return this._waitForGenerationDoneHtml({ timeoutMs, stabilityMs, pollMs });
+  }
+
+  async _waitForGenerationDoneHtml({
+    timeoutMs = 20 * 60_000,
+    stabilityMs = 4000,
+    pollMs = 1500
+  }: { timeoutMs?: number; stabilityMs?: number; pollMs?: number } = {}): Promise<GenerationDone> {
     const start = Date.now();
     const preHtml = this._preSendHtml || '';
     let lastHtml = '';
@@ -430,6 +446,37 @@ export class DesignerController {
       await new Promise((r) => setTimeout(r, pollMs));
     }
     return { ok: false, error: 'timeout', elapsedMs: Date.now() - start };
+  }
+
+  async _waitForGenerationDoneNetwork(
+    observer: RunStateObserver,
+    {
+      timeoutMs = 20 * 60_000,
+      pollMs = 1500
+    }: { timeoutMs?: number; stabilityMs?: number; pollMs?: number } = {}
+  ): Promise<GenerationDone> {
+    const terminal = await observer.awaitTerminal({ hardTimeoutMs: timeoutMs });
+    if (terminal.terminal === 'observer-lost') {
+      return { ok: false, error: 'observer-lost', elapsedMs: terminal.elapsedMs, reason: terminal.reason };
+    }
+    if (terminal.terminal === 'blocked') {
+      return { ok: false, error: 'blocked', elapsedMs: terminal.elapsedMs, reason: terminal.reason };
+    }
+    if (terminal.terminal === 'timeout') {
+      return { ok: false, error: 'stalled', elapsedMs: terminal.elapsedMs, reason: terminal.reason };
+    }
+
+    let { html, src } = await this.fetchServedHtml();
+    if (html && html !== this._preSendHtml) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      const settled = await this.fetchServedHtml();
+      if (settled.html && settled.html !== html) {
+        html = settled.html;
+        src = settled.src;
+      }
+    }
+    const url = await this.currentUrl();
+    return { ok: true, elapsedMs: terminal.elapsedMs, url, iframeSrc: src, htmlBytes: html.length, html };
   }
 
   async snapshotDesign({
@@ -475,8 +522,29 @@ export class DesignerController {
     const preFiles = await this.listFiles().catch((): string[] => []);
     const preChatCount = (await this.getChatTurns()).length;
 
-    await this.sendPrompt(prompt, { decisive });
-    const done = await this.waitForGenerationDone({ timeoutMs, stabilityMs });
+    const waitBudgetMs = timeoutMs ?? 20 * 60_000;
+    let observer: RunStateObserver | null = await RunStateObserver.attach({
+      preferUrlPrefix: (await this.currentUrl()).split('?')[0] || null
+    });
+    let done: GenerationDone;
+    try {
+      await this.sendPrompt(prompt, { decisive, onBeforeSubmit: () => observer?.beginRun() });
+      if (observer) {
+        done = await this._waitForGenerationDoneNetwork(observer, { timeoutMs: waitBudgetMs, stabilityMs });
+        if (done.error === 'observer-lost') {
+          const fallback = await this._waitForGenerationDoneHtml({
+            timeoutMs: Math.max(1, waitBudgetMs - done.elapsedMs),
+            stabilityMs
+          });
+          done = { ...fallback, elapsedMs: done.elapsedMs + fallback.elapsedMs };
+        }
+      } else {
+        done = await this._waitForGenerationDoneHtml({ timeoutMs: waitBudgetMs, stabilityMs });
+      }
+    } finally {
+      observer?.close();
+      observer = null;
+    }
 
     const postFiles = await this.listFiles().catch((): string[] => []);
     const postTurns = await this.getChatTurns();
@@ -494,8 +562,12 @@ export class DesignerController {
     const activeFile = extractFileParam(snap.url);
 
     let failureMode: FailureMode = null;
-    if (!done.ok) failureMode = done.error === 'timeout' ? 'timeout' : 'unstable';
-    else if (snap.html === this._preSendHtml && newFiles.length === 0) failureMode = 'no_change';
+    if (!done.ok) {
+      if (done.error === 'timeout') failureMode = 'timeout';
+      else if (done.error === 'stalled') failureMode = 'stalled';
+      else if (done.error === 'blocked') failureMode = 'blocked';
+      else failureMode = 'unstable';
+    } else if (snap.html === this._preSendHtml && newFiles.length === 0) failureMode = 'no_change';
 
     const fidelity = getSession(this.key)?.fidelity || null;
     const record: IterationRecord = saveIteration(this.key, {

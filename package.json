@@ -30,7 +30,7 @@
     "cli": "tsx cli.ts",
     "setup": "tsx cli.ts setup",
     "doctor": "tsx cli.ts doctor",
-    "test": "npm run build && node --test tests/cli-metadata.test.mjs",
+    "test": "npm run build && node --test tests/cli-metadata.test.mjs && node --import tsx --test tests/run-state.*.test.mjs",
     "check": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run check && npm run build",
@@ -38,7 +38,9 @@
     "probe": "tsx scripts/probe.ts",
     "probe:health": "tsx scripts/ci-health.ts",
     "auto-heal": "tsx scripts/auto-heal.ts",
-    "smoke": "bash scripts/install-smoke.sh"
+    "smoke": "bash scripts/install-smoke.sh",
+    "trace": "tsx scripts/trace-spike.ts",
+    "trace:analyze": "tsx scripts/trace-analyze.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",
@@ -53,7 +55,7 @@
     "typescript": "^6.0.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "os": [
     "darwin",

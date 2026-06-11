@@ -1,4 +1,5 @@
 import type { Browser } from './browser.ts';
+import { RunStateObserver } from './run-state.ts';
 
 // Every UI anchor this MCP depends on to work. Grouped by the surface state
 // they live on. A regression in Claude Design's UI will trip one or more of
@@ -28,7 +29,7 @@ interface AnchorDef {
   category: AnchorCategory;
   description: string;
   requires: AnchorState;
-  check: (browser: Browser, currentUrl: string) => Promise<{ ok: boolean; detail?: string }>;
+  check: (browser: Browser, currentUrl: string) => Promise<{ ok: boolean; status?: ProbeStatus; detail?: string }>;
 }
 
 async function hasSelector(browser: Browser, sel: string): Promise<boolean> {
@@ -43,6 +44,100 @@ async function hasButtonMatching(browser: Browser, pattern: RegExp): Promise<boo
       `(() => { const re = new RegExp(${JSON.stringify(pattern.source)}, ${JSON.stringify(pattern.flags)}); return Array.from(document.querySelectorAll('button')).some(b => re.test((b.textContent || '').trim())); })()`
     )
     .catch(() => false));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; detail?: string }> {
+  const prompt =
+    'Health check: answer in chat only with the single word ok. Do not create, modify, or delete files.';
+  const filled = await browser
+    .evalValue<boolean>(
+      `(() => {
+        const el = document.querySelector('[data-testid="chat-composer-input"]');
+        if (!el) return false;
+        const text = ${JSON.stringify(prompt)};
+        if (el instanceof HTMLTextAreaElement) {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+          setter.call(el, text);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.focus();
+          return true;
+        }
+        if (el.isContentEditable) {
+          el.focus();
+          const sel = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          const dt = new DataTransfer();
+          dt.setData('text/plain', text);
+          const unhandled = el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+          if (unhandled) document.execCommand('insertText', false, text);
+          return true;
+        }
+        return false;
+      })()`
+    )
+    .catch(() => false);
+  if (!filled) return { ok: false, detail: 'composer not fillable for canary prompt' };
+
+  for (let i = 0; i < 30; i++) {
+    const disabled = await browser
+      .evalValue<boolean>(
+        `(() => {
+          const b = document.querySelector('[data-testid="chat-send-button"], button[title^="Send ("]');
+          return !b || b.disabled || b.getAttribute('aria-disabled') === 'true';
+        })()`
+      )
+      .catch(() => true);
+    if (!disabled) break;
+    await sleep(150);
+  }
+
+  const clicked = await browser
+    .evalValue<boolean>(
+      `(() => {
+        const b = document.querySelector('[data-testid="chat-send-button"], button[title^="Send ("]');
+        if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+        b.click();
+        return true;
+      })()`
+    )
+    .catch(() => false);
+  return clicked ? { ok: true } : { ok: false, detail: 'send button unavailable for canary prompt' };
+}
+
+async function checkTurnRpcContract(_browser: Browser, currentUrl: string): Promise<{ ok: boolean; status?: ProbeStatus; detail?: string }> {
+  if (process.env.DESIGNER_TURN_RPC_CANARY !== '1') {
+    return { ok: true, status: 'skip', detail: 'turn-RPC canary disabled (DESIGNER_TURN_RPC_CANARY!=1)' };
+  }
+  const observer = await RunStateObserver.attach({ preferUrlPrefix: currentUrl.split('?')[0] || null });
+  if (!observer) {
+    return { ok: true, status: 'skip', detail: 'CDP observer unavailable; turn-RPC canary not probed' };
+  }
+
+  try {
+    observer.beginRun();
+    const submitted = await submitTurnRpcCanary(_browser);
+    if (!submitted.ok) return { ok: true, status: 'skip', detail: submitted.detail };
+
+    const terminal = await observer.awaitTerminal({ stallMs: 25_000, hardTimeoutMs: 75_000 });
+    const summary = observer.signalSummary();
+    const detail =
+      `heartbeat x${summary.heartbeat}, release ${summary.release > 0 ? 'seen' : 'missing'}, ` +
+      `chat x${summary.chatOpen}, chunks x${summary.chatChunk}, terminal=${terminal.terminal}` +
+      (summary.observedRpcPaths.length ? `, observed=[${summary.observedRpcPaths.join(', ')}]` : ', observed=[]');
+    return {
+      ok: terminal.terminal === 'finished' && summary.heartbeat > 0 && summary.release > 0,
+      detail
+    };
+  } finally {
+    observer.close();
+  }
 }
 
 export const UI_ANCHORS: AnchorDef[] = [
@@ -216,6 +311,13 @@ export const UI_ANCHORS: AnchorDef[] = [
     description: 'chat-messages container',
     requires: 'session',
     check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-messages"]') })
+  },
+  {
+    id: 'network.turnRpcContract',
+    category: 'pattern',
+    description: 'OmeletteService Chat/RenewTurn/ReleaseTurn network contract',
+    requires: 'session',
+    check: checkTurnRpcContract
   },
   {
     id: 'session.iframeSrcPattern',
@@ -394,7 +496,7 @@ export async function runHealth(
       };
       try {
         const r = await a.check(browser, currentUrl);
-        results.push({ ...base, status: r.ok ? 'ok' : 'fail', detail: r.detail });
+        results.push({ ...base, status: r.status ?? (r.ok ? 'ok' : 'fail'), detail: r.detail });
       } catch (e) {
         results.push({ ...base, status: 'fail', detail: `threw: ${(e as Error).message}` });
       }
@@ -422,7 +524,7 @@ export async function runHealth(
     }
     try {
       const r = await a.check(browser, currentUrl);
-      results.push({ ...base, status: r.ok ? 'ok' : 'fail', detail: r.detail });
+      results.push({ ...base, status: r.status ?? (r.ok ? 'ok' : 'fail'), detail: r.detail });
     } catch (e) {
       results.push({ ...base, status: 'fail', detail: `threw: ${(e as Error).message}` });
     }
