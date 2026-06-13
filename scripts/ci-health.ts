@@ -305,6 +305,10 @@ async function main(): Promise<void> {
       sessionNav = { target: probeUrl, landedOn: '', error: (e as Error).message };
       console.log(`[ci-health] canary navigation failed — ${(e as Error).message}; session anchors will fail loudly`);
     }
+    // Session health owns the mutating turn-RPC canary. It sends a chat-only
+    // prompt against DESIGNER_PROBE_PROJECT_URL and verifies the live
+    // OmeletteService Chat/RenewTurn/ReleaseTurn contract.
+    process.env.DESIGNER_TURN_RPC_CANARY ??= '1';
     sessionResults = await runHealth(browser, { phase: 'session' });
   } else {
     console.log('[ci-health] DESIGNER_PROBE_PROJECT_URL unset — skipping session phase');

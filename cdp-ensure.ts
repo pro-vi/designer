@@ -28,6 +28,12 @@ function sleep(ms: number): Promise<void> {
 //   3. No non-debug Chrome is running (launching would either no-op or steal focus)
 // Otherwise: return an actionable error the caller can surface to the user.
 export async function ensureCdpUp(): Promise<void> {
+  // Respect the explicit opt-out (DESIGNER_CDP=''): never probe or auto-launch
+  // the debug Chrome for a user who chose the agent-browser session-managed flow.
+  // Throwing here makes any stray CdpSession.attach() degrade to null cleanly.
+  if (process.env.DESIGNER_CDP === '') {
+    throw new Error("CDP explicitly disabled (DESIGNER_CDP=''); using the agent-browser session-managed flow.");
+  }
   if (await isCdpUp()) return;
 
   if (!fs.existsSync(PROFILE)) {
