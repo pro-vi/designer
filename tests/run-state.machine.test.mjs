@@ -209,3 +209,84 @@ test('pre-begin and stale request ids do not count as this run activity', () => 
     observedRpcPaths: []
   });
 });
+
+test('a CDP gap during an active run degrades to observer-lost (missed-release safety)', async () => {
+  const h = harness();
+  h.observer.beginRun();
+  h.observer.consumeSignalForTest({ kind: 'chat-open' });
+  assert.equal(h.observer.state, 'running');
+
+  const done = h.observer.awaitTerminal({ stallMs: 25, hardTimeoutMs: 100 });
+  h.advance(5);
+  h.observer.socketGapForTest();
+
+  assert.deepEqual(await done, { terminal: 'observer-lost', elapsedMs: 5 });
+  assert.equal(h.observer.state, 'observer-lost');
+});
+
+test('a CDP gap before the run begins does not latch the observer', () => {
+  const h = harness();
+  h.observer.socketGapForTest();
+  assert.equal(h.observer.state, 'idle');
+
+  h.observer.beginRun();
+  h.observer.consumeSignalForTest({ kind: 'chat-open' });
+  assert.equal(h.observer.state, 'running');
+});
+
+test('absolute wall-clock cap latches a heartbeating-but-unreleased run', async () => {
+  const h = harness();
+  h.observer.beginRun();
+  const done = h.observer.awaitTerminal({ stallMs: 25, hardTimeoutMs: 100 });
+  // Keep silence below the stall window while elapsed crosses the hard cap.
+  h.advance(90);
+  h.observer.consumeSignalForTest({ kind: 'heartbeat' });
+  h.advance(15);
+  h.observer.tickForTest({ stallMs: 25, hardTimeoutMs: 100 });
+
+  assert.deepEqual(await done, {
+    terminal: 'timeout',
+    elapsedMs: 105,
+    reason: 'exceeded 100ms wall-clock budget (elapsed 105ms)'
+  });
+});
+
+test('a stale critical-error (no prior run requestWillBeSent) does not block', () => {
+  const h = harness();
+  const base = `https://claude.ai/api/${OMELETTE_TURN_SERVICE}`;
+  h.observer.beginRun();
+  h.observer.consumeSignalForTest({ kind: 'chat-open' });
+  // A late 4xx for a Chat request never seen this run — wallTime-less, so the
+  // classify stale-guard can't catch it; the run-membership guard must.
+  h.observer.onEvent('Network.responseReceived', {
+    requestId: 'stale-chat',
+    response: { url: `${base}/Chat`, status: 500 }
+  });
+  assert.equal(h.observer.state, 'running');
+});
+
+test('a current-run critical-error responseReceived latches blocked', async () => {
+  const h = harness();
+  const base = `https://claude.ai/api/${OMELETTE_TURN_SERVICE}`;
+  h.observer.beginRun();
+  const done = h.observer.awaitTerminal({ stallMs: 25, hardTimeoutMs: 100 });
+  h.observer.onEvent('Network.requestWillBeSent', {
+    ts: h.now,
+    requestId: 'chat-9',
+    request: { url: `${base}/Chat`, method: 'POST' }
+  });
+  h.observer.onEvent('Network.responseReceived', {
+    requestId: 'chat-9',
+    response: { url: `${base}/Chat`, status: 500 }
+  });
+  assert.deepEqual(await done, { terminal: 'blocked', elapsedMs: 0, reason: 'Chat HTTP 500' });
+});
+
+test('observer-lost before beginRun reports elapsedMs 0 (not epoch millis)', async () => {
+  const h = harness();
+  h.observer.consumeSignalForTest({ kind: 'observer-lost' });
+  assert.deepEqual(await h.observer.awaitTerminal({ stallMs: 25, hardTimeoutMs: 100 }), {
+    terminal: 'observer-lost',
+    elapsedMs: 0
+  });
+});

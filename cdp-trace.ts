@@ -23,6 +23,27 @@ const DEFAULT_PORT = process.env.DESIGNER_CDP || '9222';
 const DESIGN_URL_PATTERN = /^https:\/\/claude\.ai\/design/;
 const REDACT_KEY_PATTERN = /^(cookie|set-cookie|authorization|proxy-authorization|x-api-key)$/i;
 const STREAMABLE_RESOURCE_TYPES = new Set(['XHR', 'Fetch', 'EventSource']);
+// URLs whose request/response bodies we never capture — auth/session exchanges
+// can carry credentials as plaintext JSON values that header-key redaction
+// can't see. The generation traffic we care about (OmeletteService) is not here.
+const AUTH_URL_DENYLIST =
+  /\/(oauth|auth|login|logout|sign[_-]?in|sign[_-]?out|sign[_-]?up|register|token|sessions?|account|credential|password|mfa|totp|verify)\b/i;
+
+// Value-level secret scrub for captured *bodies* (postData, response bodies, WS
+// frame payloads). redact() only matches header *key names*; a token sitting in
+// a JSON value or form field is a value blob it can't reach. Best-effort: catch
+// the common token shapes before they hit disk. Exported for testability.
+export function scrubSecrets(s: string): string {
+  return s
+    .replace(/eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g, '[redacted-jwt]')
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, '[redacted-key]')
+    .replace(
+      /(["']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?key|sessionKey|api[_-]?key|client[_-]?secret|secret|password|passwd|pwd)["']?\s*[:=]\s*["']?)[^"'&,;\s}]+/gi,
+      '$1[redacted]'
+    )
+    .replace(/\bsessionKey=[^;"'\s&]+/gi, 'sessionKey=[redacted]')
+    .replace(/\b([Bb]earer)\s+[A-Za-z0-9._~+/=-]{12,}/g, '$1 [redacted]');
+}
 
 export interface CdpTarget {
   id: string;
@@ -350,6 +371,7 @@ export class CdpTraceRecorder extends CdpSession {
   private startedAt = Date.now();
   private total = 0;
   private bodyCaptures = 0;
+  private ended = false;
   private byMethod: Record<string, number> = {};
   private droppedByMethod: Record<string, number> = {};
 
@@ -366,6 +388,9 @@ export class CdpTraceRecorder extends CdpSession {
     };
     fs.mkdirSync(path.dirname(opts.outFile), { recursive: true });
     this.out = fs.createWriteStream(opts.outFile, { flags: 'a' });
+    // Swallow stream errors (disk full, write-after-end races) — an unhandled
+    // 'error' event on the stream would otherwise crash the process.
+    this.out.on('error', () => {});
   }
 
   static async attach(opts: AttachOptions): Promise<CdpTraceRecorder> {
@@ -410,6 +435,9 @@ export class CdpTraceRecorder extends CdpSession {
     ]);
     this.writeLine({ ts: Date.now(), kind: 'recorder', event: 'detach' });
     this.close();
+    // Mark ended before end() so any late body-fetch .catch (rejected by close())
+    // is a no-op in writeLine rather than a write-after-end stream error.
+    this.ended = true;
     await new Promise<void>((resolve) => this.out.end(resolve));
     return {
       durationMs: Date.now() - this.startedAt,
@@ -467,8 +495,13 @@ export class CdpTraceRecorder extends CdpSession {
   private shapePayloads(method: string, params: Record<string, unknown>): Record<string, unknown> {
     if (method === 'Network.requestWillBeSent') {
       const req = asRec(params.request);
-      if (typeof req.postData === 'string' && !this.opts.captureBodiesFor.test(String(req.url || ''))) {
-        return { ...params, request: { ...req, postData: undefined, postDataBytes: req.postData.length } };
+      if (typeof req.postData === 'string') {
+        // Off-origin: strip entirely. Kept (claude.ai) bodies are value-scrubbed
+        // so a credential in a sign-in/token POST body never lands verbatim.
+        if (!this.opts.captureBodiesFor.test(String(req.url || ''))) {
+          return { ...params, request: { ...req, postData: undefined, postDataBytes: req.postData.length } };
+        }
+        return { ...params, request: { ...req, postData: scrubSecrets(req.postData) } };
       }
       return params;
     }
@@ -476,8 +509,11 @@ export class CdpTraceRecorder extends CdpSession {
       const requestId = String(params.requestId || '');
       const socketUrl = this.wsSocketUrls.get(requestId) || '';
       const resp = asRec(params.response);
-      if (typeof resp.payloadData === 'string' && !this.opts.captureBodiesFor.test(socketUrl)) {
-        return { ...params, response: { ...resp, payloadData: undefined, payloadBytes: resp.payloadData.length } };
+      if (typeof resp.payloadData === 'string') {
+        if (!this.opts.captureBodiesFor.test(socketUrl)) {
+          return { ...params, response: { ...resp, payloadData: undefined, payloadBytes: resp.payloadData.length } };
+        }
+        return { ...params, response: { ...resp, payloadData: scrubSecrets(resp.payloadData) } };
       }
       return params;
     }
@@ -508,6 +544,7 @@ export class CdpTraceRecorder extends CdpSession {
     const info = this.requests.get(requestId);
     if (!info || info.streamed) return;
     if (!this.opts.captureBodiesFor.test(info.url)) return;
+    if (AUTH_URL_DENYLIST.test(info.url)) return;
     if (!info.resourceType || !STREAMABLE_RESOURCE_TYPES.has(info.resourceType)) return;
     const resp = asRec(params.response);
     const headers = asRec(resp.headers);
@@ -547,14 +584,17 @@ export class CdpTraceRecorder extends CdpSession {
     const info = this.requests.get(requestId);
     if (!info || info.streamed || info.bodyFetched) return;
     if (!this.opts.captureBodiesFor.test(info.url)) return;
+    if (AUTH_URL_DENYLIST.test(info.url)) return;
     if (!info.resourceType || !STREAMABLE_RESOURCE_TYPES.has(info.resourceType)) return;
 
     info.bodyFetched = true;
     const p = this.send('Network.getResponseBody', { requestId })
       .then((result) => {
         const r = asRec(result);
-        const body = String(r.body || '');
         const isB64 = r.base64Encoded === true;
+        // Text bodies are value-scrubbed before persistence; base64 (binary)
+        // bodies are opaque, so the auth-URL denylist above is their guard.
+        const body = isB64 ? String(r.body || '') : scrubSecrets(String(r.body || ''));
         const bytes = isB64 ? Math.floor((body.length * 3) / 4) : body.length;
         const truncated = bytes > this.opts.maxBodyBytesPerRequest;
         const cap = isB64 ? Math.ceil((this.opts.maxBodyBytesPerRequest * 4) / 3) : this.opts.maxBodyBytesPerRequest;
@@ -595,6 +635,7 @@ export class CdpTraceRecorder extends CdpSession {
   }
 
   private writeLine(ev: TraceEvent): void {
+    if (this.ended) return; // a late body-fetch .catch can fire after stop() ended the stream
     this.out.write(JSON.stringify(ev) + '\n');
     this.total++;
   }

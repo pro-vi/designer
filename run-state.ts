@@ -228,6 +228,10 @@ export class RunStateObserver extends CdpSession {
     this.consumeSignal(signal);
   }
 
+  socketGapForTest(detail: { reason: string } = { reason: 'test' }): void {
+    this.onSocketGap(detail);
+  }
+
   tickForTest({ stallMs = 25_000, hardTimeoutMs = 20 * 60_000 }: { stallMs?: number; hardTimeoutMs?: number } = {}): void {
     this.checkSilence(stallMs, hardTimeoutMs);
   }
@@ -235,8 +239,30 @@ export class RunStateObserver extends CdpSession {
   protected override onEvent(method: string, rawParams: unknown, _sessionId?: string): void {
     if (this.currentState === 'idle' && !this.terminalResult) return;
     const params = this.enrichParams(method, rawParams);
+    // Terminal events (responseReceived / loadingFailed) carry no `wallTime`, so
+    // classifyEvent's stale-timestamp guard cannot filter a prior turn's late
+    // failure. Only honor them when the request was first seen *this run* — its
+    // id is in `requestUrls`, which `enrichParams` populates at requestWillBeSent
+    // for events at/after `runStartTs`. Otherwise a stale 4xx for a pre-run RPC
+    // would read its own `response.url` and falsely latch BLOCKED.
+    if (method === 'Network.responseReceived' || method === 'Network.loadingFailed') {
+      const id = requestId(params);
+      if (!id || !this.requestUrls.has(id)) return;
+    }
     const signal = classifyEvent(method, params, this.runStartTs);
     if (signal) this.consumeSignal(signal);
+  }
+
+  protected override onSocketGap(_detail: { reason: string }): void {
+    // A one-shot ReleaseTurn fired during a CDP reconnect gap can't be recovered
+    // (CDP won't re-deliver events from the gap), so even a *successful* reconnect
+    // would leave an active run waiting out the hard timeout. Degrade to
+    // observer-lost immediately for an active run so the controller hands off to
+    // the HTML waiter. The observer-lost latch also stops the base reconnect loop
+    // (it sets `stopped`), which is what we want once we've handed off.
+    if (this.currentState === 'running' || this.currentState === 'stalled') {
+      this.consumeSignal({ kind: 'observer-lost' });
+    }
   }
 
   protected override onSocketReconnectFailed(): void {
@@ -310,9 +336,17 @@ export class RunStateObserver extends CdpSession {
 
   private checkSilence(stallMs: number, hardTimeoutMs: number): void {
     if (this.terminalResult || this.currentState === 'idle') return;
-    const silence = this.now() - this.lastActivity;
+    const now = this.now();
+    const silence = now - this.lastActivity;
+    const elapsed = now - this.runStartTs;
     if (silence > hardTimeoutMs) {
       this.latch('timeout', `silent for ${silence}ms`);
+    } else if (elapsed > hardTimeoutMs) {
+      // Absolute wall-clock cap. A run that keeps heartbeating (RenewTurn ~10s)
+      // but never releases never accumulates enough *silence* to time out — so
+      // without this it would hang indefinitely (worse than the old HTML waiter,
+      // which always had a true Date.now()-based budget). Bound total duration.
+      this.latch('timeout', `exceeded ${hardTimeoutMs}ms wall-clock budget (elapsed ${elapsed}ms)`);
     } else if (silence > stallMs) {
       this.currentState = 'stalled';
     }
@@ -334,7 +368,10 @@ export class RunStateObserver extends CdpSession {
     if (this.terminalResult) return;
     this.terminalResult = {
       terminal,
-      elapsedMs: Math.max(0, this.now() - this.runStartTs),
+      // runStartTs stays 0 if the socket died before beginRun() ran; report 0
+      // elapsed rather than now()-0 (epoch millis), which would otherwise
+      // collapse the controller's HTML-fallback budget to ~1ms.
+      elapsedMs: this.runStartTs === 0 ? 0 : Math.max(0, this.now() - this.runStartTs),
       ...(reason ? { reason } : {})
     };
     this.clearWatchdog();

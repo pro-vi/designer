@@ -115,6 +115,9 @@ async function checkTurnRpcContract(_browser: Browser, currentUrl: string): Prom
   if (process.env.DESIGNER_TURN_RPC_CANARY !== '1') {
     return { ok: true, status: 'skip', detail: 'turn-RPC canary disabled (DESIGNER_TURN_RPC_CANARY!=1)' };
   }
+  if ((process.env.DESIGNER_CDP ?? '9222') === '') {
+    return { ok: true, status: 'skip', detail: "CDP disabled (DESIGNER_CDP=''); turn-RPC canary not probed" };
+  }
   const observer = await RunStateObserver.attach({ preferUrlPrefix: currentUrl.split('?')[0] || null });
   if (!observer) {
     return { ok: true, status: 'skip', detail: 'CDP observer unavailable; turn-RPC canary not probed' };
@@ -132,7 +135,11 @@ async function checkTurnRpcContract(_browser: Browser, currentUrl: string): Prom
       `chat x${summary.chatOpen}, chunks x${summary.chatChunk}, terminal=${terminal.terminal}` +
       (summary.observedRpcPaths.length ? `, observed=[${summary.observedRpcPaths.join(', ')}]` : ', observed=[]');
     return {
-      ok: terminal.terminal === 'finished' && summary.heartbeat > 0 && summary.release > 0,
+      // A healthy fast chat-only turn can finish before the first RenewTurn
+      // (~14.5s in, per trace findings), so heartbeat>0 is not a contract
+      // requirement — gate on the discrete signals (chat opened + released +
+      // finished). heartbeat count stays visible in `detail` as soft signal.
+      ok: terminal.terminal === 'finished' && summary.release > 0 && summary.chatOpen > 0,
       detail
     };
   } finally {

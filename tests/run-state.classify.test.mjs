@@ -73,6 +73,22 @@ test('classifies critical RPC failures and ignores non-critical failures', () =>
   assert.equal(updateConflict, null);
 });
 
+test('a failed or non-200 ReleaseTurn is ignored, not treated as critical', () => {
+  const failed = classifyEvent(
+    'Network.loadingFailed',
+    { ts: start + 1, requestId: 'rel-1', requestUrl: `${base}/ReleaseTurn`, errorText: 'net::ERR_FAILED' },
+    start
+  );
+  assert.equal(failed, null);
+
+  const non200 = classifyEvent(
+    'Network.responseReceived',
+    { ts: start + 1, requestId: 'rel-2', response: { url: `${base}/ReleaseTurn`, status: 503 } },
+    start
+  );
+  assert.equal(non200, null);
+});
+
 test('renamed turn RPCs fail classification but remain visible for health detail', () => {
   const renamed = `${base}/CompleteTurn`;
   assert.equal(turnRpcFromUrl(renamed), null);

@@ -452,6 +452,7 @@ export class DesignerController {
     observer: RunStateObserver,
     {
       timeoutMs = 20 * 60_000,
+      stabilityMs = 4000,
       pollMs = 1500
     }: { timeoutMs?: number; stabilityMs?: number; pollMs?: number } = {}
   ): Promise<GenerationDone> {
@@ -466,13 +467,26 @@ export class DesignerController {
       return { ok: false, error: 'stalled', elapsedMs: terminal.elapsedMs, reason: terminal.reason };
     }
 
+    // ReleaseTurn can lead served-HTML readiness by up to ~10s on small edits —
+    // the preview keeps propagating after the turn completes (trace findings:
+    // ReleaseTurn led HTML byte-stability by 5–10s on edit/tweak runs). So poll
+    // a bounded window for the preview to byte-stabilize instead of trusting the
+    // first fetch. Crucially we do NOT require a change from _preSendHtml: a
+    // chat-only run legitimately keeps it, and forcing a change would reintroduce
+    // the timeout blind spot this observer exists to fix.
     let { html, src } = await this.fetchServedHtml();
-    if (html && html !== this._preSendHtml) {
+    const preHtml = this._preSendHtml || '';
+    const settleDeadline = Date.now() + Math.min(timeoutMs, Math.max(stabilityMs, 12_000));
+    let stableSince = Date.now();
+    while (Date.now() < settleDeadline) {
       await new Promise((r) => setTimeout(r, pollMs));
-      const settled = await this.fetchServedHtml();
-      if (settled.html && settled.html !== html) {
-        html = settled.html;
-        src = settled.src;
+      const next = await this.fetchServedHtml();
+      if (next.html !== html) {
+        html = next.html;
+        src = next.src;
+        stableSince = Date.now();
+      } else if (html !== preHtml && Date.now() - stableSince >= stabilityMs) {
+        break; // changed and now byte-stable for stabilityMs → settled
       }
     }
     const url = await this.currentUrl();
@@ -523,9 +537,17 @@ export class DesignerController {
     const preChatCount = (await this.getChatTurns()).length;
 
     const waitBudgetMs = timeoutMs ?? 20 * 60_000;
-    let observer: RunStateObserver | null = await RunStateObserver.attach({
-      preferUrlPrefix: (await this.currentUrl()).split('?')[0] || null
-    });
+    // Honor the documented CDP opt-out: DESIGNER_CDP='' means "use the
+    // agent-browser session-managed flow" (browser.ts resolves it the same way
+    // via ??). Attaching the observer would otherwise route an opted-out user
+    // through the CDP layer, which resolves '' to :9222 and can auto-launch the
+    // debug Chrome (ensureCdpUp). When disabled, fall through to the HTML waiter.
+    const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
+    let observer: RunStateObserver | null = cdpEnabled
+      ? await RunStateObserver.attach({
+          preferUrlPrefix: (await this.currentUrl()).split('?')[0] || null
+        })
+      : null;
     let done: GenerationDone;
     try {
       await this.sendPrompt(prompt, { decisive, onBeforeSubmit: () => observer?.beginRun() });
