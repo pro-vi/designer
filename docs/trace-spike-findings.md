@@ -104,6 +104,23 @@ the account is at 98% session / ~87% weekly — further capture today will hit t
   main-frame trace (4 hits on create). The feared OOPIF blind spot is narrow — we see the
   preview reload as a GET, even though the iframe document itself is out-of-process.
 
+### 7. Per-file mutation RPCs are the network-level tool-activity feed
+
+File writes surface as their own OmeletteService RPCs — **`WriteFiles`, `EditFile`,
+`DeleteFile`, `GetFile`** — interleaved with the `Chat` segments during a run (the multi-file
+run fired 8 `WriteFiles` + 8 `EditFile`). These are the network-level equivalent of the UI's
+"Writing tokens.css" tool-activity cards: a per-file progress feed keyed off stable RPC method
+names rather than scraped DOM. The observer doesn't need them to decide RUNNING / FINISHED, but
+they're the cleanest source if per-file progress is ever surfaced to the orchestrator.
+
+### 8. Baseline noise is near-zero — anything on `OmeletteService` is signal
+
+An idle design tab issues **no generation traffic at all** (0 `OmeletteService` requests in a
+3-minute baseline); only `TrackEvent` analytics and datadog assets fire, and only around
+interactions. So the observer needs no allowlist gymnastics: anything on the
+`…/OmeletteService/<Method>` path is generation signal, and `TrackEvent` + datadog are the only
+things to ignore.
+
 ## Follow-up captures (quota-blocked hunt)
 
 Two extra prompts fired at 98% → 99% session quota to try to observe a
