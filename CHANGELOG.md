@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.11](https://github.com/pro-vi/designer/compare/v0.3.10...v0.3.11) (2026-06-13)
+
+
+### Features
+
+* add network run-state observer ([#58](https://github.com/pro-vi/designer/issues/58)) ([8a3d3f1](https://github.com/pro-vi/designer/commit/8a3d3f149520e4b7ba5b529bc8fcc6b2321501a6))
+
 ## [0.3.10](https://github.com/pro-vi/designer/compare/v0.3.9...v0.3.10) (2026-06-11)
 
 
