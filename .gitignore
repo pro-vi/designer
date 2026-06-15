@@ -14,3 +14,5 @@ logs/*.log
 # local tooling state
 .claude/
 .prov/
+# local-only agent context notes (architecture/gotchas) — not shared on the repo
+/CLAUDE.md
