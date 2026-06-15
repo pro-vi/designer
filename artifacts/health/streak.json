@@ -1,0 +1,22 @@
+{
+  "home.creator": 1,
+  "home.nameInput": 1,
+  "home.wireframeButton": 1,
+  "home.highFiButton": 1,
+  "home.createButton": 1,
+  "home.projectsList": 1,
+  "home.projectCard": 1,
+  "pattern.sessionUrl": 0,
+  "session.promptTextarea": 0,
+  "session.sendButton": 0,
+  "session.htmlViewerIframe": 0,
+  "session.chatMessages": 0,
+  "session.iframeSrcPattern": 0,
+  "session.chatTurnPrefix": 0,
+  "share.shareButton": 0,
+  "share.handoffMenuItem": 0,
+  "pattern.fileQueryParam": 0,
+  "session.fileListScrape": 0,
+  "login.signedIn": 0,
+  "session.composerFillable": 0
+}
