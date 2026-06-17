@@ -180,8 +180,18 @@ export async function findDesignTarget({
     // Exact URL first: the home URL (https://claude.ai/design) is a *prefix* of
     // every /design/p/<uuid> tab, so a startsWith match alone could bind to an
     // arbitrary project tab instead of the exact tab the caller is on (#66).
-    const exact = candidates.find((t) => t.url === preferUrlPrefix);
-    if (exact) return exact;
+    const exactMatches = candidates.filter((t) => t.url === preferUrlPrefix);
+    const onlyExact = exactMatches[0];
+    if (exactMatches.length === 1 && onlyExact) return onlyExact;
+    if (exactMatches.length > 1) {
+      // An exact URL match still isn't an exact TAB match: two tabs at the same
+      // URL (e.g. duplicate claude.ai/design home tabs) can't be told apart by
+      // URL, so fail rather than bind an arbitrary (possibly idle) one (#66).
+      // Callers that tolerate it (RunStateObserver.attach) degrade to null.
+      throw new Error(
+        `Multiple tabs open at exactly ${preferUrlPrefix} — close the duplicate(s) so the right tab can be identified.`
+      );
+    }
     const preferred = candidates.find((t) => t.url.startsWith(preferUrlPrefix));
     if (preferred) return preferred;
   }
