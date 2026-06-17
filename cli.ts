@@ -371,8 +371,8 @@ const HELP: Record<string, string> = {
 Flags:
   --action <a>    status (default, read-only) | ensure_ready | resume | create | adopt
   --name <N>      required when --action create; optional label when --action adopt
-  --fidelity <f>  wireframe | highfi — advisory metadata only (default wireframe);
-                  the redesigned home has no fidelity toggle, so steer fidelity in the prompt
+  --fidelity <f>  wireframe | highfi (default wireframe) — folded into the creation
+                  seed prompt as a directive (the redesigned home has no fidelity toggle)
   --key <k>       stable session key (e.g., feature name), defaults to 'default'
 
 adopt binds an already-open /design/p/<uuid> tab to a key — the supported path

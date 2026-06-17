@@ -38,7 +38,7 @@ server.registerTool(
         .enum(['wireframe', 'highfi'])
         .optional()
         .describe(
-          'Advisory metadata only (default wireframe). The 2026-06 home redesign removed the fidelity toggle — to actually steer fidelity, say so in the prompt (e.g. "high-fidelity"); this field is just recorded on the session.'
+          'Default wireframe. The 2026-06 home redesign removed the fidelity toggle, so this is folded into the creation seed prompt as a directive (highfi → high-fidelity polished design; wireframe → low-fidelity wireframe) and recorded on the session.'
         )
     }
   },

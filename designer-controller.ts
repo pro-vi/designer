@@ -350,10 +350,12 @@ export class DesignerController {
     // the chat composer (`home.creator`, the same data-testid as the in-session
     // composer) and click "Start project" (`home.createButton`, the same
     // data-testid as the in-session send button). So `name` becomes the seed
-    // prompt; `fidelity` is kept for stored metadata + back-compat but no longer
-    // maps to a UI control (convey fidelity in the prompt instead). The creation-
-    // type cards (Slides / Prototype / Product wireframe / …) are text-only
-    // buttons left as a follow-up. Verified live against the redesigned home.
+    // prompt. The redesign removed the wireframe/high-fi toggle, so `fidelity` is
+    // folded into the seed as a directive (and still stored) — otherwise highfi
+    // and wireframe creates would behave identically while the session claimed a
+    // fidelity that was never applied (#66 review). The creation-type cards
+    // (Slides / Prototype / Product wireframe / …) are text-only buttons left as a
+    // follow-up. Verified live against the redesigned home.
     //
     // `name` is the composer seed, so it must be non-empty — a whitespace-only
     // name leaves the send button disabled and would otherwise spin the full
@@ -365,7 +367,11 @@ export class DesignerController {
 
     // Reuse the battle-tested composer fill+submit: it handles the contenteditable
     // ProseMirror composer and waits for the send button to enable before clicking.
-    await this._submitPrompt(name);
+    const fidelityHint =
+      fidelity === 'highfi'
+        ? '\n\nBuild this as a high-fidelity, visually polished design.'
+        : '\n\nBuild this as a low-fidelity wireframe.';
+    await this._submitPrompt(name + fidelityHint);
 
     let inSession = false;
     for (let i = 0; i < 60; i++) {
