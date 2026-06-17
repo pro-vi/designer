@@ -809,14 +809,19 @@ export class DesignerController {
       }
     };
 
-    // Already showing the requested file with a live preview — no swap needed
-    // (re-opening the same file, e.g. repeated `prompt --file X`).
+    const targetRoot = baseUrl.split('?')[0];
+    // Already on THIS project's tab showing the requested file with a live
+    // preview — no swap needed (re-opening the same file, e.g. repeated
+    // `prompt --file X`). Must compare the project root too, not just the file
+    // param: with parallel keys, Chrome can be on project B's tab with the same
+    // ?file=index.html, and skipping the open would silently target B (#66).
+    const curUrl = await this.currentUrl();
     const before = await this.getIframeSrc();
-    if (fileParamOf(await this.currentUrl()) === filename && isPreviewIframeSrc(before)) {
-      return { ok: true, file: filename, url: await this.currentUrl() };
+    if (curUrl.split('?')[0] === targetRoot && fileParamOf(curUrl) === filename && isPreviewIframeSrc(before)) {
+      return { ok: true, file: filename, url: curUrl };
     }
 
-    const target = `${baseUrl.split('?')[0]}?file=${wanted}`;
+    const target = `${targetRoot}?file=${wanted}`;
     await this.browser.open(target);
 
     // Readiness across two UI generations — and the file-switch false-positive
