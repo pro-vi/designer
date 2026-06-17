@@ -344,7 +344,11 @@ export class DesignerController {
     return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession() };
   }
 
-  async createSession(name: string, fidelity: 'wireframe' | 'highfi' = 'wireframe'): Promise<{ ok: true; url: string; name: string; fidelity: string }> {
+  async createSession(
+    name: string,
+    fidelity: 'wireframe' | 'highfi' = 'wireframe',
+    { timeoutMs = 20 * 60_000, stabilityMs = 4000 }: { timeoutMs?: number; stabilityMs?: number } = {}
+  ): Promise<{ ok: true; url: string; name: string; fidelity: string }> {
     // 2026-06 redesign (#61): the home is composer-driven. There's no longer a
     // project-name input or a wireframe/high-fi toggle — you seed an intent in
     // the chat composer (`home.creator`, the same data-testid as the in-session
@@ -365,20 +369,47 @@ export class DesignerController {
     await this.browser.waitLoad('networkidle').catch(() => null);
     await this.browser.waitFor(this.selectors.home.creator);
 
-    // Reuse the battle-tested composer fill+submit: it handles the contenteditable
-    // ProseMirror composer and waits for the send button to enable before clicking.
     const fidelityHint =
       fidelity === 'highfi'
         ? '\n\nBuild this as a high-fidelity, visually polished design.'
         : '\n\nBuild this as a low-fidelity wireframe.';
-    await this._submitPrompt(name + fidelityHint);
+    // The seed IS the first generation now, so apply the same flat-layout contract
+    // sendPrompt() appends to every prompt — otherwise the create run can produce
+    // nested folders the flat live file-list/openFile scrape can't see (#66 review).
+    const seed = name + fidelityHint + FLAT_LAYOUT_SUFFIX;
+    this._preSendHtml = '';
 
-    let inSession = false;
-    for (let i = 0; i < 60; i++) {
-      await new Promise((r) => setTimeout(r, 500));
-      if ((inSession = await this.isInSession())) break;
+    // The composer-create kicks off a real generation. Return only once it has
+    // settled, using the same network-first completion signal as iterate(), so the
+    // documented next step (`designer prompt`) can't interleave with the create run
+    // (#66 review). Honors the DESIGNER_CDP='' opt-out: with no observer we can't
+    // wait reliably (the HTML waiter is degraded under the bootstrap iframe), so we
+    // navigate and proceed best-effort — the next prompt's send-enable wait resyncs.
+    const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
+    let observer: RunStateObserver | null = cdpEnabled
+      ? await RunStateObserver.attach({ preferUrlPrefix: DESIGN_HOME })
+      : null;
+    try {
+      observer?.beginRun();
+      // Reuse the battle-tested composer fill+submit (contenteditable ProseMirror;
+      // waits for the send button to enable before clicking "Start project").
+      await this._submitPrompt(seed);
+
+      let inSession = false;
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        if ((inSession = await this.isInSession())) break;
+      }
+      if (!inSession) throw new Error('Project creation did not navigate to a /p/ url in time.');
+
+      // Wait for the seed generation to finish. Tolerate observer-lost/timeout —
+      // the project exists either way; don't fail create over an imperfect wait.
+      if (observer) await this._waitForGenerationDoneNetwork(observer, { timeoutMs, stabilityMs }).catch(() => null);
+    } finally {
+      observer?.close();
+      observer = null;
     }
-    if (!inSession) throw new Error('Project creation did not navigate to a /p/ url in time.');
+
     const url = await this.currentUrl();
     upsertSession(this.key, { designUrl: url, name, fidelity, lastUrl: url });
     appendHistory(this.key, { kind: 'session_create', name, fidelity, url });
