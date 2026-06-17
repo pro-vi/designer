@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.12](https://github.com/pro-vi/designer/compare/v0.3.11...v0.3.12) (2026-06-17)
+
+
+### Features
+
+* adopt command + repair claude.ai/design 2026-06 entry-layer drift ([#61](https://github.com/pro-vi/designer/issues/61)) ([#66](https://github.com/pro-vi/designer/issues/66)) ([e6c4721](https://github.com/pro-vi/designer/commit/e6c47218e2365598f7a6889f76b0a398fff6cf1f))
+
+
+### Bug Fixes
+
+* mark bin/designer.mjs executable for source runs ([8e5c2bc](https://github.com/pro-vi/designer/commit/8e5c2bcdd3d68ff7e51a544c3fc49b54430811ca))
+
 ## [0.3.11](https://github.com/pro-vi/designer/compare/v0.3.10...v0.3.11) (2026-06-13)
 
 
