@@ -243,10 +243,7 @@ export class DesignerController {
   async adoptSession(name?: string): Promise<{ ok: true; url: string; uuid: string; adopted: true; name?: string }> {
     await ensureCdpUp();
 
-    const tabs = await this.browser.tabs().catch(() => [] as Awaited<ReturnType<Browser['tabs']>>);
-    const candidates = tabs
-      .filter((t) => t.type === 'page' && t.url && SESSION_URL_RE.test(t.url))
-      .sort((a, b) => Number(b.active) - Number(a.active) || a.index - b.index);
+    const candidates = await this.candidateTabs((u) => SESSION_URL_RE.test(u));
     const top = candidates[0];
     if (top) {
       await this.browser.activateTab(top.index).catch(() => null);
@@ -267,24 +264,26 @@ export class DesignerController {
     return { ok: true, url: designUrl, uuid, adopted: true, ...(name ? { name } : {}) };
   }
 
+  // Page tabs whose URL satisfies `match`, ordered active-first then by index
+  // ascending — the candidate ordering both adoptSession and selectMatchingTab
+  // rely on. Degrades to [] if the CDP tabs() call fails.
+  private async candidateTabs(match: (url: string) => boolean): Promise<Awaited<ReturnType<Browser['tabs']>>> {
+    const tabs = await this.browser.tabs().catch(() => [] as Awaited<ReturnType<Browser['tabs']>>);
+    return tabs
+      .filter((t) => t.type === 'page' && t.url && match(t.url))
+      .sort((a, b) => Number(b.active) - Number(a.active) || a.index - b.index);
+  }
+
   // Pick the live claude.ai/design tab among possibly many CDP pages, switch
   // agent-browser's binding to it, and verify readiness via DOM anchors.
   // Returns the count of candidates considered (for error messaging).
   private async selectMatchingTab(): Promise<{ matched: boolean; candidates: number }> {
-    const tabs = await this.browser.tabs().catch(() => [] as Awaited<ReturnType<Browser['tabs']>>);
-    if (tabs.length === 0) return { matched: false, candidates: 0 };
-
     const stored = getSession(this.key);
     const targetRoot = stored?.designUrl?.split('?')[0];
-    const candidates = tabs.filter((t) => {
-      if (t.type !== 'page' || !t.url) return false;
-      if (targetRoot) return t.url.startsWith(targetRoot);
-      return /^https:\/\/claude\.ai\/design(\/|$|\?)/.test(t.url);
-    });
+    const candidates = await this.candidateTabs((u) =>
+      targetRoot ? u.startsWith(targetRoot) : /^https:\/\/claude\.ai\/design(\/|$|\?)/.test(u)
+    );
     if (candidates.length === 0) return { matched: false, candidates: 0 };
-
-    // Prefer the active tab first, then by index ascending.
-    candidates.sort((a, b) => (Number(b.active) - Number(a.active)) || (a.index - b.index));
 
     for (const cand of candidates) {
       await this.browser.activateTab(cand.index).catch(() => null);
