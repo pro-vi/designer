@@ -9,6 +9,7 @@ import { upsertSession, appendHistory, getSession, type StoredSession } from './
 import { REPO_ROOT } from './repo-root.ts';
 import { ensureCdpUp } from './cdp-ensure.ts';
 import { RunStateObserver } from './run-state.ts';
+import { isPreviewIframeSrc } from './preview-host.ts';
 
 export interface Selectors {
   login: { signedInIndicator: string | null };
@@ -115,6 +116,11 @@ export interface RepairReport {
 
 const DESIGN_HOME = 'https://claude.ai/design';
 
+// A claude.ai/design session URL: /design/p/<uuid>. Capture group 1 is the
+// project id. Used by isInSession()-style checks and `adopt` (binding an
+// already-open project tab to a key, bypassing the create-flow home).
+export const SESSION_URL_RE = /^https:\/\/claude\.ai\/design\/p\/([a-f0-9-]+)/i;
+
 // Appended to every designer_prompt payload. The live MCP surface
 // (listFiles / openFile / newFiles diff) scrapes a flat root from the
 // file panel; files nested under folders stay invisible until handoff.
@@ -206,7 +212,7 @@ export class DesignerController {
     action = 'status',
     name,
     fidelity = 'wireframe'
-  }: { action?: 'status' | 'ensure_ready' | 'resume' | 'create'; name?: string; fidelity?: 'wireframe' | 'highfi' } = {}): Promise<unknown> {
+  }: { action?: 'status' | 'ensure_ready' | 'resume' | 'create' | 'adopt'; name?: string; fidelity?: 'wireframe' | 'highfi' } = {}): Promise<unknown> {
     if (action === 'status') return this.getStatus();
     if (action === 'ensure_ready') {
       const r = await this.ensureReady();
@@ -223,27 +229,77 @@ export class DesignerController {
       const r = await this.createSession(name, fidelity);
       return { ...r, status: await this.getStatus() };
     }
+    if (action === 'adopt') {
+      const r = await this.adoptSession(name);
+      return { ...r, status: await this.getStatus() };
+    }
     throw new Error(`Unknown action: ${action}`);
+  }
+
+  // Bind a project you opened by hand (a live /design/p/<uuid> tab) to this
+  // key — the supported path around the redesigned creation-cards home, whose
+  // anchors drift wholesale (issue #61). `name` is optional metadata only.
+  //
+  // Safety (PR #66 review): adopt must never silently bind the WRONG project.
+  // With more than one /design/p/<uuid> tab open (normal during parallel --key
+  // work), there's no key↔tab correlation to pick the right one, so refuse and
+  // list them rather than guess by active-first. We also bind from the VALIDATED
+  // candidate URL, not a currentUrl() re-read after activateTab (which could race
+  // to a different tab).
+  async adoptSession(name?: string): Promise<{ ok: true; url: string; uuid: string; adopted: true; name?: string }> {
+    await ensureCdpUp();
+
+    const candidates = await this.candidateTabs((u) => SESSION_URL_RE.test(u));
+    if (candidates.length > 1) {
+      const list = candidates.map((t) => `  - ${t.url}`).join('\n');
+      throw new Error(
+        `adopt can't choose among ${candidates.length} open /design/p/<uuid> tabs:\n${list}\n` +
+          `Leave only the target project open (close the others), then retry — adopt won't guess which one this key (${this.key}) means.`
+      );
+    }
+
+    // Use the validated candidate URL; fall back to the already-bound tab when no
+    // dedicated session tab is open (agent-browser may already be on a /p/ URL).
+    const top = candidates[0];
+    const url = top?.url || (await this.currentUrl());
+    const m = url.match(SESSION_URL_RE);
+    if (!m) {
+      throw new Error(
+        `No /design/p/<uuid> tab to adopt — open a project by hand in the CDP-attached Chrome first. current url=${url || 'none'}`
+      );
+    }
+    // Bind agent-browser to the adopted tab for subsequent prompt/handoff. If
+    // activation races or fails, the stored designUrl (from the validated URL
+    // above) is still correct — ensureReady re-binds by it later.
+    if (top) await this.browser.activateTab(top.index).catch(() => null);
+
+    const designUrl = url.split('?')[0] || url;
+    const uuid = m[1] ?? '';
+    upsertSession(this.key, { designUrl, lastUrl: url, ...(name ? { name } : {}) });
+    appendHistory(this.key, { kind: 'session_adopt', url: designUrl, ...(name ? { name } : {}) });
+    return { ok: true, url: designUrl, uuid, adopted: true, ...(name ? { name } : {}) };
+  }
+
+  // Page tabs whose URL satisfies `match`, ordered active-first then by index
+  // ascending — the candidate ordering both adoptSession and selectMatchingTab
+  // rely on. Degrades to [] if the CDP tabs() call fails.
+  private async candidateTabs(match: (url: string) => boolean): Promise<Awaited<ReturnType<Browser['tabs']>>> {
+    const tabs = await this.browser.tabs().catch(() => [] as Awaited<ReturnType<Browser['tabs']>>);
+    return tabs
+      .filter((t) => t.type === 'page' && t.url && match(t.url))
+      .sort((a, b) => Number(b.active) - Number(a.active) || a.index - b.index);
   }
 
   // Pick the live claude.ai/design tab among possibly many CDP pages, switch
   // agent-browser's binding to it, and verify readiness via DOM anchors.
   // Returns the count of candidates considered (for error messaging).
   private async selectMatchingTab(): Promise<{ matched: boolean; candidates: number }> {
-    const tabs = await this.browser.tabs().catch(() => [] as Awaited<ReturnType<Browser['tabs']>>);
-    if (tabs.length === 0) return { matched: false, candidates: 0 };
-
     const stored = getSession(this.key);
     const targetRoot = stored?.designUrl?.split('?')[0];
-    const candidates = tabs.filter((t) => {
-      if (t.type !== 'page' || !t.url) return false;
-      if (targetRoot) return t.url.startsWith(targetRoot);
-      return /^https:\/\/claude\.ai\/design(\/|$|\?)/.test(t.url);
-    });
+    const candidates = await this.candidateTabs((u) =>
+      targetRoot ? u.startsWith(targetRoot) : /^https:\/\/claude\.ai\/design(\/|$|\?)/.test(u)
+    );
     if (candidates.length === 0) return { matched: false, candidates: 0 };
-
-    // Prefer the active tab first, then by index ascending.
-    candidates.sort((a, b) => (Number(b.active) - Number(a.active)) || (a.index - b.index));
 
     for (const cand of candidates) {
       await this.browser.activateTab(cand.index).catch(() => null);
@@ -288,34 +344,79 @@ export class DesignerController {
     return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession() };
   }
 
-  async createSession(name: string, fidelity: 'wireframe' | 'highfi' = 'wireframe'): Promise<{ ok: true; url: string; name: string; fidelity: string }> {
-    const s = this.selectors.home;
+  async createSession(
+    name: string,
+    fidelity: 'wireframe' | 'highfi' = 'wireframe',
+    { timeoutMs = 20 * 60_000, stabilityMs = 4000 }: { timeoutMs?: number; stabilityMs?: number } = {}
+  ): Promise<{ ok: true; url: string; name: string; fidelity: string }> {
+    // 2026-06 redesign (#61): the home is composer-driven. There's no longer a
+    // project-name input or a wireframe/high-fi toggle — you seed an intent in
+    // the chat composer (`home.creator`, the same data-testid as the in-session
+    // composer) and click "Start project" (`home.createButton`, the same
+    // data-testid as the in-session send button). So `name` becomes the seed
+    // prompt. The redesign removed the wireframe/high-fi toggle, so `fidelity` is
+    // folded into the seed as a directive (and still stored) — otherwise highfi
+    // and wireframe creates would behave identically while the session claimed a
+    // fidelity that was never applied (#66 review). The creation-type cards
+    // (Slides / Prototype / Product wireframe / …) are text-only buttons left as a
+    // follow-up. Verified live against the redesigned home.
+    //
+    // `name` is the composer seed, so it must be non-empty — a whitespace-only
+    // name leaves the send button disabled and would otherwise spin the full
+    // navigation poll before failing with a misleading message.
+    if (!name?.trim()) throw new Error('create requires a non-empty name (used as the project seed prompt).');
     await this.browser.open(DESIGN_HOME);
     await this.browser.waitLoad('networkidle').catch(() => null);
-    await this.browser.waitFor(s.creator);
+    await this.browser.waitFor(this.selectors.home.creator);
 
-    // Fill via native setter so React's form controller registers the value.
-    await this.browser.evalValue<boolean>(
-      `(() => {
-        const el = document.querySelector(${JSON.stringify(s.nameInput)});
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        setter.call(el, ${JSON.stringify(name)});
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        return true;
-      })()`
-    );
+    const fidelityHint =
+      fidelity === 'highfi'
+        ? '\n\nBuild this as a high-fidelity, visually polished design.'
+        : '\n\nBuild this as a low-fidelity wireframe.';
+    // The seed IS the first generation now, so apply the same flat-layout contract
+    // sendPrompt() appends to every prompt — otherwise the create run can produce
+    // nested folders the flat live file-list/openFile scrape can't see (#66 review).
+    const seed = name + fidelityHint + FLAT_LAYOUT_SUFFIX;
+    this._preSendHtml = '';
 
-    const text = fidelity === 'highfi' ? s.highFiButtonText : s.wireframeButtonText;
-    await this._clickButtonByText(new RegExp('^' + text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-    await new Promise((r) => setTimeout(r, 200));
-    await this.browser.evalValue<boolean>(
-      `(() => { const b = document.querySelector(${JSON.stringify(s.createButton)}); if (!b) throw new Error('create button missing'); b.click(); return true; })()`
-    );
-    for (let i = 0; i < 40; i++) {
-      await new Promise((r) => setTimeout(r, 300));
-      if (await this.isInSession()) break;
+    // The composer-create kicks off a real generation. Return only once it has
+    // settled, using the same network-first completion signal as iterate(), so the
+    // documented next step (`designer prompt`) can't interleave with the create run
+    // (#66 review). Honors the DESIGNER_CDP='' opt-out: with no observer we can't
+    // wait reliably (the HTML waiter is degraded under the bootstrap iframe), so we
+    // navigate and proceed best-effort — the next prompt's send-enable wait resyncs.
+    //
+    // Bind the observer to THIS exact home tab (findDesignTarget exact-matches the
+    // URL). The home URL is a prefix of every /design/p/<uuid> tab, so a loose
+    // prefix could otherwise bind to a different project's tab in multi-tab/
+    // parallel-key workflows (#66). The tab keeps its CDP target across the SPA
+    // navigation to /p/, so the observer follows it.
+    const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
+    const homeUrl = await this.currentUrl();
+    let observer: RunStateObserver | null = cdpEnabled
+      ? await RunStateObserver.attach({ preferUrlPrefix: homeUrl })
+      : null;
+    try {
+      observer?.beginRun();
+      // Reuse the battle-tested composer fill+submit (contenteditable ProseMirror;
+      // waits for the send button to enable before clicking "Start project").
+      await this._submitPrompt(seed);
+
+      let inSession = false;
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        if ((inSession = await this.isInSession())) break;
+      }
+      if (!inSession) throw new Error('Project creation did not navigate to a /p/ url in time.');
+
+      // Wait for the seed generation to finish. Tolerate observer-lost/timeout —
+      // the project exists either way; don't fail create over an imperfect wait.
+      if (observer) await this._waitForGenerationDoneNetwork(observer, { timeoutMs, stabilityMs }).catch(() => null);
+    } finally {
+      observer?.close();
+      observer = null;
     }
-    if (!(await this.isInSession())) throw new Error('Session creation did not navigate to a /p/ url in time.');
+
     const url = await this.currentUrl();
     upsertSession(this.key, { designUrl: url, name, fidelity, lastUrl: url });
     appendHistory(this.key, { kind: 'session_create', name, fidelity, url });
@@ -504,7 +605,9 @@ export class DesignerController {
   }> {
     const iframeSrc = knownSrc || (await this.getIframeSrc());
     let html: string | null = knownHtml ?? null;
-    if (html == null && iframeSrc && /claudeusercontent\.com/.test(iframeSrc)) {
+    if (html == null && isPreviewIframeSrc(iframeSrc)) {
+      // See fetchServedHtml: in the bootstrap regime this is the loader shell, not
+      // the file's rendered HTML (handoff is authoritative).
       const res = await fetch(iframeSrc, { headers: { Accept: 'text/html' } }).catch(() => null);
       if (res && res.ok) html = await res.text();
     }
@@ -623,13 +726,20 @@ export class DesignerController {
     await this.browser.waitFor(this.selectors.home.projectsList).catch(() => null);
     const json = await this.browser.evalValue<Array<{ name: string | null; sub: string | null; url: string | null }>>(
       `(() => {
-        const cards = Array.from(document.querySelectorAll('[data-testid="project-card"]'));
-        return cards.map((c) => {
-          const link = c.tagName === 'A' ? c : c.querySelector('a[href*="/design/p/"]');
-          const href = link && link.href ? link.href : null;
-          const text = (c.innerText || '').split('\\n').map((s) => s.trim()).filter(Boolean);
-          return { name: text[0] || null, sub: text[1] || null, url: href };
-        });
+        // 2026-06 redesign (#61): there's no project-card data-testid. Each
+        // project is an <a href="/design/p/<uuid>"> with the project name as its
+        // text; dedupe by uuid (a card can wrap more than one anchor).
+        const links = Array.from(document.querySelectorAll('a[href*="/design/p/"]'));
+        const seen = new Set();
+        const out = [];
+        for (const a of links) {
+          const href = a.href || a.getAttribute('href') || '';
+          const m = href.match(/\\/design\\/p\\/([a-f0-9-]+)/i);
+          if (!m || seen.has(m[1])) continue;
+          seen.add(m[1]);
+          out.push({ name: (a.textContent || '').trim() || null, sub: null, url: href });
+        }
+        return out;
       })()`
     ).catch(() => []);
     return Array.isArray(json) ? json : [];
@@ -728,15 +838,69 @@ export class DesignerController {
     const stored = getSession(this.key);
     const baseUrl = stored?.designUrl || (await this.currentUrl()).split('?')[0] || '';
     if (!/\/design\/p\//.test(baseUrl)) throw new Error('No project open for this key.');
-    const target = `${baseUrl.split('?')[0]}?file=${encodeURIComponent(filename)}`;
-    await this.browser.open(target);
     const wanted = encodeURIComponent(filename);
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 500));
+    const fileParamOf = (u: string): string | null => {
+      try {
+        return new URL(u).searchParams.get('file');
+      } catch {
+        return null;
+      }
+    };
+
+    const targetRoot = baseUrl.split('?')[0];
+    // Already on THIS project's tab showing the requested file with a live
+    // preview — no swap needed (re-opening the same file, e.g. repeated
+    // `prompt --file X`). Must compare the project root too, not just the file
+    // param: with parallel keys, Chrome can be on project B's tab with the same
+    // ?file=index.html, and skipping the open would silently target B (#66).
+    const curUrl = await this.currentUrl();
+    const before = await this.getIframeSrc();
+    if (curUrl.split('?')[0] === targetRoot && fileParamOf(curUrl) === filename && isPreviewIframeSrc(before)) {
+      return { ok: true, file: filename, url: curUrl };
+    }
+
+    const target = `${targetRoot}?file=${wanted}`;
+    await this.browser.open(target);
+
+    // Readiness across two UI generations — and the file-switch false-positive
+    // Codex flagged on #66:
+    //  - legacy: the signed iframe src embedded the filename (src.includes(wanted)).
+    //  - current (issue #61): EVERY file is served from the same per-project
+    //    <uuid>.claudeusercontent.com/_bootstrap src — the filename is not in the
+    //    src and there is no active-file DOM marker (verified live). So a present
+    //    claudeusercontent iframe alone is NOT proof the requested file rendered:
+    //    on a switch A→B the URL updates before React swaps, so the caller would
+    //    otherwise be handed A's still-mounted preview while asking for B.
+    // Switching tears the iframe down (src → '') and remounts it (~1.2s). Require
+    // that teardown + restabilize, plus the URL carrying the requested file, before
+    // declaring success. `before === ''` means nothing was mounted (no stale preview
+    // to clear). Only HTML renders in the iframe; .css/.md/.js settle to an empty
+    // preview, so for those a torn-down-then-stable-empty state is the success signal.
+    const expectsPreview = /\.html?$/i.test(filename);
+    let sawTeardown = before === '';
+    let lastSrc = before;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 250));
       const src = await this.getIframeSrc();
       if (src.includes(wanted)) return { ok: true, file: filename, url: await this.currentUrl() };
+      if (src !== before) sawTeardown = true;
+      const url = await this.currentUrl();
+      if (fileParamOf(url) === filename && sawTeardown && src === lastSrc) {
+        if (expectsPreview && isPreviewIframeSrc(src)) return { ok: true, file: filename, url };
+        if (!expectsPreview && src === '') return { ok: true, file: filename, url };
+      }
+      lastSrc = src;
     }
-    return { ok: false, error: 'iframe-swap-timeout', file: filename, url: await this.currentUrl() };
+    // Window exhausted. For NON-HTML files an empty preview is the legitimate
+    // end-state, so accept once the URL took the requested file and the prior
+    // preview cleared. For HTML, never settling on a claudeusercontent iframe is a
+    // real failure — do NOT mask a non-rendering preview (a soft ok here would
+    // hand callers empty/stale content); fail loud with iframe-swap-timeout.
+    const url = await this.currentUrl();
+    if (!expectsPreview && fileParamOf(url) === filename && sawTeardown) {
+      return { ok: true, file: filename, url };
+    }
+    return { ok: false, error: 'iframe-swap-timeout', file: filename, url };
   }
 
   async fetchFile(filename: string): Promise<{ ok: boolean; file: string; iframeSrc?: string; html: string; htmlBytes: number; error?: string }> {
@@ -815,9 +979,20 @@ export class DesignerController {
     return src || '';
   }
 
+  // KNOWN LIMITATION (issue #61 / PR #66 review #4, verified live): in the 2026-06
+  // bootstrap regime the iframe src is a filename-agnostic
+  // `<uuid>.claudeusercontent.com/_bootstrap` with no signed `?t=` token. A node-side
+  // fetch of it (no claude.ai session cookies) returns the same ~1.1KB unauthenticated
+  // loader shell for EVERY file — not the rendered HTML. So in this regime the bytes
+  // here are NOT the named file's content; `designer handoff` is the authoritative
+  // source of file bytes, and the prompt loop's completion is network-first (the
+  // RunStateObserver), not these bytes. A real fix needs CDP OOPIF frame-content
+  // capture (the preview iframe is cross-origin, so its DOM can't be read from the
+  // parent page) — tracked as a follow-up. The legacy signed-token src is still
+  // fetched normally below.
   async fetchServedHtml(): Promise<{ src: string; html: string }> {
     const src = await this.getIframeSrc();
-    if (!src || !/claudeusercontent\.com/.test(src)) return { src: '', html: '' };
+    if (!src || !isPreviewIframeSrc(src)) return { src: '', html: '' };
     try {
       const res = await fetch(src, { headers: { Accept: 'text/html' } });
       if (!res.ok) return { src, html: '' };

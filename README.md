@@ -70,10 +70,17 @@ Still needs debug Chrome running (`npx -y @pro-vi/designer setup` handles it).
 ```
 designer setup                                       (once per machine)
 designer session --action create --name "X" --key x  start a project
+designer adopt --key x                                adopt an open /design/p/<uuid> tab into a key
 designer prompt "design the …" --key x               prints 'Taste here: <url>'
 designer prompt - --key x < follow-up.txt            iterate
 designer handoff --key x                             bundle for code implementation
 ```
+
+> **Entry-layer drift (issue #61).** The 2026-06 redesign made the `/design`
+> home composer-driven (no name input / fidelity toggle). `--action create` is
+> updated for it: `name` is now the seed intent and the project is created by
+> filling the composer and clicking "Start project". `designer adopt` also binds
+> an already-open `/design/p/<uuid>` tab to a key if you'd rather create by hand.
 
 Every verb has `--help`. `--key <k>` isolates parallel sessions (state at `~/.designer/sessions.json`). Prompts accept positional, `--prompt-file`, or stdin (`-`).
 
