@@ -9,7 +9,8 @@ import { upsertSession, appendHistory, getSession, type StoredSession } from './
 import { REPO_ROOT } from './repo-root.ts';
 import { ensureCdpUp } from './cdp-ensure.ts';
 import { RunStateObserver } from './run-state.ts';
-import { isPreviewIframeSrc } from './preview-host.ts';
+import { OopifHtmlReader } from './oopif-reader.ts';
+import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
 
 export interface Selectors {
   login: { signedInIndicator: string | null };
@@ -603,13 +604,17 @@ export class DesignerController {
     url: string;
     iframeSrc: string;
   }> {
-    const iframeSrc = knownSrc || (await this.getIframeSrc());
+    let iframeSrc = knownSrc || (await this.getIframeSrc());
     let html: string | null = knownHtml ?? null;
     if (html == null && isPreviewIframeSrc(iframeSrc)) {
-      // See fetchServedHtml: in the bootstrap regime this is the loader shell, not
-      // the file's rendered HTML (handoff is authoritative).
-      const res = await fetch(iframeSrc, { headers: { Accept: 'text/html' } }).catch(() => null);
-      if (res && res.ok) html = await res.text();
+      // Route through the single fixed reader (OOPIF capture in the bootstrap
+      // regime, node fetch otherwise) so the snapshot command, iterate()'s
+      // post-gen snapshot, the no_change signal, and the HTML completion
+      // fallback all inherit the fix. fetchServedHtml re-reads the live iframe
+      // src; adopt it so a returned src reflects what was actually read.
+      const served = await this.fetchServedHtml();
+      if (served.html) html = served.html;
+      if (served.src) iframeSrc = served.src;
     }
     const dir = sessionDir(this.key);
     const shotPath = path.join(dir, `shot-${Date.now()}.png`);
@@ -979,20 +984,12 @@ export class DesignerController {
     return src || '';
   }
 
-  // KNOWN LIMITATION (issue #61 / PR #66 review #4, verified live): in the 2026-06
-  // bootstrap regime the iframe src is a filename-agnostic
-  // `<uuid>.claudeusercontent.com/_bootstrap` with no signed `?t=` token. A node-side
-  // fetch of it (no claude.ai session cookies) returns the same ~1.1KB unauthenticated
-  // loader shell for EVERY file — not the rendered HTML. So in this regime the bytes
-  // here are NOT the named file's content; `designer handoff` is the authoritative
-  // source of file bytes, and the prompt loop's completion is network-first (the
-  // RunStateObserver), not these bytes. A real fix needs CDP OOPIF frame-content
-  // capture (the preview iframe is cross-origin, so its DOM can't be read from the
-  // parent page) — tracked as a follow-up. The legacy signed-token src is still
-  // fetched normally below.
-  async fetchServedHtml(): Promise<{ src: string; html: string }> {
-    const src = await this.getIframeSrc();
-    if (!src || !isPreviewIframeSrc(src)) return { src: '', html: '' };
+  // Node-side fetch of the preview src. The LEGACY signed-token regime
+  // (`claudeusercontent.com/...?t=<token>`) authorizes this fetch and returns
+  // the file's real rendered HTML. The 2026-06 bootstrap regime does NOT (see
+  // fetchServedHtml) — there the fetch returns the same ~1.1KB unauthenticated
+  // loader shell for every file, so this is only the fallback floor.
+  private async _fetchServedHtmlNode(src: string): Promise<{ src: string; html: string }> {
     try {
       const res = await fetch(src, { headers: { Accept: 'text/html' } });
       if (!res.ok) return { src, html: '' };
@@ -1000,6 +997,45 @@ export class DesignerController {
     } catch {
       return { src, html: '' };
     }
+  }
+
+  // Reads the design preview's served HTML. The preview iframe addressing has
+  // two regimes (preview-host.ts/previewIframeVariant):
+  //
+  //   - signed-token (legacy): a node fetch of the `?t=<token>` URL is
+  //     authorized and returns the file's real rendered HTML — keep it.
+  //   - bootstrap-subdomain (2026-06, issue #61): the src is a filename-agnostic
+  //     `<uuid>.claudeusercontent.com/_bootstrap` with NO token. A node fetch
+  //     (no claude.ai cookies) returns the same ~1.1KB unauthenticated loader
+  //     shell for EVERY file — never the rendered HTML. The rendered DOM lives
+  //     only inside the cross-origin out-of-process iframe (OOPIF), which the
+  //     parent page JS can't read. So read it over CDP via OopifHtmlReader
+  //     (review #4, live-verified). Honors the DESIGNER_CDP='' opt-out and
+  //     degrades to the node fetch on any failure, so every existing caller
+  //     (snapshot, iterate's post-gen snapshot, the no_change signal, and the
+  //     _waitForGenerationDoneHtml fallback) behaves at least as before.
+  async fetchServedHtml(): Promise<{ src: string; html: string }> {
+    const src = await this.getIframeSrc();
+    if (!src || !isPreviewIframeSrc(src)) return { src: '', html: '' };
+
+    const variant = previewIframeVariant(src);
+    const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
+    if (variant === 'bootstrap-subdomain' && cdpEnabled) {
+      const reader = await OopifHtmlReader.attach({
+        preferUrlPrefix: (await this.currentUrl()).split('?')[0] || null
+      }).catch(() => null);
+      if (reader) {
+        try {
+          const html = await reader.readPreviewHtml(src).catch(() => null);
+          if (html) return { src, html };
+        } finally {
+          reader.close();
+        }
+      }
+    }
+
+    // signed-token, 'other', CDP opt-out, or any CDP failure: node fetch floor.
+    return this._fetchServedHtmlNode(src);
   }
 
   async handoff({ openFile }: { openFile?: string } = {}): Promise<HandoffResult> {

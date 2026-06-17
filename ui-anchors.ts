@@ -342,6 +342,41 @@ export const UI_ANCHORS: AnchorDef[] = [
     }
   },
   {
+    // Drift sentinel for the OOPIF preview-HTML capture path (issue #61 / review
+    // #4). fetchServedHtml branches on previewIframeVariant: signed-token keeps
+    // the legacy node fetch; bootstrap-subdomain reads the cross-origin OOPIF's
+    // rendered DOM over CDP. This anchor records which regime the live preview
+    // is in so a swing back to signed-token (or to an unrecognized 'other'
+    // shape) — which would silently route capture down the wrong path — is
+    // visible in the daily health probe. It does not attach CDP (that needs a
+    // live signed-in session); the capture itself is covered by the turn-RPC
+    // canary + the unit tests.
+    id: 'network.previewBootstrap',
+    category: 'pattern',
+    description: 'preview iframe regime (bootstrap-subdomain => OOPIF CDP capture; signed-token => node fetch)',
+    requires: 'session',
+    check: async (b, url) => {
+      if (!/[?&]file=/.test(url)) return { ok: true, detail: '(no file open — preview regime not checked)' };
+      const src = await b
+        .evalValue<string>(
+          `(() => { const el = document.querySelector('[data-testid="html-viewer-iframe"]'); return (el && el.src) || ''; })()`
+        )
+        .catch(() => '');
+      if (!src) return { ok: false, detail: 'file param present but iframe missing src' };
+      if (!isPreviewIframeSrc(src)) return { ok: false, detail: `preview left claudeusercontent.com: ${src.slice(0, 120)}` };
+      const variant = previewIframeVariant(src);
+      return {
+        ok: variant === 'bootstrap-subdomain' || variant === 'signed-token',
+        detail:
+          variant === 'bootstrap-subdomain'
+            ? 'variant=bootstrap-subdomain (OOPIF CDP capture path)'
+            : variant === 'signed-token'
+              ? 'variant=signed-token (legacy node-fetch path)'
+              : `variant=other — unrecognized preview src shape (${src.slice(0, 120)}); capture path may be wrong`
+      };
+    }
+  },
+  {
     // Legacy id (kept to avoid resetting the persisted streak counter). The
     // original check asserted a 'You\n' / 'Claude\n' text prefix on each
     // chat turn, but Claude's May 2026 chat redesign removed the in-text
