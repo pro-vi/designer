@@ -29,11 +29,11 @@ server.registerTool(
   'designer_session',
   {
     description:
-      "Enter, inspect, or transition a claude.ai/design session. Default action='status' is a pure read — safe to call anytime to orient without side effects. Returns stored state + currentUrl + inSession + availableFiles so you can avoid a follow-up list call. Use this as the first tool in any agent loop.\n\nActions:\n- status (default): read-only, no mutations\n- ensure_ready: navigate to /design if not already there\n- resume: navigate into the stored designUrl for this key (fails if nothing stored)\n- create: new project (requires name)",
+      "Enter, inspect, or transition a claude.ai/design session. Default action='status' is a pure read — safe to call anytime to orient without side effects. Returns stored state + currentUrl + inSession + availableFiles so you can avoid a follow-up list call. Use this as the first tool in any agent loop.\n\nActions:\n- status (default): read-only, no mutations\n- ensure_ready: navigate to /design if not already there\n- resume: navigate into the stored designUrl for this key (fails if nothing stored)\n- create: new project (requires name)\n- adopt: bind the already-open /design/p/<uuid> tab to this key (name optional). Use this when create can't drive the redesigned creation-cards home — open the project by hand, then adopt it.",
     inputSchema: {
       key: z.string().optional().describe('Stable key for this loop (e.g., feature name). Defaults to "default".'),
-      action: z.enum(['status', 'ensure_ready', 'resume', 'create']).optional().describe('Default: status'),
-      name: z.string().optional().describe('Required when action=create.'),
+      action: z.enum(['status', 'ensure_ready', 'resume', 'create', 'adopt']).optional().describe('Default: status'),
+      name: z.string().optional().describe('Required when action=create; optional label when action=adopt.'),
       fidelity: z.enum(['wireframe', 'highfi']).optional().describe('Locked at creation. Default wireframe.')
     }
   },

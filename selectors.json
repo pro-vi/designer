@@ -1,5 +1,6 @@
 {
   "_notes": "Captured 2026-04-17 from Chrome 147 via CDP. Override at ~/.designer/selectors.override.json. Prefer data-testid over class names — Claude's styled-components classes (sc-xxx) are regenerated on every build.",
+  "_drift": "2026-06 (issue #61): the home was rebuilt around creation-type cards (Start anywhere / Slides / Prototype / Product wireframe / Doc / Animation / Blank canvas) + a 'Make something new' button — the home.* anchors below (project-creator / name-input / fidelity toggle / create-button / projects-list) no longer resolve and create-flow drive is unreliable. Until these are re-captured from the live DOM, bypass the create-flow: open a project by hand and run `designer adopt` (or `designer session --action adopt`) to bind the /design/p/<uuid> tab to a key. Capture new values into ~/.designer/selectors.override.json.",
   "_urls": {
     "home": "https://claude.ai/design",
     "session": "https://claude.ai/design/p/{uuid}"

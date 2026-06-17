@@ -50,6 +50,22 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// The design preview iframe is the load-bearing invariant: it must serve from
+// claudeusercontent.com. How it's addressed has drifted — the legacy form was
+// `claudeusercontent.com/...?t=<signed-token>`; the 2026-06 redesign (issue #61)
+// moved it to a per-project `<uuid>.claudeusercontent.com/_bootstrap...` subdomain
+// with no token. Assert the host (real drift = the preview leaving that domain)
+// and report which variant matched, rather than pinning the token that's now gone.
+export function isPreviewIframeSrc(src: string): boolean {
+  return /claudeusercontent\.com/.test(src);
+}
+
+export function previewIframeVariant(src: string): 'signed-token' | 'bootstrap-subdomain' | 'other' {
+  if (/[?&]t=/.test(src)) return 'signed-token';
+  if (/\/_bootstrap/.test(src)) return 'bootstrap-subdomain';
+  return 'other';
+}
+
 async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; detail?: string }> {
   const prompt =
     'Health check: answer in chat only with the single word ok. Do not create, modify, or delete files.';
@@ -329,7 +345,7 @@ export const UI_ANCHORS: AnchorDef[] = [
   {
     id: 'session.iframeSrcPattern',
     category: 'pattern',
-    description: 'iframe src is claudeusercontent.com with signed ?t= token',
+    description: 'iframe src serves from claudeusercontent.com (signed-token or bootstrap-subdomain)',
     requires: 'session',
     check: async (b, url) => {
       if (!/[?&]file=/.test(url)) return { ok: true, detail: '(no file open — iframe not expected)' };
@@ -337,8 +353,8 @@ export const UI_ANCHORS: AnchorDef[] = [
         `(() => { const el = document.querySelector('[data-testid="html-viewer-iframe"]'); return (el && el.src) || ''; })()`
       ).catch(() => '');
       if (!src) return { ok: false, detail: 'file param present but iframe missing src' };
-      const ok = /claudeusercontent\.com/.test(src) && /[?&]t=/.test(src);
-      return { ok, detail: ok ? undefined : `src=${src.slice(0, 120)}...` };
+      const ok = isPreviewIframeSrc(src);
+      return { ok, detail: ok ? `variant=${previewIframeVariant(src)}` : `src=${src.slice(0, 120)}...` };
     }
   },
   {

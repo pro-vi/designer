@@ -115,6 +115,11 @@ export interface RepairReport {
 
 const DESIGN_HOME = 'https://claude.ai/design';
 
+// A claude.ai/design session URL: /design/p/<uuid>. Capture group 1 is the
+// project id. Used by isInSession()-style checks and `adopt` (binding an
+// already-open project tab to a key, bypassing the create-flow home).
+export const SESSION_URL_RE = /^https:\/\/claude\.ai\/design\/p\/([a-f0-9-]+)/i;
+
 // Appended to every designer_prompt payload. The live MCP surface
 // (listFiles / openFile / newFiles diff) scrapes a flat root from the
 // file panel; files nested under folders stay invisible until handoff.
@@ -206,7 +211,7 @@ export class DesignerController {
     action = 'status',
     name,
     fidelity = 'wireframe'
-  }: { action?: 'status' | 'ensure_ready' | 'resume' | 'create'; name?: string; fidelity?: 'wireframe' | 'highfi' } = {}): Promise<unknown> {
+  }: { action?: 'status' | 'ensure_ready' | 'resume' | 'create' | 'adopt'; name?: string; fidelity?: 'wireframe' | 'highfi' } = {}): Promise<unknown> {
     if (action === 'status') return this.getStatus();
     if (action === 'ensure_ready') {
       const r = await this.ensureReady();
@@ -223,7 +228,43 @@ export class DesignerController {
       const r = await this.createSession(name, fidelity);
       return { ...r, status: await this.getStatus() };
     }
+    if (action === 'adopt') {
+      const r = await this.adoptSession(name);
+      return { ...r, status: await this.getStatus() };
+    }
     throw new Error(`Unknown action: ${action}`);
+  }
+
+  // Bind a project you opened by hand (a live /design/p/<uuid> tab) to this
+  // key — the supported path around the redesigned creation-cards home, whose
+  // anchors drift wholesale (issue #61). Picks the matching CDP page (active
+  // first, then lowest index), switches agent-browser's binding to it, and
+  // stores its designUrl. `name` is optional metadata only.
+  async adoptSession(name?: string): Promise<{ ok: true; url: string; uuid: string; adopted: true; name?: string }> {
+    await ensureCdpUp();
+
+    const tabs = await this.browser.tabs().catch(() => [] as Awaited<ReturnType<Browser['tabs']>>);
+    const candidates = tabs
+      .filter((t) => t.type === 'page' && t.url && SESSION_URL_RE.test(t.url))
+      .sort((a, b) => Number(b.active) - Number(a.active) || a.index - b.index);
+    const top = candidates[0];
+    if (top) {
+      await this.browser.activateTab(top.index).catch(() => null);
+    }
+
+    const url = await this.currentUrl();
+    const m = url.match(SESSION_URL_RE);
+    if (!m) {
+      const checked = candidates.length > 0 ? ` (checked ${candidates.length} candidate tab(s))` : '';
+      throw new Error(
+        `No /design/p/<uuid> tab to adopt — open a project by hand in the CDP-attached Chrome first${checked}. current url=${url || 'none'}`
+      );
+    }
+    const designUrl = url.split('?')[0] || url;
+    const uuid = m[1] ?? '';
+    upsertSession(this.key, { designUrl, lastUrl: url, ...(name ? { name } : {}) });
+    appendHistory(this.key, { kind: 'session_adopt', url: designUrl, ...(name ? { name } : {}) });
+    return { ok: true, url: designUrl, uuid, adopted: true, ...(name ? { name } : {}) };
   }
 
   // Pick the live claude.ai/design tab among possibly many CDP pages, switch
@@ -728,15 +769,35 @@ export class DesignerController {
     const stored = getSession(this.key);
     const baseUrl = stored?.designUrl || (await this.currentUrl()).split('?')[0] || '';
     if (!/\/design\/p\//.test(baseUrl)) throw new Error('No project open for this key.');
-    const target = `${baseUrl.split('?')[0]}?file=${encodeURIComponent(filename)}`;
-    await this.browser.open(target);
     const wanted = encodeURIComponent(filename);
+    const target = `${baseUrl.split('?')[0]}?file=${wanted}`;
+    await this.browser.open(target);
+    // Readiness spans two UI generations:
+    //  - legacy: the signed iframe src embedded the filename (src.includes(wanted)).
+    //  - current (issue #61): the preview serves from a per-project
+    //    <uuid>.claudeusercontent.com/_bootstrap subdomain that no longer carries
+    //    the filename, so the ?file= URL param is the only control surface. Treat
+    //    a claudeusercontent preview iframe present while the URL reflects ?file=
+    //    as the swap signal — don't wait for a filename that's no longer there.
+    let sawIframe = false;
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 500));
       const src = await this.getIframeSrc();
+      if (src) sawIframe = true;
       if (src.includes(wanted)) return { ok: true, file: filename, url: await this.currentUrl() };
+      const url = await this.currentUrl();
+      if (/[?&]file=/.test(url) && /claudeusercontent\.com/.test(src)) {
+        return { ok: true, file: filename, url };
+      }
     }
-    return { ok: false, error: 'iframe-swap-timeout', file: filename, url: await this.currentUrl() };
+    // The SPA accepted the file param; the file renders client-side even when the
+    // preview src is never observable (issue #61). Only call it a hard failure if
+    // the URL never took the param AND no preview iframe ever mounted.
+    const url = await this.currentUrl();
+    if (/[?&]file=/.test(url) && (sawIframe || /\/design\/p\//.test(url))) {
+      return { ok: true, file: filename, url };
+    }
+    return { ok: false, error: 'iframe-swap-timeout', file: filename, url };
   }
 
   async fetchFile(filename: string): Promise<{ ok: boolean; file: string; iframeSrc?: string; html: string; htmlBytes: number; error?: string }> {

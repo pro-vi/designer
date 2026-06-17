@@ -73,7 +73,7 @@ async function main(): Promise<void> {
     }
     case 'session': {
       const c = new DesignerController({ key });
-      const action = (flags.action as 'status' | 'ensure_ready' | 'resume' | 'create') || 'status';
+      const action = (flags.action as 'status' | 'ensure_ready' | 'resume' | 'create' | 'adopt') || 'status';
       const name = flags.name as string | undefined;
       const fidelity = flags.fidelity as 'wireframe' | 'highfi' | undefined;
       console.log(JSON.stringify(await c.session({ action, name, fidelity }), null, 2));
@@ -104,6 +104,12 @@ async function main(): Promise<void> {
     case 'resume': {
       const c = new DesignerController({ key });
       console.log(JSON.stringify(await c.resumeSession(), null, 2));
+      break;
+    }
+    case 'adopt': {
+      const name = (flags.name as string) || (flags._[0] as string | undefined);
+      const c = new DesignerController({ key });
+      console.log(JSON.stringify(await c.adoptSession(name), null, 2));
       break;
     }
     case 'snapshot': {
@@ -322,8 +328,10 @@ Typical loop:
   designer handoff --key x                             bundle for code implementation
 
 Session lifecycle:
-  session [--action status|ensure_ready|resume|create] [--name N] [--fidelity wireframe|highfi] [--key k]
+  session [--action status|ensure_ready|resume|create|adopt] [--name N] [--fidelity wireframe|highfi] [--key k]
                                                enter/inspect/transition (primary entry)
+  adopt [name] [--key k]                        bind the open /design/p/<uuid> tab to a key
+                                               (use when the creation-cards home can't be driven)
   status [--key k]                             read stored state
   list                                         list locally-tracked sessions
   close [--key k]                              close browser (state preserved)
@@ -361,15 +369,20 @@ const HELP: Record<string, string> = {
   session: `designer session — enter, inspect, or transition a claude.ai/design session.
 
 Flags:
-  --action <a>    status (default, read-only) | ensure_ready | resume | create
-  --name <N>      required when --action create
+  --action <a>    status (default, read-only) | ensure_ready | resume | create | adopt
+  --name <N>      required when --action create; optional label when --action adopt
   --fidelity <f>  wireframe | highfi — locked at creation, default wireframe
   --key <k>       stable session key (e.g., feature name), defaults to 'default'
+
+adopt binds an already-open /design/p/<uuid> tab to a key — the supported path
+around the redesigned creation-cards home (issue #61) when --action create can't
+drive it. Open the project by hand in the CDP-attached Chrome, then adopt it.
 
 Examples:
   designer session                                        # read status of 'default'
   designer session --action create --name "feat X" --fidelity highfi --key feat-x
   designer session --action resume --key feat-x
+  designer session --action adopt --name "feat X" --key feat-x
   designer session --key feat-x                           # status for feat-x`,
 
   prompt: `designer prompt — modify the design. Waits for HTML to change and stabilize.

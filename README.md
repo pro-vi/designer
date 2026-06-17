@@ -70,10 +70,17 @@ Still needs debug Chrome running (`npx -y @pro-vi/designer setup` handles it).
 ```
 designer setup                                       (once per machine)
 designer session --action create --name "X" --key x  start a project
+designer adopt --key x                                adopt an open /design/p/<uuid> tab into a key
 designer prompt "design the …" --key x               prints 'Taste here: <url>'
 designer prompt - --key x < follow-up.txt            iterate
 designer handoff --key x                             bundle for code implementation
 ```
+
+> **Entry-layer drift (issue #61).** Claude rebuilt the `/design` home around
+> creation-type cards, so `--action create` can't reliably drive project
+> creation right now. Until the home anchors are re-captured, open the project
+> by hand and `designer adopt` it into a key — every other verb (`prompt`,
+> `ask`, `handoff`) works normally once the key points at a `/design/p/<uuid>`.
 
 Every verb has `--help`. `--key <k>` isolates parallel sessions (state at `~/.designer/sessions.json`). Prompts accept positional, `--prompt-file`, or stdin (`-`).
 
