@@ -771,31 +771,59 @@ export class DesignerController {
     const baseUrl = stored?.designUrl || (await this.currentUrl()).split('?')[0] || '';
     if (!/\/design\/p\//.test(baseUrl)) throw new Error('No project open for this key.');
     const wanted = encodeURIComponent(filename);
+    const fileParamOf = (u: string): string | null => {
+      try {
+        return new URL(u).searchParams.get('file');
+      } catch {
+        return null;
+      }
+    };
+
+    // Already showing the requested file with a live preview — no swap needed
+    // (re-opening the same file, e.g. repeated `prompt --file X`).
+    const before = await this.getIframeSrc();
+    if (fileParamOf(await this.currentUrl()) === filename && /claudeusercontent\.com/.test(before)) {
+      return { ok: true, file: filename, url: await this.currentUrl() };
+    }
+
     const target = `${baseUrl.split('?')[0]}?file=${wanted}`;
     await this.browser.open(target);
-    // Readiness spans two UI generations:
+
+    // Readiness across two UI generations — and the file-switch false-positive
+    // Codex flagged on #66:
     //  - legacy: the signed iframe src embedded the filename (src.includes(wanted)).
-    //  - current (issue #61): the preview serves from a per-project
-    //    <uuid>.claudeusercontent.com/_bootstrap subdomain that no longer carries
-    //    the filename, so the ?file= URL param is the only control surface. Treat
-    //    a claudeusercontent preview iframe present while the URL reflects ?file=
-    //    as the swap signal — don't wait for a filename that's no longer there.
-    let sawIframe = false;
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 500));
+    //  - current (issue #61): EVERY file is served from the same per-project
+    //    <uuid>.claudeusercontent.com/_bootstrap src — the filename is not in the
+    //    src and there is no active-file DOM marker (verified live). So a present
+    //    claudeusercontent iframe alone is NOT proof the requested file rendered:
+    //    on a switch A→B the URL updates before React swaps, so the caller would
+    //    otherwise be handed A's still-mounted preview while asking for B.
+    // Switching tears the iframe down (src → '') and remounts it (~1.2s). Require
+    // that teardown + restabilize, plus the URL carrying the requested file, before
+    // declaring success. `before === ''` means nothing was mounted (no stale preview
+    // to clear). Only HTML renders in the iframe; .css/.md/.js settle to an empty
+    // preview, so for those a torn-down-then-stable-empty state is the success signal.
+    const expectsPreview = /\.html?$/i.test(filename);
+    let sawTeardown = before === '';
+    let lastSrc = before;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 250));
       const src = await this.getIframeSrc();
-      if (src) sawIframe = true;
       if (src.includes(wanted)) return { ok: true, file: filename, url: await this.currentUrl() };
+      if (src !== before) sawTeardown = true;
       const url = await this.currentUrl();
-      if (/[?&]file=/.test(url) && /claudeusercontent\.com/.test(src)) {
-        return { ok: true, file: filename, url };
+      if (fileParamOf(url) === filename && sawTeardown && src === lastSrc) {
+        if (expectsPreview && /claudeusercontent\.com/.test(src)) return { ok: true, file: filename, url };
+        if (!expectsPreview && src === '') return { ok: true, file: filename, url };
       }
+      lastSrc = src;
     }
-    // The SPA accepted the file param; the file renders client-side even when the
-    // preview src is never observable (issue #61). Only call it a hard failure if
-    // the URL never took the param AND no preview iframe ever mounted.
+    // Window exhausted: the URL took the requested file and the prior preview
+    // cleared, but the expected end-state never settled. Accept rather than emit a
+    // false iframe-swap-timeout (the file does render client-side; issue #61);
+    // only fail loud if the URL never even took the file param.
     const url = await this.currentUrl();
-    if (/[?&]file=/.test(url) && (sawIframe || /\/design\/p\//.test(url))) {
+    if (fileParamOf(url) === filename && sawTeardown) {
       return { ok: true, file: filename, url };
     }
     return { ok: false, error: 'iframe-swap-timeout', file: filename, url };
