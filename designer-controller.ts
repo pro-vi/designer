@@ -330,33 +330,28 @@ export class DesignerController {
   }
 
   async createSession(name: string, fidelity: 'wireframe' | 'highfi' = 'wireframe'): Promise<{ ok: true; url: string; name: string; fidelity: string }> {
-    const s = this.selectors.home;
+    // 2026-06 redesign (#61): the home is composer-driven. There's no longer a
+    // project-name input or a wireframe/high-fi toggle — you seed an intent in
+    // the chat composer (`home.creator`, the same data-testid as the in-session
+    // composer) and click "Start project" (`home.createButton`, the same
+    // data-testid as the in-session send button). So `name` becomes the seed
+    // prompt; `fidelity` is kept for stored metadata + back-compat but no longer
+    // maps to a UI control (convey fidelity in the prompt instead). The creation-
+    // type cards (Slides / Prototype / Product wireframe / …) are text-only
+    // buttons left as a follow-up. Verified live against the redesigned home.
     await this.browser.open(DESIGN_HOME);
     await this.browser.waitLoad('networkidle').catch(() => null);
-    await this.browser.waitFor(s.creator);
+    await this.browser.waitFor(this.selectors.home.creator);
 
-    // Fill via native setter so React's form controller registers the value.
-    await this.browser.evalValue<boolean>(
-      `(() => {
-        const el = document.querySelector(${JSON.stringify(s.nameInput)});
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        setter.call(el, ${JSON.stringify(name)});
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        return true;
-      })()`
-    );
+    // Reuse the battle-tested composer fill+submit: it handles the contenteditable
+    // ProseMirror composer and waits for the send button to enable before clicking.
+    await this._submitPrompt(name);
 
-    const text = fidelity === 'highfi' ? s.highFiButtonText : s.wireframeButtonText;
-    await this._clickButtonByText(new RegExp('^' + text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-    await new Promise((r) => setTimeout(r, 200));
-    await this.browser.evalValue<boolean>(
-      `(() => { const b = document.querySelector(${JSON.stringify(s.createButton)}); if (!b) throw new Error('create button missing'); b.click(); return true; })()`
-    );
-    for (let i = 0; i < 40; i++) {
-      await new Promise((r) => setTimeout(r, 300));
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 500));
       if (await this.isInSession()) break;
     }
-    if (!(await this.isInSession())) throw new Error('Session creation did not navigate to a /p/ url in time.');
+    if (!(await this.isInSession())) throw new Error('Project creation did not navigate to a /p/ url in time.');
     const url = await this.currentUrl();
     upsertSession(this.key, { designUrl: url, name, fidelity, lastUrl: url });
     appendHistory(this.key, { kind: 'session_create', name, fidelity, url });
@@ -664,13 +659,20 @@ export class DesignerController {
     await this.browser.waitFor(this.selectors.home.projectsList).catch(() => null);
     const json = await this.browser.evalValue<Array<{ name: string | null; sub: string | null; url: string | null }>>(
       `(() => {
-        const cards = Array.from(document.querySelectorAll('[data-testid="project-card"]'));
-        return cards.map((c) => {
-          const link = c.tagName === 'A' ? c : c.querySelector('a[href*="/design/p/"]');
-          const href = link && link.href ? link.href : null;
-          const text = (c.innerText || '').split('\\n').map((s) => s.trim()).filter(Boolean);
-          return { name: text[0] || null, sub: text[1] || null, url: href };
-        });
+        // 2026-06 redesign (#61): there's no project-card data-testid. Each
+        // project is an <a href="/design/p/<uuid>"> with the project name as its
+        // text; dedupe by uuid (a card can wrap more than one anchor).
+        const links = Array.from(document.querySelectorAll('a[href*="/design/p/"]'));
+        const seen = new Set();
+        const out = [];
+        for (const a of links) {
+          const href = a.href || a.getAttribute('href') || '';
+          const m = href.match(/\\/design\\/p\\/([a-f0-9-]+)/i);
+          if (!m || seen.has(m[1])) continue;
+          seen.add(m[1]);
+          out.push({ name: (a.textContent || '').trim() || null, sub: null, url: href });
+        }
+        return out;
       })()`
     ).catch(() => []);
     return Array.isArray(json) ? json : [];

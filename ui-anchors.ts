@@ -184,13 +184,12 @@ export const UI_ANCHORS: AnchorDef[] = [
       if (/claude\.ai\/login/.test(url)) {
         return { ok: false, detail: `signed out — Chrome is on the login wall (${url.slice(0, 80)}). Run: designer setup` };
       }
-      // On a design surface, the signed-in app shell renders project-creator
-      // (home) or chat-composer-input (session). Their absence here means the
-      // login wall is being served at the /design URL — fail loudly.
+      // On a design surface, the signed-in app shell renders the chat composer
+      // (chat-composer-input) on BOTH the home (creation composer, post-2026-06
+      // redesign #61) and inside a session. Its absence here means the login
+      // wall is being served at the /design URL — fail loudly.
       if (/claude\.ai\/design/.test(url)) {
-        const signedIn =
-          (await hasSelector(b, '[data-testid="project-creator"]')) ||
-          (await hasSelector(b, '[data-testid="chat-composer-input"]'));
+        const signedIn = await hasSelector(b, '[data-testid="chat-composer-input"]');
         return signedIn
           ? { ok: true }
           : { ok: false, detail: `login wall rendered at ${url.slice(0, 80)} (no app shell) — signed out. Run: designer setup` };
@@ -202,54 +201,54 @@ export const UI_ANCHORS: AnchorDef[] = [
   },
 
   // --- home page ---
+  // 2026-06 redesign (#61): the home is composer-driven — no project-name input
+  // and no wireframe/high-fi toggle. Creation = seed the chat composer
+  // (chat-composer-input) + click "Start project" (chat-send-button, same
+  // testids as the in-session composer/send). The old home.nameInput anchor was
+  // dropped (no equivalent); home.wireframeButton/highFiButton are repurposed to
+  // the surviving creation-type cards (text-only buttons) so they still detect
+  // drift of the creation UI. Captured live from Chrome 149.
   {
     id: 'home.creator',
     category: 'home',
-    description: 'project-creator container',
+    description: 'creation composer (chat-composer-input)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="project-creator"]') })
-  },
-  {
-    id: 'home.nameInput',
-    category: 'home',
-    description: 'project-name input',
-    requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, 'input[placeholder="Project name"]') })
+    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-composer-input"]') })
   },
   {
     id: 'home.wireframeButton',
     category: 'home',
-    description: 'Wireframe fidelity button',
+    description: 'Product wireframe creation-type card',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, /^Wireframe/) })
+    check: async (b) => ({ ok: await hasButtonMatching(b, /^Product wireframe/) })
   },
   {
     id: 'home.highFiButton',
     category: 'home',
-    description: 'High fidelity button',
+    description: 'Prototype creation-type card',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, /^High fidelity/) })
+    check: async (b) => ({ ok: await hasButtonMatching(b, /^Prototype/) })
   },
   {
     id: 'home.createButton',
     category: 'home',
-    description: 'create-project button',
+    description: '"Start project" create button (chat-send-button)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="create-project-button"]') })
+    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-send-button"], button[title^="Send ("]') })
   },
   {
     id: 'home.projectsList',
     category: 'home',
-    description: 'projects-list container',
+    description: 'project list (>=1 /design/p/ link)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="projects-list"]') })
+    check: async (b) => ({ ok: await hasSelector(b, 'a[href*="/design/p/"]') })
   },
   {
     id: 'home.projectCard',
     category: 'home',
-    description: 'project-card (at least one)',
+    description: 'project card (a[href*="/design/p/"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="project-card"]') })
+    check: async (b) => ({ ok: await hasSelector(b, 'a[href*="/design/p/"]') })
   },
 
   // --- inside a session (after /design/p/{uuid}) ---
