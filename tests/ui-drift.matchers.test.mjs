@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { isPreviewIframeSrc, previewIframeVariant } from '../ui-anchors.ts';
+import { isPreviewIframeSrc, previewIframeVariant } from '../preview-host.ts';
 import { SESSION_URL_RE } from '../designer-controller.ts';
 
 // Regression coverage for the 2026-06 claude.ai/design entry-layer drift
@@ -20,6 +20,18 @@ test('isPreviewIframeSrc rejects a preview that left claudeusercontent.com (real
   assert.equal(isPreviewIframeSrc(''), false);
   assert.equal(isPreviewIframeSrc('https://claude.ai/design/p/abc'), false);
   assert.equal(isPreviewIframeSrc('https://evil.example.com/?t=x'), false);
+});
+
+test('isPreviewIframeSrc is a hostname check, not a substring match (host-spoof drift)', () => {
+  // Suffix-attached host — substring match would wrongly accept these.
+  assert.equal(isPreviewIframeSrc('https://claudeusercontent.com.evil.test/_bootstrap'), false);
+  assert.equal(isPreviewIframeSrc('https://evil-claudeusercontent.com/_bootstrap'), false);
+  // claudeusercontent.com only in the path/query, not the host.
+  assert.equal(isPreviewIframeSrc('https://evil.test/?u=claudeusercontent.com'), false);
+  assert.equal(isPreviewIframeSrc('https://evil.test/claudeusercontent.com/x'), false);
+  // Genuine apex + subdomain still accepted.
+  assert.equal(isPreviewIframeSrc('https://claudeusercontent.com/abc?t=tok'), true);
+  assert.equal(isPreviewIframeSrc('https://72e7.claudeusercontent.com/_bootstrap'), true);
 });
 
 test('previewIframeVariant labels which addressing scheme matched', () => {

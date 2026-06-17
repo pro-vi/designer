@@ -34,7 +34,12 @@ server.registerTool(
       key: z.string().optional().describe('Stable key for this loop (e.g., feature name). Defaults to "default".'),
       action: z.enum(['status', 'ensure_ready', 'resume', 'create', 'adopt']).optional().describe('Default: status'),
       name: z.string().optional().describe('Required when action=create; optional label when action=adopt.'),
-      fidelity: z.enum(['wireframe', 'highfi']).optional().describe('Locked at creation. Default wireframe.')
+      fidelity: z
+        .enum(['wireframe', 'highfi'])
+        .optional()
+        .describe(
+          'Advisory metadata only (default wireframe). The 2026-06 home redesign removed the fidelity toggle — to actually steer fidelity, say so in the prompt (e.g. "high-fidelity"); this field is just recorded on the session.'
+        )
     }
   },
   async ({ key, action = 'status', name, fidelity }) =>

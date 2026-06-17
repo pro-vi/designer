@@ -1,5 +1,6 @@
 import type { Browser } from './browser.ts';
 import { RunStateObserver } from './run-state.ts';
+import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
 
 // Every UI anchor this MCP depends on to work. Grouped by the surface state
 // they live on. A regression in Claude Design's UI will trip one or more of
@@ -48,22 +49,6 @@ async function hasButtonMatching(browser: Browser, pattern: RegExp): Promise<boo
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// The design preview iframe is the load-bearing invariant: it must serve from
-// claudeusercontent.com. How it's addressed has drifted — the legacy form was
-// `claudeusercontent.com/...?t=<signed-token>`; the 2026-06 redesign (issue #61)
-// moved it to a per-project `<uuid>.claudeusercontent.com/_bootstrap...` subdomain
-// with no token. Assert the host (real drift = the preview leaving that domain)
-// and report which variant matched, rather than pinning the token that's now gone.
-export function isPreviewIframeSrc(src: string): boolean {
-  return /claudeusercontent\.com/.test(src);
-}
-
-export function previewIframeVariant(src: string): 'signed-token' | 'bootstrap-subdomain' | 'other' {
-  if (/[?&]t=/.test(src)) return 'signed-token';
-  if (/\/_bootstrap/.test(src)) return 'bootstrap-subdomain';
-  return 'other';
 }
 
 async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; detail?: string }> {
