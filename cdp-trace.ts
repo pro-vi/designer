@@ -177,6 +177,11 @@ export async function findDesignTarget({
     throw new Error(`No page target matching ${urlPattern} on CDP :${port}. Open claude.ai/design first.`);
   }
   if (preferUrlPrefix) {
+    // Exact URL first: the home URL (https://claude.ai/design) is a *prefix* of
+    // every /design/p/<uuid> tab, so a startsWith match alone could bind to an
+    // arbitrary project tab instead of the exact tab the caller is on (#66).
+    const exact = candidates.find((t) => t.url === preferUrlPrefix);
+    if (exact) return exact;
     const preferred = candidates.find((t) => t.url.startsWith(preferUrlPrefix));
     if (preferred) return preferred;
   }

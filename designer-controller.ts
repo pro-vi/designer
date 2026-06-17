@@ -385,9 +385,16 @@ export class DesignerController {
     // (#66 review). Honors the DESIGNER_CDP='' opt-out: with no observer we can't
     // wait reliably (the HTML waiter is degraded under the bootstrap iframe), so we
     // navigate and proceed best-effort — the next prompt's send-enable wait resyncs.
+    //
+    // Bind the observer to THIS exact home tab (findDesignTarget exact-matches the
+    // URL). The home URL is a prefix of every /design/p/<uuid> tab, so a loose
+    // prefix could otherwise bind to a different project's tab in multi-tab/
+    // parallel-key workflows (#66). The tab keeps its CDP target across the SPA
+    // navigation to /p/, so the observer follows it.
     const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
+    const homeUrl = await this.currentUrl();
     let observer: RunStateObserver | null = cdpEnabled
-      ? await RunStateObserver.attach({ preferUrlPrefix: DESIGN_HOME })
+      ? await RunStateObserver.attach({ preferUrlPrefix: homeUrl })
       : null;
     try {
       observer?.beginRun();
