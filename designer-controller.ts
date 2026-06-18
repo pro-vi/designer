@@ -117,6 +117,13 @@ export interface RepairReport {
 
 const DESIGN_HOME = 'https://claude.ai/design';
 
+// The DESIGNER_CDP opt-out (CLAUDE.md: three states — unset/9222 = on, '' = off,
+// the agent-browser session-managed flow). One definition of "is CDP work
+// allowed" so the load-bearing gate can't drift across its call sites.
+function isCdpEnabled(): boolean {
+  return (process.env.DESIGNER_CDP ?? '9222') !== '';
+}
+
 // A claude.ai/design session URL: /design/p/<uuid>. Capture group 1 is the
 // project id. Used by isInSession()-style checks and `adopt` (binding an
 // already-open project tab to a key, bypassing the create-flow home).
@@ -392,7 +399,7 @@ export class DesignerController {
     // prefix could otherwise bind to a different project's tab in multi-tab/
     // parallel-key workflows (#66). The tab keeps its CDP target across the SPA
     // navigation to /p/, so the observer follows it.
-    const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
+    const cdpEnabled = isCdpEnabled();
     const homeUrl = await this.currentUrl();
     let observer: RunStateObserver | null = cdpEnabled
       ? await RunStateObserver.attach({ preferUrlPrefix: homeUrl })
@@ -657,7 +664,7 @@ export class DesignerController {
     // via ??). Attaching the observer would otherwise route an opted-out user
     // through the CDP layer, which resolves '' to :9222 and can auto-launch the
     // debug Chrome (ensureCdpUp). When disabled, fall through to the HTML waiter.
-    const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
+    const cdpEnabled = isCdpEnabled();
     let observer: RunStateObserver | null = cdpEnabled
       ? await RunStateObserver.attach({
           preferUrlPrefix: (await this.currentUrl()).split('?')[0] || null
@@ -1033,7 +1040,7 @@ export class DesignerController {
       // callers (snapshot, the no_change signal, the byte-stability settle) treat
       // it as "no sample" instead of byte-comparing or saving a loader as the
       // captured artifact (#67 review).
-      const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
+      const cdpEnabled = isCdpEnabled();
       if (!cdpEnabled) return { src, html: '' };
       // A poll loop passes a shared reader (attached once via withPreviewReader)
       // to amortize the WS-open/connect cost across polls and avoid a connect
@@ -1043,12 +1050,7 @@ export class DesignerController {
         const html = await sharedReader.readPreviewHtml().catch(() => null);
         return { src, html: html || '' };
       }
-      // Pass the FULL current URL (with ?file=) so findDesignTarget exact-matches
-      // the agent-browser-driven tab — two same-project tabs on different files
-      // must not cross-bind (#67 review).
-      const reader = await OopifHtmlReader.attach({
-        preferUrlPrefix: (await this.currentUrl()) || null
-      }).catch(() => null);
+      const reader = await this.attachPreviewReader();
       if (reader) {
         try {
           const html = await reader.readPreviewHtml().catch(() => null);
@@ -1073,15 +1075,21 @@ export class DesignerController {
   private async withPreviewReader<T>(
     run: (readServed: () => Promise<{ src: string; html: string }>) => Promise<T>
   ): Promise<T> {
-    const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
-    const reader = cdpEnabled
-      ? await OopifHtmlReader.attach({ preferUrlPrefix: (await this.currentUrl()) || null }).catch(() => null)
-      : null;
+    const reader = isCdpEnabled() ? await this.attachPreviewReader() : null;
     try {
       return await run(() => this.fetchServedHtml(reader));
     } finally {
       reader?.close();
     }
+  }
+
+  // Attach an OopifHtmlReader bound to the current tab. The FULL current URL
+  // (with ?file=) is passed so findDesignTarget exact-matches the agent-browser-
+  // driven tab — two same-project tabs on different files must not cross-bind
+  // (#67 review). Degrades to null on any failure (caller falls back to the node
+  // fetch / treats it as no sample).
+  private async attachPreviewReader(): Promise<OopifHtmlReader | null> {
+    return OopifHtmlReader.attach({ preferUrlPrefix: (await this.currentUrl()) || null }).catch(() => null);
   }
 
   async handoff({ openFile }: { openFile?: string } = {}): Promise<HandoffResult> {
