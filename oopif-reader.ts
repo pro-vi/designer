@@ -1,4 +1,4 @@
-import { CdpSession, type CdpSessionOptions, type CdpTarget } from './cdp-trace.ts';
+import { CdpSession, asRec, type CdpSessionOptions, type CdpTarget } from './cdp-trace.ts';
 import { isPreviewIframeSrc } from './preview-host.ts';
 
 // OOPIF preview-HTML reader (issue #61 / PR #66 review #4, live-verified; hardened
@@ -49,10 +49,6 @@ export interface CaptureOopifHtmlOpts {
   pollMs?: number;
   sendTimeoutMs?: number;
   now?: () => number;
-}
-
-function asRec(v: unknown): Record<string, unknown> {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
 function evaluatedString(result: unknown): string | null {
