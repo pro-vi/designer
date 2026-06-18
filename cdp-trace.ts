@@ -237,9 +237,23 @@ export abstract class CdpSession {
     return { ws, target };
   }
 
-  protected static openSocket(url: string): Promise<WebSocket> {
+  protected static openSocket(url: string, timeoutMs = 5000): Promise<WebSocket> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url);
+      // A half-open WS (e.g. a wedged debug Chrome) would otherwise leave this
+      // pending forever — attach() never resolves/rejects, defeating callers'
+      // "degrade, don't hang" contract (#67 review). Bound the open and close the
+      // socket on timeout. Reject is handled by every caller (attach -> null /
+      // throw; the reconnect loop keeps polling).
+      const timer = setTimeout(() => {
+        cleanup();
+        try {
+          ws.close();
+        } catch {
+          /* already closing */
+        }
+        reject(new Error(`CDP WebSocket open timed out after ${timeoutMs}ms: ${url}`));
+      }, timeoutMs);
       const onOpen = () => {
         cleanup();
         resolve(ws);
@@ -249,6 +263,7 @@ export abstract class CdpSession {
         reject(new Error(`Failed to open CDP WebSocket ${url}`));
       };
       const cleanup = () => {
+        clearTimeout(timer);
         ws.removeEventListener('open', onOpen);
         ws.removeEventListener('error', onError);
       };

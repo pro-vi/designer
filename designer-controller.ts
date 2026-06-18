@@ -9,7 +9,8 @@ import { upsertSession, appendHistory, getSession, type StoredSession } from './
 import { REPO_ROOT } from './repo-root.ts';
 import { ensureCdpUp } from './cdp-ensure.ts';
 import { RunStateObserver } from './run-state.ts';
-import { isPreviewIframeSrc } from './preview-host.ts';
+import { OopifHtmlReader } from './oopif-reader.ts';
+import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
 
 export interface Selectors {
   login: { signedInIndicator: string | null };
@@ -115,6 +116,13 @@ export interface RepairReport {
 }
 
 const DESIGN_HOME = 'https://claude.ai/design';
+
+// The DESIGNER_CDP opt-out (CLAUDE.md: three states — unset/9222 = on, '' = off,
+// the agent-browser session-managed flow). One definition of "is CDP work
+// allowed" so the load-bearing gate can't drift across its call sites.
+function isCdpEnabled(): boolean {
+  return (process.env.DESIGNER_CDP ?? '9222') !== '';
+}
 
 // A claude.ai/design session URL: /design/p/<uuid>. Capture group 1 is the
 // project id. Used by isInSession()-style checks and `adopt` (binding an
@@ -391,7 +399,7 @@ export class DesignerController {
     // prefix could otherwise bind to a different project's tab in multi-tab/
     // parallel-key workflows (#66). The tab keeps its CDP target across the SPA
     // navigation to /p/, so the observer follows it.
-    const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
+    const cdpEnabled = isCdpEnabled();
     const homeUrl = await this.currentUrl();
     let observer: RunStateObserver | null = cdpEnabled
       ? await RunStateObserver.attach({ preferUrlPrefix: homeUrl })
@@ -516,37 +524,40 @@ export class DesignerController {
     stabilityMs = 4000,
     pollMs = 1500
   }: { timeoutMs?: number; stabilityMs?: number; pollMs?: number } = {}): Promise<GenerationDone> {
-    const start = Date.now();
-    const preHtml = this._preSendHtml || '';
-    let lastHtml = '';
-    let lastLen = -1;
-    let stableSince = 0;
-    let sawChange = false;
+    // One reader for the whole poll loop (reused per poll), not one per poll (#67).
+    return this.withPreviewReader(async (readServed) => {
+      const start = Date.now();
+      const preHtml = this._preSendHtml || '';
+      let lastHtml = '';
+      let lastLen = -1;
+      let stableSince = 0;
+      let sawChange = false;
 
-    while (Date.now() - start < timeoutMs) {
-      const { html, src } = await this.fetchServedHtml();
-      const len = html.length;
-      if (!preHtml) {
-        if (len > 0) sawChange = true;
-      } else if (html && html !== preHtml) {
-        sawChange = true;
-      }
-      if (sawChange) {
-        if (len === lastLen && html === lastHtml) {
-          if (!stableSince) stableSince = Date.now();
-          if (Date.now() - stableSince > stabilityMs) {
-            const url = await this.currentUrl();
-            return { ok: true, elapsedMs: Date.now() - start, url, iframeSrc: src, htmlBytes: len, html };
-          }
-        } else {
-          stableSince = 0;
+      while (Date.now() - start < timeoutMs) {
+        const { html, src } = await readServed();
+        const len = html.length;
+        if (!preHtml) {
+          if (len > 0) sawChange = true;
+        } else if (html && html !== preHtml) {
+          sawChange = true;
         }
+        if (sawChange) {
+          if (len === lastLen && html === lastHtml) {
+            if (!stableSince) stableSince = Date.now();
+            if (Date.now() - stableSince > stabilityMs) {
+              const url = await this.currentUrl();
+              return { ok: true, elapsedMs: Date.now() - start, url, iframeSrc: src, htmlBytes: len, html };
+            }
+          } else {
+            stableSince = 0;
+          }
+        }
+        lastHtml = html;
+        lastLen = len;
+        await new Promise((r) => setTimeout(r, pollMs));
       }
-      lastHtml = html;
-      lastLen = len;
-      await new Promise((r) => setTimeout(r, pollMs));
-    }
-    return { ok: false, error: 'timeout', elapsedMs: Date.now() - start };
+      return { ok: false, error: 'timeout', elapsedMs: Date.now() - start };
+    });
   }
 
   async _waitForGenerationDoneNetwork(
@@ -575,23 +586,26 @@ export class DesignerController {
     // first fetch. Crucially we do NOT require a change from _preSendHtml: a
     // chat-only run legitimately keeps it, and forcing a change would reintroduce
     // the timeout blind spot this observer exists to fix.
-    let { html, src } = await this.fetchServedHtml();
-    const preHtml = this._preSendHtml || '';
-    const settleDeadline = Date.now() + Math.min(timeoutMs, Math.max(stabilityMs, 12_000));
-    let stableSince = Date.now();
-    while (Date.now() < settleDeadline) {
-      await new Promise((r) => setTimeout(r, pollMs));
-      const next = await this.fetchServedHtml();
-      if (next.html !== html) {
-        html = next.html;
-        src = next.src;
-        stableSince = Date.now();
-      } else if (html !== preHtml && Date.now() - stableSince >= stabilityMs) {
-        break; // changed and now byte-stable for stabilityMs → settled
+    // One reader for the whole settle loop (reused per poll), not one per poll (#67).
+    return this.withPreviewReader(async (readServed) => {
+      let { html, src } = await readServed();
+      const preHtml = this._preSendHtml || '';
+      const settleDeadline = Date.now() + Math.min(timeoutMs, Math.max(stabilityMs, 12_000));
+      let stableSince = Date.now();
+      while (Date.now() < settleDeadline) {
+        await new Promise((r) => setTimeout(r, pollMs));
+        const next = await readServed();
+        if (next.html !== html) {
+          html = next.html;
+          src = next.src;
+          stableSince = Date.now();
+        } else if (html !== preHtml && Date.now() - stableSince >= stabilityMs) {
+          break; // changed and now byte-stable for stabilityMs → settled
+        }
       }
-    }
-    const url = await this.currentUrl();
-    return { ok: true, elapsedMs: terminal.elapsedMs, url, iframeSrc: src, htmlBytes: html.length, html };
+      const url = await this.currentUrl();
+      return { ok: true, elapsedMs: terminal.elapsedMs, url, iframeSrc: src, htmlBytes: html.length, html };
+    });
   }
 
   async snapshotDesign({
@@ -603,13 +617,18 @@ export class DesignerController {
     url: string;
     iframeSrc: string;
   }> {
-    const iframeSrc = knownSrc || (await this.getIframeSrc());
+    let iframeSrc = knownSrc || (await this.getIframeSrc());
     let html: string | null = knownHtml ?? null;
     if (html == null && isPreviewIframeSrc(iframeSrc)) {
-      // See fetchServedHtml: in the bootstrap regime this is the loader shell, not
-      // the file's rendered HTML (handoff is authoritative).
-      const res = await fetch(iframeSrc, { headers: { Accept: 'text/html' } }).catch(() => null);
-      if (res && res.ok) html = await res.text();
+      // Route through fetchServedHtml (OOPIF capture in the bootstrap regime, node
+      // fetch otherwise) so the snapshot command and iterate()'s post-gen snapshot
+      // get real HTML. NOTE: `iframeSrc` here is the iframe ELEMENT's src (the
+      // `_bootstrap` loader); the captured `html` is the OOPIF document
+      // (`/serve/<filename>`). They are intentionally not the same URL — `src` is
+      // the element locator, not a fetchable handle for `html` (#67 review #5).
+      const served = await this.fetchServedHtml();
+      if (served.html) html = served.html;
+      if (served.src) iframeSrc = served.src;
     }
     const dir = sessionDir(this.key);
     const shotPath = path.join(dir, `shot-${Date.now()}.png`);
@@ -645,7 +664,7 @@ export class DesignerController {
     // via ??). Attaching the observer would otherwise route an opted-out user
     // through the CDP layer, which resolves '' to :9222 and can auto-launch the
     // debug Chrome (ensureCdpUp). When disabled, fall through to the HTML waiter.
-    const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
+    const cdpEnabled = isCdpEnabled();
     let observer: RunStateObserver | null = cdpEnabled
       ? await RunStateObserver.attach({
           preferUrlPrefix: (await this.currentUrl()).split('?')[0] || null
@@ -692,7 +711,7 @@ export class DesignerController {
       else if (done.error === 'stalled') failureMode = 'stalled';
       else if (done.error === 'blocked') failureMode = 'blocked';
       else failureMode = 'unstable';
-    } else if (snap.html === this._preSendHtml && newFiles.length === 0) failureMode = 'no_change';
+    } else if (snap.html && snap.html === this._preSendHtml && newFiles.length === 0) failureMode = 'no_change';
 
     const fidelity = getSession(this.key)?.fidelity || null;
     const record: IterationRecord = saveIteration(this.key, {
@@ -979,20 +998,12 @@ export class DesignerController {
     return src || '';
   }
 
-  // KNOWN LIMITATION (issue #61 / PR #66 review #4, verified live): in the 2026-06
-  // bootstrap regime the iframe src is a filename-agnostic
-  // `<uuid>.claudeusercontent.com/_bootstrap` with no signed `?t=` token. A node-side
-  // fetch of it (no claude.ai session cookies) returns the same ~1.1KB unauthenticated
-  // loader shell for EVERY file — not the rendered HTML. So in this regime the bytes
-  // here are NOT the named file's content; `designer handoff` is the authoritative
-  // source of file bytes, and the prompt loop's completion is network-first (the
-  // RunStateObserver), not these bytes. A real fix needs CDP OOPIF frame-content
-  // capture (the preview iframe is cross-origin, so its DOM can't be read from the
-  // parent page) — tracked as a follow-up. The legacy signed-token src is still
-  // fetched normally below.
-  async fetchServedHtml(): Promise<{ src: string; html: string }> {
-    const src = await this.getIframeSrc();
-    if (!src || !isPreviewIframeSrc(src)) return { src: '', html: '' };
+  // Node-side fetch of the preview src. The LEGACY signed-token regime
+  // (`claudeusercontent.com/...?t=<token>`) authorizes this fetch and returns
+  // the file's real rendered HTML. The 2026-06 bootstrap regime does NOT (see
+  // fetchServedHtml) — there the fetch returns the same ~1.1KB unauthenticated
+  // loader shell for every file, so this is only the fallback floor.
+  private async _fetchServedHtmlNode(src: string): Promise<{ src: string; html: string }> {
     try {
       const res = await fetch(src, { headers: { Accept: 'text/html' } });
       if (!res.ok) return { src, html: '' };
@@ -1000,6 +1011,85 @@ export class DesignerController {
     } catch {
       return { src, html: '' };
     }
+  }
+
+  // Reads the design preview's served HTML. The preview iframe addressing has
+  // two regimes (preview-host.ts/previewIframeVariant):
+  //
+  //   - signed-token (legacy): a node fetch of the `?t=<token>` URL is
+  //     authorized and returns the file's real rendered HTML — keep it.
+  //   - bootstrap-subdomain (2026-06, issue #61): the src is a filename-agnostic
+  //     `<uuid>.claudeusercontent.com/_bootstrap` with NO token. A node fetch
+  //     (no claude.ai cookies) returns the same ~1.1KB unauthenticated loader
+  //     shell for EVERY file — never the rendered HTML. The rendered DOM lives
+  //     only inside the cross-origin out-of-process iframe (OOPIF), which the
+  //     parent page JS can't read. So read it over CDP via OopifHtmlReader
+  //     (review #4, live-verified). Honors the DESIGNER_CDP='' opt-out and
+  //     degrades to the node fetch on any failure, so every existing caller
+  //     (snapshot, iterate's post-gen snapshot, the no_change signal, and the
+  //     _waitForGenerationDoneHtml fallback) behaves at least as before.
+  async fetchServedHtml(sharedReader?: OopifHtmlReader | null): Promise<{ src: string; html: string }> {
+    const src = await this.getIframeSrc();
+    if (!src || !isPreviewIframeSrc(src)) return { src: '', html: '' };
+
+    const variant = previewIframeVariant(src);
+    if (variant === 'bootstrap-subdomain') {
+      // A node fetch of a bootstrap src returns ONLY the ~1.1KB loader shell,
+      // never the file — so the OOPIF read is the only real source here. On any
+      // failure (or the DESIGNER_CDP='' opt-out) return EMPTY, never the shell, so
+      // callers (snapshot, the no_change signal, the byte-stability settle) treat
+      // it as "no sample" instead of byte-comparing or saving a loader as the
+      // captured artifact (#67 review).
+      const cdpEnabled = isCdpEnabled();
+      if (!cdpEnabled) return { src, html: '' };
+      // A poll loop passes a shared reader (attached once via withPreviewReader)
+      // to amortize the WS-open/connect cost across polls and avoid a connect
+      // storm (#67 review perf); a live reader reuses in ~8ms/read. One-shot
+      // callers pass nothing → attach-and-close a fresh reader here.
+      if (sharedReader) {
+        const html = await sharedReader.readPreviewHtml().catch(() => null);
+        return { src, html: html || '' };
+      }
+      const reader = await this.attachPreviewReader();
+      if (reader) {
+        try {
+          const html = await reader.readPreviewHtml().catch(() => null);
+          if (html) return { src, html };
+        } finally {
+          reader.close();
+        }
+      }
+      return { src, html: '' };
+    }
+
+    // signed-token / 'other': the node fetch is authoritative (real rendered HTML).
+    return this._fetchServedHtmlNode(src);
+  }
+
+  // Attach ONE OopifHtmlReader for the duration of a served-HTML poll loop and
+  // reuse it per poll (each readPreviewHtml re-arms in ~8ms), instead of opening a
+  // fresh CDP socket per poll — amortizes the WS-open/connect cost and avoids the
+  // connect storm on long settle/fallback loops (#67 review perf). The reader is
+  // best-effort: if attach fails or the regime isn't bootstrap, fetchServedHtml
+  // falls back to its own per-call path. Closed in finally.
+  private async withPreviewReader<T>(
+    run: (readServed: () => Promise<{ src: string; html: string }>) => Promise<T>
+  ): Promise<T> {
+    const reader = isCdpEnabled() ? await this.attachPreviewReader() : null;
+    try {
+      return await run(() => this.fetchServedHtml(reader));
+    } finally {
+      reader?.close();
+    }
+  }
+
+  // Attach an OopifHtmlReader bound to the current tab. The FULL current URL
+  // (with ?file=) is passed so findDesignTarget exact-matches the agent-browser-
+  // driven tab — two same-project tabs on different files must not cross-bind
+  // (#67 review). Degrades to null on any failure (caller falls back to the node
+  // fetch / treats it as no sample).
+  private async attachPreviewReader(): Promise<OopifHtmlReader | null> {
+    return OopifHtmlReader.attach({ preferUrlPrefix: (await this.currentUrl()) || null }).catch(() => null);
   }
 
   async handoff({ openFile }: { openFile?: string } = {}): Promise<HandoffResult> {
