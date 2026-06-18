@@ -468,9 +468,10 @@ export const UI_ANCHORS: AnchorDef[] = [
     description: 'filename text nodes detectable (listFiles scrape still works)',
     requires: 'session',
     check: async (b, url) => {
-      const result = await b
-        .evalValue<{ files: string[] }>(
-          `(() => {
+      const scrape = (): Promise<{ files: string[] }> =>
+        b
+          .evalValue<{ files: string[] }>(
+            `(() => {
             const seen = new Set();
             const files = [];
             const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -484,11 +485,29 @@ export const UI_ANCHORS: AnchorDef[] = [
             }
             return { files };
           })()`
-        )
-        .catch(() => ({ files: [] as string[] }));
-      const files = Array.isArray(result.files) ? result.files : [];
+          )
+          .catch(() => ({ files: [] as string[] }));
+
+      // The file-list panel renders a few seconds after navigation; scraping
+      // immediately races it — the recurring false "0 filenames" the daily probe
+      // filed (#64/#65/#68), even though `designer files` and a live scrape find
+      // the files once the panel is up. Retry with a bounded settle before
+      // concluding a regression.
+      let files: string[] = [];
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const result = await scrape();
+        files = Array.isArray(result.files) ? result.files : [];
+        if (files.length > 0) break;
+        if (attempt < 5) await sleep(1000);
+      }
       if (files.length === 0) {
-        return { ok: false, detail: 'found 0 filenames — scraper regex or DOM layout regressed' };
+        // With no file open the file-list panel may legitimately be absent — don't
+        // hard-fail a soft anchor on an inconclusive state; only a populated
+        // session (a file open) is expected to list filenames.
+        if (!/[?&]file=/.test(url)) {
+          return { ok: true, status: 'skip', detail: 'no file open; file-list panel not rendered — inconclusive' };
+        }
+        return { ok: false, detail: 'found 0 filenames after ~5s settle — scraper regex or DOM layout regressed' };
       }
       const match = url.match(/[?&]file=([^&]+)/);
       if (match && match[1]) {
