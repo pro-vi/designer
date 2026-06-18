@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.13](https://github.com/pro-vi/designer/compare/v0.3.12...v0.3.13) (2026-06-18)
+
+
+### Bug Fixes
+
+* capture preview HTML from the cross-origin OOPIF via CDP (review [#4](https://github.com/pro-vi/designer/issues/4)) ([#67](https://github.com/pro-vi/designer/issues/67)) ([4d98f71](https://github.com/pro-vi/designer/commit/4d98f71ff4e0668bdb4231f241a7ff2a086db90f))
+* **health:** settle the fileListScrape anchor so it stops filing daily false drift ([#69](https://github.com/pro-vi/designer/issues/69)) ([4cb03fd](https://github.com/pro-vi/designer/commit/4cb03fd3c57c4863ab8d02b39585f82b06c26ee8))
+
 ## [0.3.12](https://github.com/pro-vi/designer/compare/v0.3.11...v0.3.12) (2026-06-17)
 
 
