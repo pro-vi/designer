@@ -100,6 +100,15 @@ test('STRICT: multiple preview children (old+new mid-switch) -> null, never a gu
   assert.equal(html, null, 'cannot disambiguate multiple previews -> null, not an arbitrary/stale frame');
 });
 
+test('STRICT: a same-origin worker on claudeusercontent.com is ignored (iframe-type only)', async () => {
+  // A generated preview can spawn a worker/service-worker on the same origin; it
+  // must not count as a second "preview" and floor the read to null (#67 review).
+  const worker = { sessionId: 'sidW', url: 'https://abc-uuid.claudeusercontent.com/worker.js', type: 'worker' };
+  const send = fakeSend({ domHtml: { sidA: '<html><body>real</body></html>' } });
+  const html = await captureOopifHtml(send, { ...base, attachedTargets: () => [worker, childA] });
+  assert.equal(html, '<html><body>real</body></html>', 'the iframe doc is read; the same-origin worker is filtered out');
+});
+
 test('NEGATIVE: no preview child -> returns null (caller falls back), no throw', async () => {
   const send = fakeSend({});
   const html = await captureOopifHtml(send, { ...base, attachedTargets: () => [noise, analytics], waitForAttachMs: 30 });

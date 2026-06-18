@@ -607,11 +607,12 @@ export class DesignerController {
     let iframeSrc = knownSrc || (await this.getIframeSrc());
     let html: string | null = knownHtml ?? null;
     if (html == null && isPreviewIframeSrc(iframeSrc)) {
-      // Route through the single fixed reader (OOPIF capture in the bootstrap
-      // regime, node fetch otherwise) so the snapshot command, iterate()'s
-      // post-gen snapshot, the no_change signal, and the HTML completion
-      // fallback all inherit the fix. fetchServedHtml re-reads the live iframe
-      // src; adopt it so a returned src reflects what was actually read.
+      // Route through fetchServedHtml (OOPIF capture in the bootstrap regime, node
+      // fetch otherwise) so the snapshot command and iterate()'s post-gen snapshot
+      // get real HTML. NOTE: `iframeSrc` here is the iframe ELEMENT's src (the
+      // `_bootstrap` loader); the captured `html` is the OOPIF document
+      // (`/serve/<filename>`). They are intentionally not the same URL — `src` is
+      // the element locator, not a fetchable handle for `html` (#67 review #5).
       const served = await this.fetchServedHtml();
       if (served.html) html = served.html;
       if (served.src) iframeSrc = served.src;
@@ -697,7 +698,7 @@ export class DesignerController {
       else if (done.error === 'stalled') failureMode = 'stalled';
       else if (done.error === 'blocked') failureMode = 'blocked';
       else failureMode = 'unstable';
-    } else if (snap.html === this._preSendHtml && newFiles.length === 0) failureMode = 'no_change';
+    } else if (snap.html && snap.html === this._preSendHtml && newFiles.length === 0) failureMode = 'no_change';
 
     const fidelity = getSession(this.key)?.fidelity || null;
     const record: IterationRecord = saveIteration(this.key, {
@@ -1019,10 +1020,20 @@ export class DesignerController {
     if (!src || !isPreviewIframeSrc(src)) return { src: '', html: '' };
 
     const variant = previewIframeVariant(src);
-    const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
-    if (variant === 'bootstrap-subdomain' && cdpEnabled) {
+    if (variant === 'bootstrap-subdomain') {
+      // A node fetch of a bootstrap src returns ONLY the ~1.1KB loader shell,
+      // never the file — so the OOPIF read is the only real source here. On any
+      // failure (or the DESIGNER_CDP='' opt-out) return EMPTY, never the shell, so
+      // callers (snapshot, the no_change signal, the byte-stability settle) treat
+      // it as "no sample" instead of byte-comparing or saving a loader as the
+      // captured artifact (#67 review).
+      const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
+      if (!cdpEnabled) return { src, html: '' };
+      // Pass the FULL current URL (with ?file=) so findDesignTarget exact-matches
+      // the agent-browser-driven tab — two same-project tabs on different files
+      // must not cross-bind (#67 review).
       const reader = await OopifHtmlReader.attach({
-        preferUrlPrefix: (await this.currentUrl()).split('?')[0] || null
+        preferUrlPrefix: (await this.currentUrl()) || null
       }).catch(() => null);
       if (reader) {
         try {
@@ -1032,9 +1043,10 @@ export class DesignerController {
           reader.close();
         }
       }
+      return { src, html: '' };
     }
 
-    // signed-token, 'other', CDP opt-out, or any CDP failure: node fetch floor.
+    // signed-token / 'other': the node fetch is authoritative (real rendered HTML).
     return this._fetchServedHtmlNode(src);
   }
 

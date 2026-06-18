@@ -75,7 +75,10 @@ function evaluatedString(result: unknown): string | null {
 // is the correct signal. A future multi-preview disambiguation can match the active
 // file via that `/serve/<filename>` path, but single-preview is the steady state.
 function pickPreviewChild(children: AttachedChild[], isPreviewUrl: (u: string) => boolean): AttachedChild | null {
-  const previews = children.filter((c) => typeof c.url === 'string' && isPreviewUrl(c.url));
+  // type === 'iframe' guards against a same-origin worker/service-worker on
+  // claudeusercontent.com counting as a second "preview" and flooring the read to
+  // null (#67 review) — the preview is an iframe document, not a worker target.
+  const previews = children.filter((c) => typeof c.url === 'string' && c.type === 'iframe' && isPreviewUrl(c.url));
   const only = previews[0];
   return previews.length === 1 && only ? only : null;
 }
@@ -164,9 +167,11 @@ export class OopifHtmlReader extends CdpSession {
   private readonly childTargets = new Map<string, AttachedChild>();
 
   constructor(ws: WebSocket, target: CdpTarget, opts: CdpSessionOptions = {}) {
-    // One-shot reader: default reconnect:false (a mid-capture gap degrades to
-    // null -> node-fetch fallback; there is no one-shot terminal to recover).
-    super(ws, target, { reconnect: false, ...opts });
+    // One-shot reader: PIN reconnect:false (a mid-capture gap degrades to null ->
+    // node-fetch fallback; there is no one-shot terminal to recover). Pinned last
+    // so a caller can't accidentally route the base reconnect path into the no-op
+    // enableDomains() (#67 review, below-gate).
+    super(ws, target, { ...opts, reconnect: false });
   }
 
   static async attach(opts: CdpSessionOptions = {}): Promise<OopifHtmlReader | null> {
