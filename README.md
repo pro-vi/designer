@@ -4,7 +4,7 @@ MCP + CLI that lets your coding agent drive **[claude.ai/design](https://claude.
 
 Human describes intent → agent surveys codebase and prompts Claude Design → hands you the URL → iterate → `designer_handoff` bundles the result (README + chats + HTML + JSX) back into your repo.
 
-> **Status:** v0.3.0, early. macOS only.
+> **Status:** v0.3.14, early. macOS only.
 
 ## Stance
 
@@ -18,7 +18,7 @@ Human describes intent → agent surveys codebase and prompts Claude Design → 
 
 ### Prerequisites
 
-- macOS, Node 20+, Google Chrome at `/Applications/Google Chrome.app`.
+- macOS, Node 22+ (uses the native global `WebSocket` — no `ws` dep), Google Chrome at `/Applications/Google Chrome.app`.
 - `agent-browser` on PATH: `npm i -g agent-browser` (or `brew install agent-browser`).
 
 ### Three paths
@@ -91,7 +91,7 @@ Six tools, registered at user scope by `designer setup`:
 | Tool | Purpose |
 |---|---|
 | `designer_session` | Enter / inspect / transition. Returns stored state + `currentUrl` + `availableFiles`. |
-| `designer_prompt` | Modify the design (HTML-diff wait). Returns `url`, `newFiles`, `activeFile`, `failureMode`, `htmlPath`, `chatReply`. |
+| `designer_prompt` | Modify the design. Completion is network-first — watches the Connect-RPC turn lifecycle over a second CDP client (`ReleaseTurn` = done), with an HTML byte-settle fallback. Returns `url`, `newFiles`, `activeFile`, `failureMode` (`timeout`/`unstable`/`no_change`/`stalled`/`blocked`), `htmlPath`, `chatReply`. |
 | `designer_ask` | Q&A with the assistant, no file changes. |
 | `designer_list` | `projects` or `files` (flat-only — see quirks). |
 | `designer_snapshot` | Capture current file. Paths + hash by default; `includeHtml: true` inlines. |
@@ -132,6 +132,7 @@ Writes `tasting.html` with variant tabs + 1/2/3 shortcuts + persistent notes, se
 
 - **Folder-organized variants.** The live file-list scrape is flat-only; nested files invisible until `designer_handoff`. `designer_prompt` auto-appends *"no subfolders."* Bundle + `designer tasting` are folder-aware.
 - **React-controlled inputs.** `agent-browser fill` doesn't fire React's synthetic `input` event; we use the native value-setter + `dispatchEvent` + JS `.click()`.
+- **Cross-origin preview.** Since the 2026-06 redesign the design preview renders in a cross-origin out-of-process iframe (`*.claudeusercontent.com`) with no signed token — a plain fetch returns only a ~1KB loader shell. `designer_snapshot` / `designer files` read the real rendered HTML over CDP from inside that iframe, so HTML capture needs CDP up (the default); with `DESIGNER_CDP=''` snapshots fall back to empty rather than the shell.
 - **Em-dash handoff filenames.** Claude's handoff pipeline sometimes writes `—` in hrefs but `-` in filenames. `designer_handoff` detects and repairs.
 - **UI regressions.** Claude has moved critical buttons mid-development (Export → Share). Run `designer health` periodically.
 
