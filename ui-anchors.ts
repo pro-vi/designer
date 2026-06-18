@@ -380,17 +380,44 @@ export const UI_ANCHORS: AnchorDef[] = [
     // Legacy id (kept to avoid resetting the persisted streak counter). The
     // original check asserted a 'You\n' / 'Claude\n' text prefix on each
     // chat turn, but Claude's May 2026 chat redesign removed the in-text
-    // speaker label — turns are now visually distinguished by wrapper
-    // styling, not by a text prefix. Replace with an assertion against
-    // Claude's intentional `data-index="N"` API on each turn row: matching
-    // [data-index="1"] confirms the conversation has >=2 turns AND that the
-    // indexing API still exists. Shape is now simple-hasSelector so future
-    // drift of this anchor is auto-heal-patchable.
+    // speaker label — turns are now distinguished by Claude's intentional
+    // `data-index="N"` API on each turn row.
+    //
+    // It originally matched the SPECIFIC `[data-index="1"]`, but the chat list
+    // is VIRTUALIZED: once a conversation grows past the render window, only a
+    // sliding window of rows is in the DOM (live-probed indices were 8–15 with
+    // 0/1 evicted), so `[data-index="1"]` vanishes even though there are clearly
+    // >=2 turns — a recurring false drift, same class as fileListScrape (#69).
+    // Assert the COUNT of `[data-index]` rows instead: any window of a >=2-turn
+    // chat renders >=2 rows, so count>=2 confirms both "the indexing API exists"
+    // and ">=2 turns" without depending on which window is visible. Soft anchor:
+    // a 1-turn chat (count 1) is a short conversation, not drift -> skip; a
+    // missing API/testid after settle is the real drift signal -> fail.
     id: 'session.chatTurnPrefix',
     category: 'pattern',
     description: 'chat-messages renders >=2 turn rows (data-index API)',
     requires: 'session',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-messages"] [data-index="1"]') })
+    check: async (b) => {
+      const countRows = (): Promise<number> =>
+        b
+          .evalValue<number>(
+            `(() => { const cm = document.querySelector('[data-testid="chat-messages"]'); if (!cm) return -1; return cm.querySelectorAll('[data-index]').length; })()`
+          )
+          .catch(() => -1);
+      // The chat renders progressively after navigation; settle before judging.
+      let n = -1;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        n = await countRows();
+        if (n >= 2) break;
+        if (attempt < 5) await sleep(1000);
+      }
+      if (n >= 2) return { ok: true };
+      if (n === 1)
+        return { ok: true, status: 'skip', detail: 'only 1 turn row (short conversation) — data-index API present, >=2 unverifiable' };
+      if (n === 0)
+        return { ok: false, detail: 'chat-messages present but 0 [data-index] rows after ~5s settle — turn-row data-index API drifted' };
+      return { ok: false, detail: 'chat-messages testid not found after ~5s settle — testid drifted' };
+    }
   },
 
   // --- share dialog (formerly the Export dropdown; moved under Share ~2026-04-19) ---
