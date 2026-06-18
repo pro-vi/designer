@@ -1026,7 +1026,7 @@ export class DesignerController {
       }).catch(() => null);
       if (reader) {
         try {
-          const html = await reader.readPreviewHtml(src).catch(() => null);
+          const html = await reader.readPreviewHtml().catch(() => null);
           if (html) return { src, html };
         } finally {
           reader.close();
