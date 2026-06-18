@@ -97,7 +97,7 @@ export async function captureOopifHtml(send: CdpSendFn, opts: CaptureOopifHtmlOp
 
   // Bound every CDP call: a live-but-silent socket must degrade to null, not hang
   // forever (PR #67 review). A synchronous throw from `send` becomes a rejection.
-  const sendT = (method: string, params?: unknown, sessionId?: string): Promise<unknown> => {
+  const sendBounded = (method: string, params?: unknown, sessionId?: string): Promise<unknown> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => reject(new Error('cdp-send-timeout')), sendTimeoutMs);
@@ -111,7 +111,7 @@ export async function captureOopifHtml(send: CdpSendFn, opts: CaptureOopifHtmlOp
     // (a) arm auto-attach. flatten:true is LOAD-BEARING — without it Chrome routes
     // child traffic via the deprecated nested sendMessageToTarget the base send()
     // does not speak. waitForDebuggerOnStart:false so OOPIFs aren't paused.
-    await sendT('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+    await sendBounded('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
     armed = true;
 
     // (b) bounded-poll the injected snapshot for the unique preview child.
@@ -128,11 +128,11 @@ export async function captureOopifHtml(send: CdpSendFn, opts: CaptureOopifHtmlOp
     // DOM domain, and depth:0 fetches just the root node before getOuterHTML
     // serializes the tree.
     try {
-      const doc = asRec(await sendT('DOM.getDocument', { depth: 0, pierce: false }, child.sessionId));
+      const doc = asRec(await sendBounded('DOM.getDocument', { depth: 0, pierce: false }, child.sessionId));
       const root = asRec(doc.root);
       const nodeId = typeof root.nodeId === 'number' ? root.nodeId : null;
       if (nodeId !== null) {
-        const outer = asRec(await sendT('DOM.getOuterHTML', { nodeId }, child.sessionId));
+        const outer = asRec(await sendBounded('DOM.getOuterHTML', { nodeId }, child.sessionId));
         if (typeof outer.outerHTML === 'string' && outer.outerHTML.length > 0) return outer.outerHTML;
       }
     } catch {
@@ -142,7 +142,7 @@ export async function captureOopifHtml(send: CdpSendFn, opts: CaptureOopifHtmlOp
     // (d) FALLBACK: page-world Runtime.evaluate on the CHILD sessionId (without it
     // the eval runs in the parent page and returns the shell). For builds/states
     // where the DOM route returns nothing.
-    const evalRes = await sendT(
+    const evalRes = await sendBounded(
       'Runtime.evaluate',
       { expression: 'document.documentElement.outerHTML', returnByValue: true, awaitPromise: false },
       child.sessionId
@@ -154,7 +154,7 @@ export async function captureOopifHtml(send: CdpSendFn, opts: CaptureOopifHtmlOp
     // (e) bounded, self-contained teardown — never let cleanup throw or hang.
     if (armed) {
       try {
-        await sendT('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false, flatten: true });
+        await sendBounded('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false, flatten: true });
       } catch {
         /* best-effort */
       }

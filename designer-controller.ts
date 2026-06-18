@@ -517,37 +517,40 @@ export class DesignerController {
     stabilityMs = 4000,
     pollMs = 1500
   }: { timeoutMs?: number; stabilityMs?: number; pollMs?: number } = {}): Promise<GenerationDone> {
-    const start = Date.now();
-    const preHtml = this._preSendHtml || '';
-    let lastHtml = '';
-    let lastLen = -1;
-    let stableSince = 0;
-    let sawChange = false;
+    // One reader for the whole poll loop (reused per poll), not one per poll (#67).
+    return this.withPreviewReader(async (readServed) => {
+      const start = Date.now();
+      const preHtml = this._preSendHtml || '';
+      let lastHtml = '';
+      let lastLen = -1;
+      let stableSince = 0;
+      let sawChange = false;
 
-    while (Date.now() - start < timeoutMs) {
-      const { html, src } = await this.fetchServedHtml();
-      const len = html.length;
-      if (!preHtml) {
-        if (len > 0) sawChange = true;
-      } else if (html && html !== preHtml) {
-        sawChange = true;
-      }
-      if (sawChange) {
-        if (len === lastLen && html === lastHtml) {
-          if (!stableSince) stableSince = Date.now();
-          if (Date.now() - stableSince > stabilityMs) {
-            const url = await this.currentUrl();
-            return { ok: true, elapsedMs: Date.now() - start, url, iframeSrc: src, htmlBytes: len, html };
-          }
-        } else {
-          stableSince = 0;
+      while (Date.now() - start < timeoutMs) {
+        const { html, src } = await readServed();
+        const len = html.length;
+        if (!preHtml) {
+          if (len > 0) sawChange = true;
+        } else if (html && html !== preHtml) {
+          sawChange = true;
         }
+        if (sawChange) {
+          if (len === lastLen && html === lastHtml) {
+            if (!stableSince) stableSince = Date.now();
+            if (Date.now() - stableSince > stabilityMs) {
+              const url = await this.currentUrl();
+              return { ok: true, elapsedMs: Date.now() - start, url, iframeSrc: src, htmlBytes: len, html };
+            }
+          } else {
+            stableSince = 0;
+          }
+        }
+        lastHtml = html;
+        lastLen = len;
+        await new Promise((r) => setTimeout(r, pollMs));
       }
-      lastHtml = html;
-      lastLen = len;
-      await new Promise((r) => setTimeout(r, pollMs));
-    }
-    return { ok: false, error: 'timeout', elapsedMs: Date.now() - start };
+      return { ok: false, error: 'timeout', elapsedMs: Date.now() - start };
+    });
   }
 
   async _waitForGenerationDoneNetwork(
@@ -576,23 +579,26 @@ export class DesignerController {
     // first fetch. Crucially we do NOT require a change from _preSendHtml: a
     // chat-only run legitimately keeps it, and forcing a change would reintroduce
     // the timeout blind spot this observer exists to fix.
-    let { html, src } = await this.fetchServedHtml();
-    const preHtml = this._preSendHtml || '';
-    const settleDeadline = Date.now() + Math.min(timeoutMs, Math.max(stabilityMs, 12_000));
-    let stableSince = Date.now();
-    while (Date.now() < settleDeadline) {
-      await new Promise((r) => setTimeout(r, pollMs));
-      const next = await this.fetchServedHtml();
-      if (next.html !== html) {
-        html = next.html;
-        src = next.src;
-        stableSince = Date.now();
-      } else if (html !== preHtml && Date.now() - stableSince >= stabilityMs) {
-        break; // changed and now byte-stable for stabilityMs → settled
+    // One reader for the whole settle loop (reused per poll), not one per poll (#67).
+    return this.withPreviewReader(async (readServed) => {
+      let { html, src } = await readServed();
+      const preHtml = this._preSendHtml || '';
+      const settleDeadline = Date.now() + Math.min(timeoutMs, Math.max(stabilityMs, 12_000));
+      let stableSince = Date.now();
+      while (Date.now() < settleDeadline) {
+        await new Promise((r) => setTimeout(r, pollMs));
+        const next = await readServed();
+        if (next.html !== html) {
+          html = next.html;
+          src = next.src;
+          stableSince = Date.now();
+        } else if (html !== preHtml && Date.now() - stableSince >= stabilityMs) {
+          break; // changed and now byte-stable for stabilityMs → settled
+        }
       }
-    }
-    const url = await this.currentUrl();
-    return { ok: true, elapsedMs: terminal.elapsedMs, url, iframeSrc: src, htmlBytes: html.length, html };
+      const url = await this.currentUrl();
+      return { ok: true, elapsedMs: terminal.elapsedMs, url, iframeSrc: src, htmlBytes: html.length, html };
+    });
   }
 
   async snapshotDesign({
@@ -1015,7 +1021,7 @@ export class DesignerController {
   //     degrades to the node fetch on any failure, so every existing caller
   //     (snapshot, iterate's post-gen snapshot, the no_change signal, and the
   //     _waitForGenerationDoneHtml fallback) behaves at least as before.
-  async fetchServedHtml(): Promise<{ src: string; html: string }> {
+  async fetchServedHtml(sharedReader?: OopifHtmlReader | null): Promise<{ src: string; html: string }> {
     const src = await this.getIframeSrc();
     if (!src || !isPreviewIframeSrc(src)) return { src: '', html: '' };
 
@@ -1029,6 +1035,14 @@ export class DesignerController {
       // captured artifact (#67 review).
       const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
       if (!cdpEnabled) return { src, html: '' };
+      // A poll loop passes a shared reader (attached once via withPreviewReader)
+      // to amortize the WS-open/connect cost across polls and avoid a connect
+      // storm (#67 review perf); a live reader reuses in ~8ms/read. One-shot
+      // callers pass nothing → attach-and-close a fresh reader here.
+      if (sharedReader) {
+        const html = await sharedReader.readPreviewHtml().catch(() => null);
+        return { src, html: html || '' };
+      }
       // Pass the FULL current URL (with ?file=) so findDesignTarget exact-matches
       // the agent-browser-driven tab — two same-project tabs on different files
       // must not cross-bind (#67 review).
@@ -1048,6 +1062,26 @@ export class DesignerController {
 
     // signed-token / 'other': the node fetch is authoritative (real rendered HTML).
     return this._fetchServedHtmlNode(src);
+  }
+
+  // Attach ONE OopifHtmlReader for the duration of a served-HTML poll loop and
+  // reuse it per poll (each readPreviewHtml re-arms in ~8ms), instead of opening a
+  // fresh CDP socket per poll — amortizes the WS-open/connect cost and avoids the
+  // connect storm on long settle/fallback loops (#67 review perf). The reader is
+  // best-effort: if attach fails or the regime isn't bootstrap, fetchServedHtml
+  // falls back to its own per-call path. Closed in finally.
+  private async withPreviewReader<T>(
+    run: (readServed: () => Promise<{ src: string; html: string }>) => Promise<T>
+  ): Promise<T> {
+    const cdpEnabled = (process.env.DESIGNER_CDP ?? '9222') !== '';
+    const reader = cdpEnabled
+      ? await OopifHtmlReader.attach({ preferUrlPrefix: (await this.currentUrl()) || null }).catch(() => null)
+      : null;
+    try {
+      return await run(() => this.fetchServedHtml(reader));
+    } finally {
+      reader?.close();
+    }
   }
 
   async handoff({ openFile }: { openFile?: string } = {}): Promise<HandoffResult> {
