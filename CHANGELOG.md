@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.14](https://github.com/pro-vi/designer/compare/v0.3.13...v0.3.14) (2026-06-18)
+
+
+### Bug Fixes
+
+* **health:** count data-index rows for chatTurnPrefix (virtualized chat) ([#71](https://github.com/pro-vi/designer/issues/71)) ([10ce83e](https://github.com/pro-vi/designer/commit/10ce83e7d4f4feff92fa59b93bd71ae476eb1847))
+
 ## [0.3.13](https://github.com/pro-vi/designer/compare/v0.3.12...v0.3.13) (2026-06-18)
 
 
