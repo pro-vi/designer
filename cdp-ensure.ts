@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { defaultChromeBin, isChromeRunning, QUIT_CHROME_HINT } from './cross-platform.ts';
+import { isCdpEnabled } from './cdp-env.ts';
 
 const PORT = process.env.DESIGNER_CDP || '9222';
 const PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
@@ -31,7 +32,7 @@ export async function ensureCdpUp(): Promise<void> {
   // Respect the explicit opt-out (DESIGNER_CDP=''): never probe or auto-launch
   // the debug Chrome for a user who chose the agent-browser session-managed flow.
   // Throwing here makes any stray CdpSession.attach() degrade to null cleanly.
-  if (process.env.DESIGNER_CDP === '') {
+  if (!isCdpEnabled()) {
     throw new Error("CDP explicitly disabled (DESIGNER_CDP=''); using the agent-browser session-managed flow.");
   }
   if (await isCdpUp()) return;

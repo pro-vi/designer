@@ -11,6 +11,7 @@ import { ensureCdpUp } from './cdp-ensure.ts';
 import { RunStateObserver } from './run-state.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
 import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
+import { isCdpEnabled } from './cdp-env.ts';
 
 export interface Selectors {
   login: { signedInIndicator: string | null };
@@ -116,13 +117,6 @@ export interface RepairReport {
 }
 
 const DESIGN_HOME = 'https://claude.ai/design';
-
-// The DESIGNER_CDP opt-out (CLAUDE.md: three states — unset/9222 = on, '' = off,
-// the agent-browser session-managed flow). One definition of "is CDP work
-// allowed" so the load-bearing gate can't drift across its call sites.
-function isCdpEnabled(): boolean {
-  return (process.env.DESIGNER_CDP ?? '9222') !== '';
-}
 
 // A claude.ai/design session URL: /design/p/<uuid>. Capture group 1 is the
 // project id. Used by isInSession()-style checks and `adopt` (binding an
@@ -1028,6 +1022,13 @@ export class DesignerController {
   //     degrades to the node fetch on any failure, so every existing caller
   //     (snapshot, iterate's post-gen snapshot, the no_change signal, and the
   //     _waitForGenerationDoneHtml fallback) behaves at least as before.
+  //
+  // CONTRACT: "served HTML" here is the preview's RENDERED DOM (outerHTML in the
+  // bootstrap regime; the served response body in the signed-token regime), NOT
+  // the on-disk source file. For the byte-stability / no_change / snapshot uses
+  // that is exactly right (they care what the preview shows). A caller that needs
+  // authoritative file SOURCE must use `handoff` (the Share/Export bundle), not
+  // this. Returns html:'' (never the loader shell) when no real HTML is readable.
   async fetchServedHtml(sharedReader?: OopifHtmlReader | null): Promise<{ src: string; html: string }> {
     const src = await this.getIframeSrc();
     if (!src || !isPreviewIframeSrc(src)) return { src: '', html: '' };

@@ -126,7 +126,9 @@ const PERSIST_METHODS = new Set([
   'Page.lifecycleEvent'
 ]);
 
-function asRec(v: unknown): Record<string, unknown> {
+// Narrow an unknown CDP payload to a record before keyed access. Shared by the
+// CDP subclasses (run-state, oopif-reader) that parse event/response shapes.
+export function asRec(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 

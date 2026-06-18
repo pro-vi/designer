@@ -1,6 +1,7 @@
 import type { Browser } from './browser.ts';
 import { RunStateObserver } from './run-state.ts';
 import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
+import { isCdpEnabled } from './cdp-env.ts';
 
 // Every UI anchor this MCP depends on to work. Grouped by the surface state
 // they live on. A regression in Claude Design's UI will trip one or more of
@@ -116,7 +117,7 @@ async function checkTurnRpcContract(_browser: Browser, currentUrl: string): Prom
   if (process.env.DESIGNER_TURN_RPC_CANARY !== '1') {
     return { ok: true, status: 'skip', detail: 'turn-RPC canary disabled (DESIGNER_TURN_RPC_CANARY!=1)' };
   }
-  if ((process.env.DESIGNER_CDP ?? '9222') === '') {
+  if (!isCdpEnabled()) {
     return { ok: true, status: 'skip', detail: "CDP disabled (DESIGNER_CDP=''); turn-RPC canary not probed" };
   }
   const observer = await RunStateObserver.attach({ preferUrlPrefix: currentUrl.split('?')[0] || null });

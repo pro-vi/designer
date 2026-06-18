@@ -1,4 +1,4 @@
-import { CdpSession, type CdpSessionOptions, type CdpTarget } from './cdp-trace.ts';
+import { CdpSession, asRec, type CdpSessionOptions, type CdpTarget } from './cdp-trace.ts';
 
 export const OMELETTE_TURN_SERVICE = 'anthropic.omelette.api.v1alpha.OmeletteService';
 export const TURN_RPCS = ['Chat', 'RenewTurn', 'ReleaseTurn'] as const;
@@ -13,10 +13,6 @@ export type RunSignal =
   | { kind: 'release'; requestId?: string }
   | { kind: 'critical-error'; rpc: CriticalRunRpc; status: number | 'failed' }
   | { kind: 'observer-lost' };
-
-function asRec(v: unknown): Record<string, unknown> {
-  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-}
 
 function num(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
