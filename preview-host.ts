@@ -33,6 +33,12 @@ export function previewIframeVariant(src: string): 'signed-token' | 'bootstrap-s
 // drift, that string does not. Used to assert the OOPIF read returned rendered
 // content, not the loader, and to defend callers against saving a shell as the
 // captured artifact. Empty / non-shell HTML → false (don't misread "no sample").
+//
+// Size-bounded (review below-gate): a rendered design that legitimately
+// DOCUMENTS the preview protocol could contain the marker string, so require the
+// document also be loader-sized. The real shell is ~1.1KB; any rendered design is
+// far larger, so the marker + a sub-4KB body is an unambiguous shell signal.
+const BOOTSTRAP_SHELL_MAX_BYTES = 4000;
 export function isBootstrapShellHtml(html: string): boolean {
-  return typeof html === 'string' && html.includes('omelette-preview-init');
+  return typeof html === 'string' && html.length < BOOTSTRAP_SHELL_MAX_BYTES && html.includes('omelette-preview-init');
 }

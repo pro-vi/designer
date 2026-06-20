@@ -583,19 +583,22 @@ export const UI_ANCHORS: AnchorDef[] = [
           )
           .catch(() => false);
 
-      // The file-list panel renders a few seconds after navigation; scraping
-      // immediately races it — the recurring false "0 filenames" the daily probe
-      // filed (#64/#65/#68), even though `designer files` and a live scrape find
-      // the files once the panel is up. Retry with a bounded settle before
-      // concluding a regression.
+      // Open the panel ONCE up front. Clicking it on every retry would toggle an
+      // already-open panel closed mid-settle (oscillation — review below-gate);
+      // the panel header renders immediately, its file rows a beat later, so one
+      // click + the retry-scrape settle covers the late render. The file-list
+      // panel renders a few seconds after navigation; scraping immediately races
+      // it — the recurring false "0 filenames" the daily probe filed
+      // (#64/#65/#68), even though `designer files` and a live scrape find the
+      // files once the panel is up. Retry with a bounded settle before concluding
+      // a regression.
+      await openFilesPanel();
       let files: string[] = [];
       for (let attempt = 0; attempt < 6; attempt++) {
-        await openFilesPanel();
-        await sleep(300);
+        await sleep(attempt === 0 ? 300 : 700);
         const result = await scrape();
         files = Array.isArray(result.files) ? result.files : [];
         if (files.length > 0) break;
-        if (attempt < 5) await sleep(700);
       }
       if (files.length === 0) {
         // With no file open the file-list panel may legitimately be absent — don't

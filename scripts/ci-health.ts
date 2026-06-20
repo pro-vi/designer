@@ -13,7 +13,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createBrowser, type Browser } from '../browser.ts';
 import { runHealth, type ProbeResult } from '../ui-anchors.ts';
 import { REPO_ROOT } from '../repo-root.ts';
-import { classifyInterstitial, type InterstitialKind } from '../interstitials.ts';
+import { classifyInterstitial, INTERSTITIAL_PROBE_EXPR, type InterstitialKind, type InterstitialProbe } from '../interstitials.ts';
 
 const CDP_PORT = process.env.DESIGNER_CDP || '9222';
 const CHROME_PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
@@ -242,18 +242,11 @@ async function maybeSnapshot(browser: Browser): Promise<{ url: string; htmlBytes
 // pre-flight (designer clear) addresses for verbs. Diagnostic only: never fails
 // the run. Reuses the same classifier the pre-flight uses (interstitials.ts).
 async function probeInterstitial(browser: Browser): Promise<InterstitialKind | null> {
-  const probe = await browser
-    .evalValue<{ bodyText: string; buttonTexts: string[] }>(
-      `(() => ({
-        bodyText: ((document.body && document.body.innerText) || '').slice(0, 20000),
-        buttonTexts: Array.from(document.querySelectorAll('button'))
-          .map((b) => (b.textContent || '').trim())
-          .filter(Boolean)
-          .slice(0, 300)
-      }))()`
-    )
-    .catch(() => ({ bodyText: '', buttonTexts: [] }));
-  return classifyInterstitial(probe || { bodyText: '', buttonTexts: [] });
+  // Shared INTERSTITIAL_PROBE_EXPR keeps this diagnostic and the live pre-flight
+  // (designer-controller) classifying identically — including the appShellPresent
+  // guard, without which transcript text would false-classify here too.
+  const probe = await browser.evalValue<InterstitialProbe>(INTERSTITIAL_PROBE_EXPR).catch(() => null);
+  return probe ? classifyInterstitial(probe) : null;
 }
 
 async function main(): Promise<void> {

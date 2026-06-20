@@ -55,6 +55,13 @@ test('isBootstrapShellHtml treats rendered HTML and empty/no-sample as not-a-she
   assert.equal(isBootstrapShellHtml(/** @type {any} */ (null)), false);
 });
 
+test('isBootstrapShellHtml is size-bounded — a large design documenting the protocol is not a shell', () => {
+  // A rendered design that legitimately mentions the marker (e.g. a doc explaining
+  // omelette-preview-init) but is far larger than the ~1.1KB loader → not a shell.
+  const bigDesign = '<!doctype html><html><body>' + 'x'.repeat(5000) + 'omelette-preview-init</body></html>';
+  assert.equal(isBootstrapShellHtml(bigDesign), false);
+});
+
 test('SESSION_URL_RE matches a /design/p/<uuid> tab and captures the project id', () => {
   const url = 'https://claude.ai/design/p/72e73856-7b63-4aed-b95a-caca5e3c0e05?file=index.html';
   const m = url.match(SESSION_URL_RE);

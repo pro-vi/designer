@@ -15,7 +15,9 @@ import { isCdpEnabled } from './cdp-env.ts';
 import {
   classifyInterstitial,
   plannedAction,
+  isBlockingInterstitial,
   CONTINUE_HERE_TEXT,
+  INTERSTITIAL_PROBE_EXPR,
   type InterstitialKind,
   type InterstitialProbe,
   type InterstitialReport
@@ -344,80 +346,109 @@ export class DesignerController {
   // through ensureReady so these don't silently stall automation or get misread
   // as a finished / context-ceilinged generation.
 
-  // Read the page content the classifier needs in a single eval. Best-effort:
-  // a failed/odd page degrades to empty (classified as "no interstitial").
-  async _probeInterstitial(): Promise<InterstitialProbe> {
-    return (
-      (await this.browser
-        .evalValue<InterstitialProbe>(
-          `(() => ({
-            bodyText: ((document.body && document.body.innerText) || '').slice(0, 20000),
-            buttonTexts: Array.from(document.querySelectorAll('button'))
-              .map((b) => (b.textContent || '').trim())
-              .filter(Boolean)
-              .slice(0, 300)
-          }))()`
-        )
-        .catch(() => ({ bodyText: '', buttonTexts: [] }))) || { bodyText: '', buttonTexts: [] }
-    );
+  // Read the page content the classifier needs in a single eval, via the shared
+  // INTERSTITIAL_PROBE_EXPR (same shape as the CI diagnostic). Returns null when
+  // the read FAILS — distinct from a successfully-read clear page — so callers
+  // never mistake "couldn't read" for "no interstitial" (review #5a).
+  async _probeInterstitial(): Promise<InterstitialProbe | null> {
+    return this.browser.evalValue<InterstitialProbe>(INTERSTITIAL_PROBE_EXPR).catch(() => null);
+  }
+
+  // Classify the page now, threading the configured token-banner button text so
+  // detection and the click stay on one source of truth (review #3b). Returns
+  // null on an unreadable page (probe failure) OR a clear page — callers that
+  // must distinguish the two re-probe explicitly.
+  private async _classifyNow(): Promise<InterstitialKind | null> {
+    const probe = await this._probeInterstitial();
+    return probe ? classifyInterstitial(probe, { continueHere: this.selectors.interstitials?.continueHere }) : null;
   }
 
   // Detect and clear interstitials on the currently-bound tab. Loops because
   // clearing one can reveal another (a reload can land back on the token banner),
-  // and a click/reload needs a re-probe to confirm. Cloudflare can't be solved
-  // programmatically, so we wait for it to self-clear and otherwise report it as
-  // `blocked` for the caller to surface to a human.
+  // and each action re-probes to CONFIRM before counting it handled. Blocking
+  // kinds (cloudflare, transient-error) that survive are reported `blocked`; the
+  // token banner is non-blocking (the shell stays usable) so it never blocks a
+  // verb even if its button can't be clicked (review #3 / #6). ensureCdpUp first
+  // so the standalone `designer clear` fails loud on a dead Chrome instead of
+  // reporting a false recovery (review #5b).
   async clearInterstitials({
     maxPasses = 4,
     cloudflareWaitMs = 25_000,
     pollMs = 1500
   }: { maxPasses?: number; cloudflareWaitMs?: number; pollMs?: number } = {}): Promise<InterstitialReport> {
+    await ensureCdpUp();
     const handled: InterstitialKind[] = [];
     for (let pass = 0; pass < maxPasses; pass++) {
-      const kind = classifyInterstitial(await this._probeInterstitial());
+      const kind = await this._classifyNow();
       if (!kind) return { ok: true, handled, blocked: null };
       const action = plannedAction(kind);
 
       if (action === 'click-continue') {
+        // Benign banner: try to dismiss, but never block the verb on it.
         const text = this.selectors.interstitials?.continueHere || CONTINUE_HERE_TEXT;
-        const clicked = await this._clickButtonByText(new RegExp(`^${escapeRegExp(text)}$`)).catch(() => false);
-        if (!clicked) break; // banner present but its button vanished — report residual below
-        handled.push(kind);
-        appendHistory(this.key, { kind: 'interstitial', interstitial: kind, action });
-        await new Promise((r) => setTimeout(r, 600));
-        continue;
+        const clicked = await this._clickButtonByText(new RegExp(`^${escapeRegExp(text)}$`, 'i')).catch(() => false);
+        if (clicked) {
+          await new Promise((r) => setTimeout(r, 600));
+          if ((await this._classifyNow()) !== kind) {
+            handled.push(kind);
+            appendHistory(this.key, { kind: 'interstitial', interstitial: kind, action });
+            continue; // cleared — loop to catch any newly-revealed interstitial
+          }
+        }
+        appendHistory(this.key, {
+          kind: 'interstitial',
+          interstitial: kind,
+          action: clicked ? 'uncleared-nonblocking' : 'continue-button-missing'
+        });
+        return { ok: true, handled, blocked: null };
       }
 
       if (action === 'reload') {
-        handled.push(kind);
+        const u = await this.currentUrl();
+        if (!u) break; // can't reload an unknown URL (review #4) — fall to residual
         appendHistory(this.key, { kind: 'interstitial', interstitial: kind, action });
-        await this.browser.open(await this.currentUrl()).catch(() => null);
-        await this.browser.waitLoad('networkidle').catch(() => null);
+        await this.browser.open(u).catch(() => null);
+        // 'load', not 'networkidle' — the SPA's persistent connections never go
+        // idle, so networkidle would burn the full timeout each pass (review #4).
+        await this.browser.waitLoad('load').catch(() => null);
         await new Promise((r) => setTimeout(r, 800));
-        continue;
+        continue; // confirm on the next pass's probe
       }
 
-      // await-human (cloudflare): wait for the challenge to self-clear before
-      // declaring it blocked — it frequently resolves on its own.
-      const cleared = await this._waitForInterstitialClear(kind, cloudflareWaitMs, pollMs);
-      appendHistory(this.key, { kind: 'interstitial', interstitial: kind, action: cleared ? 'cleared-after-wait' : 'blocked' });
-      if (cleared) {
-        handled.push(kind);
-        continue;
+      if (action === 'await-human') {
+        // Cloudflare can't be solved programmatically; wait for it to self-clear
+        // before declaring it blocked — it frequently resolves on its own.
+        const cleared = await this._waitForInterstitialClear(kind, cloudflareWaitMs, pollMs);
+        appendHistory(this.key, { kind: 'interstitial', interstitial: kind, action: cleared ? 'cleared-after-wait' : 'blocked' });
+        if (cleared) {
+          handled.push(kind);
+          continue;
+        }
+        return { ok: false, handled, blocked: kind };
       }
-      return { ok: false, handled, blocked: kind };
+
+      // Exhaustiveness: a new InterstitialAction must be handled above, not fall
+      // silently into one of the branches (review below-gate).
+      const _exhaustive: never = action;
+      return _exhaustive;
     }
-    const residual = classifyInterstitial(await this._probeInterstitial());
-    return { ok: !residual, handled, blocked: residual };
+    // maxPasses exhausted (e.g. a transient error that survived every reload).
+    const residual = await this._classifyNow();
+    if (residual && isBlockingInterstitial(residual)) return { ok: false, handled, blocked: residual };
+    return { ok: true, handled, blocked: null };
   }
 
   private async _waitForInterstitialClear(kind: InterstitialKind, timeoutMs: number, pollMs: number): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       await new Promise((r) => setTimeout(r, pollMs));
-      // A change to a *different* interstitial also counts as cleared — the outer
-      // loop re-probes and handles whatever is now on top.
-      if (classifyInterstitial(await this._probeInterstitial()) !== kind) return true;
+      const probe = await this._probeInterstitial();
+      // A FAILED read (null probe) is NOT "cleared" — keep waiting (review #5a).
+      // Only a successful read that classifies as a different kind (or clear)
+      // means the challenge is gone; the outer loop handles whatever's now on top.
+      if (probe && classifyInterstitial(probe, { continueHere: this.selectors.interstitials?.continueHere }) !== kind) {
+        return true;
+      }
     }
     return false;
   }
@@ -449,7 +480,16 @@ export class DesignerController {
     // transient-error or Cloudflare overlay HIDES those anchors, so a real design
     // tab can be masked. Before falling back to opening home, activate the best
     // design tab and try clearing; a successful clear re-exposes the anchors.
-    const designTabs = await this.candidateTabs((u) => /^https:\/\/claude\.ai\/design(\/|$|\?)/.test(u));
+    //
+    // SCOPE to the stored project (mirror selectMatchingTab): an unscoped /design
+    // filter would activate the lowest-index design tab — potentially an UNRELATED
+    // project — and a later clear/fall-through could silently bind this key to it
+    // (review #2, cross-project contamination). Only widen to any /design tab when
+    // this key has no stored project to be wrong about.
+    const recoveryRoot = getSession(this.key)?.designUrl?.split('?')[0];
+    const designTabs = await this.candidateTabs((u) =>
+      recoveryRoot ? u.startsWith(recoveryRoot) : /^https:\/\/claude\.ai\/design(\/|$|\?)/.test(u)
+    );
     if (designTabs.length > 0) {
       await this.browser.activateTab(designTabs[0]!.index).catch(() => null);
       const report = await this.clearInterstitials();
