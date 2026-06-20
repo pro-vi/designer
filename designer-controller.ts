@@ -354,13 +354,17 @@ export class DesignerController {
     return this.browser.evalValue<InterstitialProbe>(INTERSTITIAL_PROBE_EXPR).catch(() => null);
   }
 
-  // Classify the page now, threading the configured token-banner button text so
-  // detection and the click stay on one source of truth (review #3b). Returns
-  // null on an unreadable page (probe failure) OR a clear page — callers that
-  // must distinguish the two re-probe explicitly.
+  // The configured token-banner button text, threaded into every classify call so
+  // detection and the click stay on one source of truth (review #3b).
+  private get _classifyOpts(): { continueHere?: string } {
+    return { continueHere: this.selectors.interstitials?.continueHere };
+  }
+
+  // Classify the page now. Returns null on an unreadable page (probe failure) OR
+  // a clear page — callers that must distinguish the two re-probe explicitly.
   private async _classifyNow(): Promise<InterstitialKind | null> {
     const probe = await this._probeInterstitial();
-    return probe ? classifyInterstitial(probe, { continueHere: this.selectors.interstitials?.continueHere }) : null;
+    return probe ? classifyInterstitial(probe, this._classifyOpts) : null;
   }
 
   // Detect and clear interstitials on the currently-bound tab. Loops because
@@ -446,7 +450,7 @@ export class DesignerController {
       // A FAILED read (null probe) is NOT "cleared" — keep waiting (review #5a).
       // Only a successful read that classifies as a different kind (or clear)
       // means the challenge is gone; the outer loop handles whatever's now on top.
-      if (probe && classifyInterstitial(probe, { continueHere: this.selectors.interstitials?.continueHere }) !== kind) {
+      if (probe && classifyInterstitial(probe, this._classifyOpts) !== kind) {
         return true;
       }
     }
@@ -490,8 +494,9 @@ export class DesignerController {
     const designTabs = await this.candidateTabs((u) =>
       recoveryRoot ? u.startsWith(recoveryRoot) : /^https:\/\/claude\.ai\/design(\/|$|\?)/.test(u)
     );
-    if (designTabs.length > 0) {
-      await this.browser.activateTab(designTabs[0]!.index).catch(() => null);
+    const recoveryTab = designTabs[0];
+    if (recoveryTab) {
+      await this.browser.activateTab(recoveryTab.index).catch(() => null);
       const report = await this.clearInterstitials();
       if (report.blocked) throw this._interstitialError(report.blocked, designTabs.length);
       if (report.handled.length > 0) {

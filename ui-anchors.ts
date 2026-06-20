@@ -52,7 +52,7 @@ async function hasButtonMatching(browser: Browser, pattern: RegExp): Promise<boo
 // The design-preview iframe's src. Shared by the preview anchors below
 // (iframeSrcPattern / previewBootstrap / oopifPreviewRead) so they read the
 // element the same way. '' when absent (caller decides skip vs fail).
-async function previewIframeSrc(browser: Browser): Promise<string> {
+async function getPreviewIframeSrc(browser: Browser): Promise<string> {
   return (
     (await browser
       .evalValue<string>(
@@ -350,7 +350,7 @@ export const UI_ANCHORS: AnchorDef[] = [
     requires: 'session',
     check: async (b, url) => {
       if (!/[?&]file=/.test(url)) return { ok: true, detail: '(no file open — iframe not expected)' };
-      const src = await previewIframeSrc(b);
+      const src = await getPreviewIframeSrc(b);
       if (!src) return { ok: false, detail: 'file param present but iframe missing src' };
       const ok = isPreviewIframeSrc(src);
       return { ok, detail: ok ? `variant=${previewIframeVariant(src)}` : `src=${src.slice(0, 120)}...` };
@@ -372,7 +372,7 @@ export const UI_ANCHORS: AnchorDef[] = [
     requires: 'session',
     check: async (b, url) => {
       if (!/[?&]file=/.test(url)) return { ok: true, detail: '(no file open — preview regime not checked)' };
-      const src = await previewIframeSrc(b);
+      const src = await getPreviewIframeSrc(b);
       if (!src) return { ok: false, detail: 'file param present but iframe missing src' };
       if (!isPreviewIframeSrc(src)) return { ok: false, detail: `preview left claudeusercontent.com: ${src.slice(0, 120)}` };
       const variant = previewIframeVariant(src);
@@ -402,7 +402,7 @@ export const UI_ANCHORS: AnchorDef[] = [
     requires: 'session',
     check: async (_b, url) => {
       if (!/[?&]file=/.test(url)) return { ok: true, status: 'skip', detail: 'no file open — preview not expected' };
-      const src = await previewIframeSrc(_b);
+      const src = await getPreviewIframeSrc(_b);
       if (!src || !isPreviewIframeSrc(src)) return { ok: true, status: 'skip', detail: 'iframe not on a preview host' };
       const variant = previewIframeVariant(src);
       if (variant !== 'bootstrap-subdomain')
