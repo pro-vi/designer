@@ -372,15 +372,19 @@ export class DesignerController {
   // and each action re-probes to CONFIRM before counting it handled. Blocking
   // kinds (cloudflare, transient-error) that survive are reported `blocked`; the
   // token banner is non-blocking (the shell stays usable) so it never blocks a
-  // verb even if its button can't be clicked (review #3 / #6). ensureCdpUp first
-  // so the standalone `designer clear` fails loud on a dead Chrome instead of
-  // reporting a false recovery (review #5b).
+  // verb even if its button can't be clicked (review #3 / #6). In CDP mode,
+  // ensureCdpUp first so the standalone `designer clear` fails loud on a dead
+  // Chrome instead of a false recovery (review #5b) — but GATE it on isCdpEnabled
+  // so the documented DESIGNER_CDP='' opt-out (where ensureCdpUp throws by design)
+  // still works: the probe/click/reload run over agent-browser, not CDP, so the
+  // clear itself needs no CDP. Without this gate, the createSession pre-flight
+  // would break `create` in the opt-out flow (PR #77 Codex P2).
   async clearInterstitials({
     maxPasses = 4,
     cloudflareWaitMs = 25_000,
     pollMs = 1500
   }: { maxPasses?: number; cloudflareWaitMs?: number; pollMs?: number } = {}): Promise<InterstitialReport> {
-    await ensureCdpUp();
+    if (isCdpEnabled()) await ensureCdpUp();
     const handled: InterstitialKind[] = [];
     for (let pass = 0; pass < maxPasses; pass++) {
       const kind = await this._classifyNow();
@@ -830,6 +834,12 @@ export class DesignerController {
     const stored = getSession(this.key);
     if (!stored?.designUrl) throw new Error(`No active session for key=${this.key}. Call createSession first.`);
     await this.resumeSession();
+    // ensureReady's pre-flight cleared the home/current page, but this cold-start
+    // just navigated to the stored project — an interstitial on the PROJECT page
+    // itself (token banner, transient error, Cloudflare) would otherwise reach the
+    // verb that called us. Clear again on the resumed page (PR #77 Codex P2).
+    const interstitials = await this.clearInterstitials();
+    if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, 1);
   }
 
   async iterate(
