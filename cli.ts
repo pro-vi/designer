@@ -73,7 +73,7 @@ async function main(): Promise<void> {
     }
     case 'session': {
       const c = new DesignerController({ key });
-      const action = (flags.action as 'status' | 'ensure_ready' | 'resume' | 'create' | 'adopt') || 'status';
+      const action = (flags.action as 'status' | 'ensure_ready' | 'resume' | 'create' | 'adopt' | 'clear') || 'status';
       const name = flags.name as string | undefined;
       const fidelity = flags.fidelity as 'wireframe' | 'highfi' | undefined;
       console.log(JSON.stringify(await c.session({ action, name, fidelity }), null, 2));
@@ -110,6 +110,11 @@ async function main(): Promise<void> {
       const name = (flags.name as string) || (flags._[0] as string | undefined);
       const c = new DesignerController({ key });
       console.log(JSON.stringify(await c.adoptSession(name), null, 2));
+      break;
+    }
+    case 'clear': {
+      const c = new DesignerController({ key });
+      console.log(JSON.stringify(await c.clearInterstitials(), null, 2));
       break;
     }
     case 'snapshot': {
@@ -332,6 +337,7 @@ Session lifecycle:
                                                enter/inspect/transition (primary entry)
   adopt [name] [--key k]                        bind the open /design/p/<uuid> tab to a key
                                                (use when the creation-cards home can't be driven)
+  clear [--key k]                              dismiss interstitials (token banner / error / Cloudflare)
   status [--key k]                             read stored state
   list                                         list locally-tracked sessions
   close [--key k]                              close browser (state preserved)
@@ -369,7 +375,7 @@ const HELP: Record<string, string> = {
   session: `designer session — enter, inspect, or transition a claude.ai/design session.
 
 Flags:
-  --action <a>    status (default, read-only) | ensure_ready | resume | create | adopt
+  --action <a>    status (default, read-only) | ensure_ready | resume | create | adopt | clear
   --name <N>      required when --action create; optional label when --action adopt
   --fidelity <f>  wireframe | highfi (default wireframe) — folded into the creation
                   seed prompt as a directive (the redesigned home has no fidelity toggle)

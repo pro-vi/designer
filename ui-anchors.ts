@@ -211,9 +211,11 @@ export const UI_ANCHORS: AnchorDef[] = [
   {
     id: 'home.highFiButton',
     category: 'home',
-    description: 'Prototype creation-type card',
+    // Renamed 'Prototype' → 'Product prototype' in the 2026-06-19 home build
+    // (auto-heal PR #75/#76). Off the create path — a drift sentinel only.
+    description: 'Product prototype creation-type card',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, /^Prototype/) })
+    check: async (b) => ({ ok: await hasButtonMatching(b, /^Product prototype/) })
   },
   {
     id: 'home.createButton',
@@ -516,6 +518,27 @@ export const UI_ANCHORS: AnchorDef[] = [
           )
           .catch(() => ({ files: [] as string[] }));
 
+      // Production listFilesDetailed OPENS the "Design Files" panel before
+      // scraping; this anchor used to scrape the bare page, so on a project whose
+      // panel wasn't already rendered (e.g. a single-file standalone — PR #75/#76
+      // hit "Signup Wireframes (standalone)") it found 0 and false-failed while
+      // `designer files` worked. Open the panel first so the anchor exercises the
+      // same path. Idempotent + best-effort (matches listFilesDetailed).
+      const openFilesPanel = (): Promise<boolean> =>
+        b
+          .evalValue<boolean>(
+            `(() => {
+            const spans = Array.from(document.querySelectorAll('span'));
+            const label = spans.find((s) => s.children.length === 0 && (s.textContent || '').trim() === 'Design Files');
+            if (!label) return false;
+            let row = label;
+            while (row && row.onclick === null) row = row.parentElement;
+            if (row) row.click();
+            return true;
+          })()`
+          )
+          .catch(() => false);
+
       // The file-list panel renders a few seconds after navigation; scraping
       // immediately races it — the recurring false "0 filenames" the daily probe
       // filed (#64/#65/#68), even though `designer files` and a live scrape find
@@ -523,10 +546,12 @@ export const UI_ANCHORS: AnchorDef[] = [
       // concluding a regression.
       let files: string[] = [];
       for (let attempt = 0; attempt < 6; attempt++) {
+        await openFilesPanel();
+        await sleep(300);
         const result = await scrape();
         files = Array.isArray(result.files) ? result.files : [];
         if (files.length > 0) break;
-        if (attempt < 5) await sleep(1000);
+        if (attempt < 5) await sleep(700);
       }
       if (files.length === 0) {
         // With no file open the file-list panel may legitimately be absent — don't
@@ -537,6 +562,13 @@ export const UI_ANCHORS: AnchorDef[] = [
         }
         return { ok: false, detail: 'found 0 filenames after ~5s settle — scraper regex or DOM layout regressed' };
       }
+      // The anchor's invariant is "the scraper still detects filenames" — ≥1
+      // filename means the regex + DOM walk work. Whether the URL's ?file=
+      // appears among them is NOT a reliable sub-assertion: the panel lists the
+      // authoritative project files, and the active ?file= can legitimately be
+      // absent from it (a stale/virtual URL file — observed live: ?file=
+      // direction-dock.html while the panel lists casefile-*.html). So treat an
+      // active-file mismatch as informational, not a failure.
       const match = url.match(/[?&]file=([^&]+)/);
       if (match && match[1]) {
         // Claude Design's URL bar form-encodes spaces as '+'. decodeURIComponent
@@ -545,8 +577,8 @@ export const UI_ANCHORS: AnchorDef[] = [
         const activeFile = decodeURIComponent(match[1].replace(/\+/g, ' '));
         if (!files.includes(activeFile)) {
           return {
-            ok: false,
-            detail: `active file "${activeFile}" not in scrape ([${files.slice(0, 3).join(', ')}...]) — scraper missing files`
+            ok: true,
+            detail: `${files.length} file(s) detected; active "${activeFile}" not among them (URL file may be stale/virtual)`
           };
         }
       }

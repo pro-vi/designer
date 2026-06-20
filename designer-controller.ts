@@ -12,6 +12,14 @@ import { RunStateObserver } from './run-state.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
 import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
 import { isCdpEnabled } from './cdp-env.ts';
+import {
+  classifyInterstitial,
+  plannedAction,
+  CONTINUE_HERE_TEXT,
+  type InterstitialKind,
+  type InterstitialProbe,
+  type InterstitialReport
+} from './interstitials.ts';
 
 export interface Selectors {
   login: { signedInIndicator: string | null };
@@ -41,6 +49,10 @@ export interface Selectors {
     chatMessagesContainer: string;
     generatingIndicator: string | null;
   };
+  // Content-only interstitial overlays have no stable testid; detection regexes
+  // live in interstitials.ts. This optional block lets the one actionable button
+  // text be overridden alongside the other anchors (~/.designer/selectors.override.json).
+  interstitials?: { continueHere?: string };
   [k: string]: unknown;
 }
 
@@ -214,10 +226,18 @@ export class DesignerController {
     action = 'status',
     name,
     fidelity = 'wireframe'
-  }: { action?: 'status' | 'ensure_ready' | 'resume' | 'create' | 'adopt'; name?: string; fidelity?: 'wireframe' | 'highfi' } = {}): Promise<unknown> {
+  }: {
+    action?: 'status' | 'ensure_ready' | 'resume' | 'create' | 'adopt' | 'clear';
+    name?: string;
+    fidelity?: 'wireframe' | 'highfi';
+  } = {}): Promise<unknown> {
     if (action === 'status') return this.getStatus();
     if (action === 'ensure_ready') {
       const r = await this.ensureReady();
+      return { ...r, status: await this.getStatus() };
+    }
+    if (action === 'clear') {
+      const r = await this.clearInterstitials();
       return { ...r, status: await this.getStatus() };
     }
     if (action === 'resume') {
@@ -317,12 +337,129 @@ export class DesignerController {
     return { matched: false, candidates: candidates.length };
   }
 
-  async ensureReady(): Promise<{ ok: true; url: string; inSession: boolean }> {
+  // --- interstitial pre-flight (see interstitials.ts) -----------------------
+  // claude.ai/design interrupts the flow with content-only overlays that carry
+  // no data-testid: the 495k-token "Continue here" banner, a transient "Something
+  // went wrong" page, and the Cloudflare bot-check. Verbs run clearInterstitials()
+  // through ensureReady so these don't silently stall automation or get misread
+  // as a finished / context-ceilinged generation.
+
+  // Read the page content the classifier needs in a single eval. Best-effort:
+  // a failed/odd page degrades to empty (classified as "no interstitial").
+  async _probeInterstitial(): Promise<InterstitialProbe> {
+    return (
+      (await this.browser
+        .evalValue<InterstitialProbe>(
+          `(() => ({
+            bodyText: ((document.body && document.body.innerText) || '').slice(0, 20000),
+            buttonTexts: Array.from(document.querySelectorAll('button'))
+              .map((b) => (b.textContent || '').trim())
+              .filter(Boolean)
+              .slice(0, 300)
+          }))()`
+        )
+        .catch(() => ({ bodyText: '', buttonTexts: [] }))) || { bodyText: '', buttonTexts: [] }
+    );
+  }
+
+  // Detect and clear interstitials on the currently-bound tab. Loops because
+  // clearing one can reveal another (a reload can land back on the token banner),
+  // and a click/reload needs a re-probe to confirm. Cloudflare can't be solved
+  // programmatically, so we wait for it to self-clear and otherwise report it as
+  // `blocked` for the caller to surface to a human.
+  async clearInterstitials({
+    maxPasses = 4,
+    cloudflareWaitMs = 25_000,
+    pollMs = 1500
+  }: { maxPasses?: number; cloudflareWaitMs?: number; pollMs?: number } = {}): Promise<InterstitialReport> {
+    const handled: InterstitialKind[] = [];
+    for (let pass = 0; pass < maxPasses; pass++) {
+      const kind = classifyInterstitial(await this._probeInterstitial());
+      if (!kind) return { ok: true, handled, blocked: null };
+      const action = plannedAction(kind);
+
+      if (action === 'click-continue') {
+        const text = this.selectors.interstitials?.continueHere || CONTINUE_HERE_TEXT;
+        const clicked = await this._clickButtonByText(new RegExp(`^${escapeRegExp(text)}$`)).catch(() => false);
+        if (!clicked) break; // banner present but its button vanished — report residual below
+        handled.push(kind);
+        appendHistory(this.key, { kind: 'interstitial', interstitial: kind, action });
+        await new Promise((r) => setTimeout(r, 600));
+        continue;
+      }
+
+      if (action === 'reload') {
+        handled.push(kind);
+        appendHistory(this.key, { kind: 'interstitial', interstitial: kind, action });
+        await this.browser.open(await this.currentUrl()).catch(() => null);
+        await this.browser.waitLoad('networkidle').catch(() => null);
+        await new Promise((r) => setTimeout(r, 800));
+        continue;
+      }
+
+      // await-human (cloudflare): wait for the challenge to self-clear before
+      // declaring it blocked — it frequently resolves on its own.
+      const cleared = await this._waitForInterstitialClear(kind, cloudflareWaitMs, pollMs);
+      appendHistory(this.key, { kind: 'interstitial', interstitial: kind, action: cleared ? 'cleared-after-wait' : 'blocked' });
+      if (cleared) {
+        handled.push(kind);
+        continue;
+      }
+      return { ok: false, handled, blocked: kind };
+    }
+    const residual = classifyInterstitial(await this._probeInterstitial());
+    return { ok: !residual, handled, blocked: residual };
+  }
+
+  private async _waitForInterstitialClear(kind: InterstitialKind, timeoutMs: number, pollMs: number): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      // A change to a *different* interstitial also counts as cleared — the outer
+      // loop re-probes and handles whatever is now on top.
+      if (classifyInterstitial(await this._probeInterstitial()) !== kind) return true;
+    }
+    return false;
+  }
+
+  private _interstitialError(kind: InterstitialKind, candidates: number): Error {
+    const suffix = candidates > 0 ? ` (checked ${candidates} tab(s))` : '';
+    if (kind === 'cloudflare') {
+      return new Error(
+        `Cloudflare bot-check is up on claude.ai/design and didn't clear${suffix}. ` +
+          `Solve it in the CDP-attached Chrome, then retry.`
+      );
+    }
+    return new Error(`Unresolved interstitial '${kind}' on claude.ai/design${suffix}.`);
+  }
+
+  async ensureReady(): Promise<{ ok: true; url: string; inSession: boolean; interstitials?: InterstitialReport }> {
     await ensureCdpUp();
 
     const picked = await this.selectMatchingTab();
     if (picked.matched) {
-      return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession() };
+      // The token banner leaves the composer visible, so a tab can match with an
+      // interstitial still up — clear it before any verb runs against the page.
+      const interstitials = await this.clearInterstitials();
+      if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, picked.candidates);
+      return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession(), interstitials };
+    }
+
+    // selectMatchingTab matches on a visible composer/home anchor — but a
+    // transient-error or Cloudflare overlay HIDES those anchors, so a real design
+    // tab can be masked. Before falling back to opening home, activate the best
+    // design tab and try clearing; a successful clear re-exposes the anchors.
+    const designTabs = await this.candidateTabs((u) => /^https:\/\/claude\.ai\/design(\/|$|\?)/.test(u));
+    if (designTabs.length > 0) {
+      await this.browser.activateTab(designTabs[0]!.index).catch(() => null);
+      const report = await this.clearInterstitials();
+      if (report.blocked) throw this._interstitialError(report.blocked, designTabs.length);
+      if (report.handled.length > 0) {
+        const retry = await this.selectMatchingTab();
+        if (retry.matched) {
+          return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession(), interstitials: report };
+        }
+      }
     }
 
     // No live design tab matched. Fall back to opening home and re-checking.
@@ -334,6 +471,9 @@ export class DesignerController {
       }
     }
 
+    const interstitials = await this.clearInterstitials();
+    if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, picked.candidates);
+
     const homeOk = this.selectors.login.signedInIndicator
       ? await this.browser.isVisible(this.selectors.login.signedInIndicator).catch(() => false)
       : false;
@@ -343,7 +483,7 @@ export class DesignerController {
       throw new Error(`Not signed in to claude.ai/design, or on an unrecognized page${suffix}. Sign in in the CDP-attached Chrome.`);
     }
     upsertSession(this.key, { lastUrl: await this.currentUrl() });
-    return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession() };
+    return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession(), interstitials };
   }
 
   async createSession(
@@ -369,6 +509,11 @@ export class DesignerController {
     if (!name?.trim()) throw new Error('create requires a non-empty name (used as the project seed prompt).');
     await this.browser.open(DESIGN_HOME);
     await this.browser.waitLoad('networkidle').catch(() => null);
+    // createSession opens home directly (not via ensureReady), so run the same
+    // interstitial pre-flight — a Cloudflare check or transient error on home
+    // would otherwise stall waitFor(creator) with a misleading timeout.
+    const interstitials = await this.clearInterstitials();
+    if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, 0);
     await this.browser.waitFor(this.selectors.home.creator);
 
     const fidelityHint =
@@ -1232,6 +1377,10 @@ export class DesignerController {
 
 function hashHex(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function extractFileParam(url: string): string | null {
