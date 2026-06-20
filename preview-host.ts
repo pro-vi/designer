@@ -24,3 +24,15 @@ export function previewIframeVariant(src: string): 'signed-token' | 'bootstrap-s
   if (/\/_bootstrap/.test(src)) return 'bootstrap-subdomain';
   return 'other';
 }
+
+// True when `html` is the unauthenticated ~1.1KB loader shell the bootstrap
+// iframe serves to the parent origin (not the rendered design). A node fetch of a
+// bootstrap-subdomain src always returns this shell; the real DOM only exists in
+// the cross-origin OOPIF (see oopif-reader.ts). The shell's stable signature is
+// its postMessage init handshake ('omelette-preview-init') — class/markup hashes
+// drift, that string does not. Used to assert the OOPIF read returned rendered
+// content, not the loader, and to defend callers against saving a shell as the
+// captured artifact. Empty / non-shell HTML → false (don't misread "no sample").
+export function isBootstrapShellHtml(html: string): boolean {
+  return typeof html === 'string' && html.includes('omelette-preview-init');
+}

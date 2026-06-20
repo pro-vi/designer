@@ -1,7 +1,8 @@
 import type { Browser } from './browser.ts';
 import { RunStateObserver } from './run-state.ts';
-import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
+import { isPreviewIframeSrc, previewIframeVariant, isBootstrapShellHtml } from './preview-host.ts';
 import { isCdpEnabled } from './cdp-env.ts';
+import { OopifHtmlReader } from './oopif-reader.ts';
 
 // Every UI anchor this MCP depends on to work. Grouped by the surface state
 // they live on. A regression in Claude Design's UI will trip one or more of
@@ -46,6 +47,19 @@ async function hasButtonMatching(browser: Browser, pattern: RegExp): Promise<boo
       `(() => { const re = new RegExp(${JSON.stringify(pattern.source)}, ${JSON.stringify(pattern.flags)}); return Array.from(document.querySelectorAll('button')).some(b => re.test((b.textContent || '').trim())); })()`
     )
     .catch(() => false));
+}
+
+// The design-preview iframe's src. Shared by the preview anchors below
+// (iframeSrcPattern / previewBootstrap / oopifPreviewRead) so they read the
+// element the same way. '' when absent (caller decides skip vs fail).
+async function previewIframeSrc(browser: Browser): Promise<string> {
+  return (
+    (await browser
+      .evalValue<string>(
+        `(() => { const el = document.querySelector('[data-testid="html-viewer-iframe"]'); return (el && el.src) || ''; })()`
+      )
+      .catch(() => '')) || ''
+  );
 }
 
 function sleep(ms: number): Promise<void> {
@@ -336,9 +350,7 @@ export const UI_ANCHORS: AnchorDef[] = [
     requires: 'session',
     check: async (b, url) => {
       if (!/[?&]file=/.test(url)) return { ok: true, detail: '(no file open — iframe not expected)' };
-      const src = await b.evalValue<string>(
-        `(() => { const el = document.querySelector('[data-testid="html-viewer-iframe"]'); return (el && el.src) || ''; })()`
-      ).catch(() => '');
+      const src = await previewIframeSrc(b);
       if (!src) return { ok: false, detail: 'file param present but iframe missing src' };
       const ok = isPreviewIframeSrc(src);
       return { ok, detail: ok ? `variant=${previewIframeVariant(src)}` : `src=${src.slice(0, 120)}...` };
@@ -351,20 +363,16 @@ export const UI_ANCHORS: AnchorDef[] = [
     // rendered DOM over CDP. This anchor records which regime the live preview
     // is in so a swing back to signed-token (or to an unrecognized 'other'
     // shape) — which would silently route capture down the wrong path — is
-    // visible in the daily health probe. It does not attach CDP (that needs a
-    // live signed-in session); the capture itself is covered by the turn-RPC
-    // canary + the unit tests.
+    // visible in the daily health probe. This anchor records the regime only;
+    // the sibling `session.oopifPreviewRead` below actually attaches CDP and
+    // verifies the bootstrap-subdomain capture returns rendered HTML.
     id: 'network.previewBootstrap',
     category: 'pattern',
     description: 'preview iframe regime (bootstrap-subdomain => OOPIF CDP capture; signed-token => node fetch)',
     requires: 'session',
     check: async (b, url) => {
       if (!/[?&]file=/.test(url)) return { ok: true, detail: '(no file open — preview regime not checked)' };
-      const src = await b
-        .evalValue<string>(
-          `(() => { const el = document.querySelector('[data-testid="html-viewer-iframe"]'); return (el && el.src) || ''; })()`
-        )
-        .catch(() => '');
+      const src = await previewIframeSrc(b);
       if (!src) return { ok: false, detail: 'file param present but iframe missing src' };
       if (!isPreviewIframeSrc(src)) return { ok: false, detail: `preview left claudeusercontent.com: ${src.slice(0, 120)}` };
       const variant = previewIframeVariant(src);
@@ -377,6 +385,42 @@ export const UI_ANCHORS: AnchorDef[] = [
               ? 'variant=signed-token (legacy node-fetch path)'
               : `variant=other — unrecognized preview src shape (${src.slice(0, 120)}); capture path may be wrong`
       };
+    }
+  },
+  {
+    // End-to-end check of the OOPIF capture itself. iframeSrcPattern /
+    // previewBootstrap only inspect the src STRING — the CDP auto-attach read
+    // could silently return the ~1.1KB loader shell (or null) while both pass,
+    // handing snapshot/fetch/iterate empty HTML (inbox finding #3). This anchor
+    // attaches its own OopifHtmlReader (like checkTurnRpcContract attaches a
+    // RunStateObserver) and asserts the read returns rendered HTML, not the
+    // shell. Only the bootstrap-subdomain regime uses the OOPIF path; the
+    // signed-token / 'other' regimes use a node fetch, so they skip here.
+    id: 'session.oopifPreviewRead',
+    category: 'pattern',
+    description: 'OOPIF CDP read returns rendered preview HTML (not the bootstrap loader shell)',
+    requires: 'session',
+    check: async (_b, url) => {
+      if (!/[?&]file=/.test(url)) return { ok: true, status: 'skip', detail: 'no file open — preview not expected' };
+      const src = await previewIframeSrc(_b);
+      if (!src || !isPreviewIframeSrc(src)) return { ok: true, status: 'skip', detail: 'iframe not on a preview host' };
+      const variant = previewIframeVariant(src);
+      if (variant !== 'bootstrap-subdomain')
+        return { ok: true, status: 'skip', detail: `variant=${variant} — node-fetch path, OOPIF read not used` };
+      if (!isCdpEnabled()) return { ok: true, status: 'skip', detail: "CDP disabled (DESIGNER_CDP=''); OOPIF read not probed" };
+
+      const reader = await OopifHtmlReader.attach({ preferUrlPrefix: url || null }).catch(() => null);
+      if (!reader) return { ok: true, status: 'skip', detail: 'OOPIF reader attach failed (CDP unavailable)' };
+      try {
+        const html = await reader.readPreviewHtml().catch(() => null);
+        if (!html)
+          return { ok: false, detail: 'OOPIF read returned null — CDP capture path broken (snapshot/fetch/iterate would get empty HTML)' };
+        if (isBootstrapShellHtml(html))
+          return { ok: false, detail: `OOPIF read returned the bootstrap loader shell (${html.length}B), not rendered HTML` };
+        return { ok: true, detail: `read ${html.length}B of rendered HTML via OOPIF CDP capture` };
+      } finally {
+        reader.close();
+      }
     }
   },
   {

@@ -13,6 +13,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createBrowser, type Browser } from '../browser.ts';
 import { runHealth, type ProbeResult } from '../ui-anchors.ts';
 import { REPO_ROOT } from '../repo-root.ts';
+import { classifyInterstitial, type InterstitialKind } from '../interstitials.ts';
 
 const CDP_PORT = process.env.DESIGNER_CDP || '9222';
 const CHROME_PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
@@ -234,6 +235,27 @@ async function maybeSnapshot(browser: Browser): Promise<{ url: string; htmlBytes
   }
 }
 
+// Which interstitial overlay (if any) is on the page Chrome ended on. Recorded
+// in every artifact so a wall of anchor failures isn't misattributed to selector
+// drift when the real cause was a transient overlay (token banner / "Something
+// went wrong" / Cloudflare bot-check) — the "misread" failure mode the live
+// pre-flight (designer clear) addresses for verbs. Diagnostic only: never fails
+// the run. Reuses the same classifier the pre-flight uses (interstitials.ts).
+async function probeInterstitial(browser: Browser): Promise<InterstitialKind | null> {
+  const probe = await browser
+    .evalValue<{ bodyText: string; buttonTexts: string[] }>(
+      `(() => ({
+        bodyText: ((document.body && document.body.innerText) || '').slice(0, 20000),
+        buttonTexts: Array.from(document.querySelectorAll('button'))
+          .map((b) => (b.textContent || '').trim())
+          .filter(Boolean)
+          .slice(0, 300)
+      }))()`
+    )
+    .catch(() => ({ bodyText: '', buttonTexts: [] }));
+  return classifyInterstitial(probe || { bodyText: '', buttonTexts: [] });
+}
+
 async function main(): Promise<void> {
   const startedAt = new Date().toISOString();
 
@@ -324,6 +346,9 @@ async function main(): Promise<void> {
   const url = (await browser.url().catch(() => '')) || '';
 
   const diag = fail ? await maybeSnapshot(browser) : null;
+  // Captured on whichever page Chrome ended on (session if probeUrl set, else
+  // home) — same final-state semantics as maybeSnapshot.
+  const interstitial = await probeInterstitial(browser);
 
   const payload = {
     ok: !fail,
@@ -346,6 +371,7 @@ async function main(): Promise<void> {
       counts,
       results
     },
+    interstitial,
     diagnostics: diag
   };
 
