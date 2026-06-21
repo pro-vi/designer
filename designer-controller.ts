@@ -992,16 +992,19 @@ export class DesignerController {
     }
 
     // Open the Design Files dialog to get the richer file/folder listing.
-    // Idempotent — if already open, the click is a no-op (or toggles; we
-    // accept the occasional toggle as the tradeoff for not probing state).
+    // Click the label directly: React attaches handlers via root delegation, so
+    // the old walk-up-for-non-null-.onclick exhausted to null and never fired —
+    // a latent no-op that left this scrape seeing only bare-page filenames. A
+    // click on the label bubbles to React's delegated handler. Kept identical to
+    // the session.fileListScrape health anchor's opener so the probe exercises
+    // the SAME path production uses (PR #77 Codex P2). Idempotent — if already
+    // open it may toggle; we accept the occasional toggle vs probing panel state.
     await this.browser.evalValue<boolean>(
       `(() => {
         const spans = Array.from(document.querySelectorAll('span'));
         const label = spans.find(s => s.children.length === 0 && (s.textContent || '').trim() === 'Design Files');
         if (!label) return false;
-        let row = label;
-        while (row && row.onclick === null) row = row.parentElement;
-        if (row) row.click();
+        label.click();
         return true;
       })()`
     ).catch(() => null);
