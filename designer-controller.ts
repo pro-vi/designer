@@ -1150,9 +1150,13 @@ export class DesignerController {
             if (!inner) return [];
             return Array.from(inner.children).map((d) => {
               const txt = (d.innerText || '').trim();
-              const isAssistant = /^Claude(\\n|$)/.test(txt);
-              const isUser = /^You(\\n|$)/.test(txt);
-              return { role: isAssistant ? 'assistant' : isUser ? 'user' : 'unknown', text: txt };
+              // Role signal: Claude's replies carry a feedback widget
+              // ([data-msgfb], thumbs up/down) and user turns don't. The 2026-06
+              // chat DOM dropped the "Claude"/"You" text prefixes the old check
+              // keyed off (kept as a fallback for older builds). In this two-party
+              // chat a non-assistant turn is the human, so default to 'user'.
+              const isAssistant = !!d.querySelector('[data-msgfb]') || /^Claude(\\n|$)/.test(txt);
+              return { role: isAssistant ? 'assistant' : 'user', text: txt };
             });
           })()`
         )
