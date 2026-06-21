@@ -401,9 +401,17 @@ export const UI_ANCHORS: AnchorDef[] = [
     description: 'OOPIF CDP read returns rendered preview HTML (not the bootstrap loader shell)',
     requires: 'session',
     check: async (b, url) => {
-      if (!/[?&]file=/.test(url)) return { ok: true, status: 'skip', detail: 'no file open — preview not expected' };
-      const src = await getPreviewIframeSrc(b);
-      if (!src || !isPreviewIframeSrc(src)) return { ok: true, status: 'skip', detail: 'iframe not on a preview host' };
+      // Gate on a RENDERED preview iframe, not on ?file= in the URL: the daily-
+      // health canary (DESIGNER_PROBE_PROJECT_URL) is a BARE project URL, and
+      // claude.ai auto-opens a default file + renders its preview there — so a
+      // ?file= gate would skip the OOPIF check in exactly the CI run it exists to
+      // protect (PR #77 Codex P2). Wait briefly for the iframe to paint after nav.
+      let src = await getPreviewIframeSrc(b);
+      for (let i = 0; i < 6 && !isPreviewIframeSrc(src); i++) {
+        await sleep(500);
+        src = await getPreviewIframeSrc(b);
+      }
+      if (!isPreviewIframeSrc(src)) return { ok: true, status: 'skip', detail: 'no preview iframe rendered (no file open)' };
       const variant = previewIframeVariant(src);
       if (variant !== 'bootstrap-subdomain')
         return { ok: true, status: 'skip', detail: `variant=${variant} — node-fetch path, OOPIF read not used` };
