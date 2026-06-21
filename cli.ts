@@ -265,15 +265,10 @@ async function main(): Promise<void> {
         .sort();
       const latest = handoffs[handoffs.length - 1];
       if (!latest) throw new Error(`No handoff bundle found for key=${key}. Run 'designer handoff --key ${key}' first.`);
-      const slugDirs = fs
-        .readdirSync(latest)
-        .filter((e) => e !== 'bundle.tar.gz')
-        .map((e) => path.join(latest, e))
-        .filter((p) => fs.statSync(p).isDirectory());
-      const slugDir = slugDirs[0];
-      if (!slugDir) throw new Error('Bundle has no project subdirectory.');
-      const projectDir = path.join(slugDir, 'project');
-      if (!fs.existsSync(projectDir)) throw new Error(`Missing ${projectDir}`);
+      // The bundle is now flat: handoff-<ts>/project/ holds the unzipped files
+      // directly (no <slug>/ subdir — the 2026-06 export zip is flat).
+      const projectDir = path.join(latest, 'project');
+      if (!fs.existsSync(projectDir)) throw new Error(`Missing ${projectDir} — re-run 'designer handoff --key ${key}'.`);
 
       // Walk recursively — Claude Design organizes variants under folders
       // (e.g. directions/*.html) often enough that flat readdir misses them.
@@ -356,7 +351,7 @@ File / project introspection:
   fetch "<name>.html" [--key k] [--out p]      fetch served HTML to disk
 
 Exit / promotion:
-  handoff [--key k] [--file "<name>.html"]     download tar.gz bundle (README + chats + source)
+  handoff [--key k] [--file "<name>.html"]     fetch export zip → project/ + decision-record.md
   tasting [--key k]                            local full-viewport switcher for the latest bundle
                                                (fallback when Claude's URL framing hurts taste)
 
@@ -449,19 +444,24 @@ Flags:
 Output: prints 'Taste here: <url>' then JSON with { file, url, htmlBytes, screenshotPath }.
 Useful when you want to inspect a variant or save the current state to disk without iterating.`,
 
-  handoff: `designer handoff — trigger Export→Handoff and download the tar.gz bundle.
+  handoff: `designer handoff — fetch the project export zip and extract a local bundle.
 
 Flags:
   --key <k>               session to target
-  --file <name.html>      switch to this file first (marks it as the primary in the bundle)
+  --file <name.html>      switch to this file first
 
-Bundle contains:
-  README.md       handoff protocol for the implementing agent
-  chats/chat1.md  full transcript — every prompt + reply, verbatim (the decision record)
-  project/*       all design files (HTML, standalone HTML, JSX, CSS)
+How it works: GETs the project's export zip from the authenticated same-origin
+endpoint (/design/v1/design/projects/<id>/download) in-page — no browser download
+gesture needed — then unzips it.
 
-Lands under ./artifacts/{key}/handoff-{timestamp}/. Non-optional for code promotion — the
-implementing agent (Claude Code downstream) reads README + chats first, then builds in real code.`,
+Bundle (./artifacts/{key}/handoff-{timestamp}/):
+  bundle.zip          the raw export archive
+  project/*           all design files (HTML, standalone HTML, CSS, JS) + screenshots/
+  decision-record.md  full chat transcript, verbatim — regenerated from the live
+                      session, since the export zip no longer ships it
+
+Non-optional for code promotion — the implementing agent reads decision-record.md
+first (the why), then builds from project/ in real code.`,
 
   tasting: `designer tasting — build a local full-viewport switcher over the latest handoff bundle.
 

@@ -1,6 +1,6 @@
 ---
 name: designer-loop
-description: "Human-participated design iteration loop driven by claude.ai/design via the `designer` MCP. The human is the designer; AI is translation + plumbing. Human states intent, AI reads what exists and relays intent to Claude Design, human tastes the variants Claude produces, AI interprets reactions and iterates. Promotes accepted result with a decision record (the bundle's chat transcript)."
+description: "Human-participated design iteration loop driven by claude.ai/design via the `designer` MCP. The human is the designer; AI is translation + plumbing. Human states intent, AI reads what exists and relays intent to Claude Design, human tastes the variants Claude produces, AI interprets reactions and iterates. Promotes accepted result with a decision record (a regenerated decision-record.md)."
 ---
 
 # Designer Loop
@@ -123,11 +123,11 @@ Common loop for any variant shape:
 2. `designer_prompt({ prompt })` — terse, let-Claude-name. The MCP auto-appends a flat-file-layout instruction; if you want subfolders you must explicitly override in your prompt.
 3. **Hand the human the URL** — `designer_session({ key, action: 'status' }).currentUrl`, or the URL echoed in the prompt result. The URL is the live design in Claude's IDE: all tweak sliders work, variant switcher works, fully interactive. This is the default taste path.
 4. Repeat 2-3 as they react.
-5. When they say "that's it": `designer_handoff({ key })` — tar.gz bundle with all variants + README + chat transcript. This is non-optional; it's what the implementing agent needs to build the real thing.
+5. When they say "that's it": `designer_handoff({ key })` — fetches the project export zip into `./artifacts/{key}/handoff-{ts}/`: `project/` with all variants + a regenerated `decision-record.md`. This is non-optional; it's what the implementing agent needs to build the real thing.
 
 ### When `designer_list({ scope: 'files' })` says `authoritative: false`
 
-Claude Design sometimes organizes generated files under folders (`directions/`, `variants/`, `shared/`). The live file-list scrape only sees top-level files + folder names, never contents. When the result includes `folders: […]` and `authoritative: false`, the list is incomplete. Fall back to `designer_handoff` — the tar.gz bundle is always folder-aware.
+Claude Design sometimes organizes generated files under folders (`directions/`, `variants/`, `shared/`). The live file-list scrape only sees top-level files + folder names, never contents. When the result includes `folders: […]` and `authoritative: false`, the list is incomplete. Fall back to `designer_handoff` — the export-zip bundle is always complete (every project file).
 
 ### When the URL isn't enough — full-viewport tasting
 
@@ -174,11 +174,11 @@ Never override with "but best practice says..." — capture the tension in the d
 
 ## Phase 6: Promote
 
-1. `designer_handoff({ key, openFile: <chosen variant> })` — downloads the tar.gz bundle under `./artifacts/{key}/handoff-{ts}/`. The bundle is the decision record:
-   - `README.md` — handoff protocol for the implementing agent
-   - `chats/chat1.md` — full transcript (every prompt + reply, verbatim)
-   - `project/*.html`, `*.jsx`, `*.css` — all design files including the chosen variant
-2. If this is a frontend for an existing codebase, the implementing agent (this one, or Claude Code downstream) reads the bundle's README + chat transcript first, then translates the chosen variant into real code in the target repo.
+1. `designer_handoff({ key, openFile: <chosen variant> })` — fetches the project export zip into `./artifacts/{key}/handoff-{ts}/`:
+   - `decision-record.md` — full transcript (every prompt + reply, verbatim), regenerated from the live chat
+   - `project/*` — all design files (HTML/CSS/JS) including the chosen variant, plus `screenshots/`
+   - `bundle.zip` — the raw export archive
+2. If this is a frontend for an existing codebase, the implementing agent (this one, or Claude Code downstream) reads `decision-record.md` first, then translates the chosen variant from `project/` into real code in the target repo.
 3. Append to the codebase's design decision log with a short entry citing the bundle path + the human's final reaction verbatim.
 
 ## Guardrails

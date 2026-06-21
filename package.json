@@ -46,6 +46,7 @@
     "@anthropic-ai/sdk": "^0.104.1",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "cross-spawn": "^7.0.6",
+    "fflate": "^0.8.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {

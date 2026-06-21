@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { xspawn } from './cross-platform.ts';
 import { createBrowser, type Browser } from './browser.ts';
 import { sessionDir, saveIteration, type IterationRecord } from './artifact-store.ts';
 import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
@@ -23,6 +22,7 @@ import {
   type InterstitialReport
 } from './interstitials.ts';
 import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
+import { unzipSync } from 'fflate';
 
 export interface Selectors {
   login: { signedInIndicator: string | null };
@@ -115,13 +115,26 @@ export interface AskResult {
 
 export interface HandoffResult {
   ok: true;
-  handoffUrl: string;
+  projectId: string;
+  projectUrl: string;
   bundleDir: string;
+  /** Alias of bundleDir (the bundle root). Kept so downstream consumers that
+   *  expected a slug subdir keep resolving; the new export zip is flat. */
   slugDir: string;
-  readmePath: string;
-  readmeBytes: number;
-  tarballPath: string;
-  tarballBytes: number;
+  /** Where the unzipped design files live (bundleDir/project). */
+  projectDir: string;
+  /** Self-generated from the live chat — the export zip no longer ships the
+   *  README/transcript the old tar.gz did. */
+  decisionRecordPath: string;
+  decisionRecordBytes: number;
+  /** Chat turns captured into the decision record. */
+  decisionRecordTurns: number;
+  /** True when no chat turns were captured — the record is header-only (the
+   *  caller advertises a verbatim transcript, so surface the gap). */
+  decisionRecordEmpty: boolean;
+  zipPath: string;
+  zipBytes: number;
+  /** Design files under project/ (NOT the zip or the record). */
   files: string[];
   repaired: RepairReport;
 }
@@ -1143,9 +1156,13 @@ export class DesignerController {
             if (!inner) return [];
             return Array.from(inner.children).map((d) => {
               const txt = (d.innerText || '').trim();
-              const isAssistant = /^Claude(\\n|$)/.test(txt);
-              const isUser = /^You(\\n|$)/.test(txt);
-              return { role: isAssistant ? 'assistant' : isUser ? 'user' : 'unknown', text: txt };
+              // Role signal: Claude's replies carry a feedback widget
+              // ([data-msgfb], thumbs up/down) and user turns don't. The 2026-06
+              // chat DOM dropped the "Claude"/"You" text prefixes the old check
+              // keyed off (kept as a fallback for older builds). In this two-party
+              // chat a non-assistant turn is the human, so default to 'user'.
+              const isAssistant = !!d.querySelector('[data-msgfb]') || /^Claude(\\n|$)/.test(txt);
+              return { role: isAssistant ? 'assistant' : 'user', text: txt };
             });
           })()`
         )
@@ -1303,78 +1320,200 @@ export class DesignerController {
     return OopifHtmlReader.attach({ preferUrlPrefix: (await this.currentUrl()) || null }).catch(() => null);
   }
 
+  // Fetch the project's export zip via the authenticated, same-origin endpoint
+  // the Share→Export "Download" button hits — `/design/v1/design/projects/<id>
+  // /download` (returns application/zip). The 2026-06-21 redesign removed the old
+  // public `api.anthropic.com/v1/design/h/<id>` tar.gz URL and replaced it with a
+  // browser download that needs a trusted gesture CDP can't fire — but the bytes
+  // come from a plain GET. We do it IN-PAGE (auth + Cloudflare just work there; a
+  // node-side fetch with copied cookies 403s) and transfer the bytes out as
+  // base64. Throws on non-200 / non-zip so the caller surfaces a clear failure.
+  private async _downloadProjectZip(projectId: string): Promise<Buffer> {
+    // Origin guard: the in-page fetch is same-origin, so if the bound tab has
+    // drifted off claude.ai (tab drift is real — it bit this very session) the
+    // '/design/v1/...' path would resolve against the wrong app and 404. Refuse
+    // rather than return junk.
+    const url = await this.currentUrl();
+    if (!/^https:\/\/claude\.ai\/design\//.test(url)) {
+      throw new Error(`Active tab is not on claude.ai/design (${url || 'unknown'}) — refusing to fetch the export from the wrong origin.`);
+    }
+    // In-page authed GET with an abort deadline; returns {status, bytes, b64} or
+    // {status, err}. Bytes are carried out as chunked base64 (byte-exact); the
+    // server byte count comes back too so we can detect a truncated transfer.
+    const expr = (timeoutMs: number) => `(async () => {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), ${timeoutMs});
+      try {
+        const r = await fetch('/design/v1/design/projects/' + ${JSON.stringify(projectId)} + '/download', { headers: { Accept: '*/*' }, signal: ctrl.signal });
+        if (!r.ok) return { status: r.status };
+        const bytes = new Uint8Array(await r.arrayBuffer());
+        let bin = '';
+        const CH = 0x8000;
+        for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+        return { status: 200, bytes: bytes.length, b64: btoa(bin) };
+      } catch (e) { return { status: 0, err: String((e && e.message) || e) }; }
+      finally { clearTimeout(to); }
+    })()`;
+
+    // Bounded retry: fail fast on auth/not-found, retry transient (abort/0/429/5xx).
+    let lastErr = 'unknown';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await this.browser
+        .evalValue<{ status: number; bytes?: number; b64?: string; err?: string }>(expr(25_000))
+        .catch((e): { status: number; bytes?: number; b64?: string; err?: string } => ({ status: 0, err: String((e as Error)?.message || e) }));
+      if (res.status === 200 && typeof res.b64 === 'string') {
+        const buf = Buffer.from(res.b64, 'base64');
+        if (typeof res.bytes === 'number' && buf.length !== res.bytes) {
+          lastErr = `truncated transfer (${buf.length} of ${res.bytes} bytes)`; // retry
+        } else if (buf.length < 100 || buf.subarray(0, 2).toString('latin1') !== 'PK') {
+          throw new Error(`Project download is not a zip (${buf.length} bytes).`);
+        } else {
+          return buf;
+        }
+      } else {
+        lastErr = res.err ? res.err : `HTTP ${res.status}`;
+        if (res.status === 401 || res.status === 403 || res.status === 404) {
+          throw new Error(`Project download failed (HTTP ${res.status}). Are you signed in to claude.ai/design?`);
+        }
+      }
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+    throw new Error(`Project download failed after 3 attempts: ${lastErr}.`);
+  }
+
+  // Capture the FULL chat transcript despite virtualization (claude.ai mounts only
+  // the visible rows). Scroll the chat history top→bottom, accumulating turns keyed
+  // by data-index so rows that unmount as we scroll are still kept. Best-effort: if
+  // the scroll container isn't found, degrades to the visible window.
+  private async _collectChatTurns(): Promise<ChatTurn[]> {
+    const collected = new Map<number, ChatTurn>();
+    const scrape = async (): Promise<void> => {
+      const rows = await this.browser
+        .evalValue<Array<{ idx: number; role: 'assistant' | 'user'; text: string }>>(
+          `(() => {
+            const c = document.querySelector('[data-testid="chat-messages"]');
+            const inner = c && c.children[0];
+            if (!inner) return [];
+            return Array.from(inner.children).map((d) => {
+              const idx = parseInt(d.getAttribute('data-index') || '-1', 10);
+              const txt = (d.innerText || '').trim();
+              const isAssistant = !!d.querySelector('[data-msgfb]') || /^Claude(\\n|$)/.test(txt);
+              return { idx, role: isAssistant ? 'assistant' : 'user', text: txt };
+            });
+          })()`
+        )
+        .catch(() => [] as Array<{ idx: number; role: 'assistant' | 'user'; text: string }>);
+      for (const r of rows) if (r.idx >= 0 && r.text) collected.set(r.idx, { role: r.role, text: r.text });
+    };
+    const scroll = (dir: 'top' | 'down'): Promise<number> =>
+      this.browser
+        .evalValue<number>(
+          `(() => {
+            let s = document.querySelector('[data-testid="chat-messages"]');
+            for (let i = 0; i < 8 && s; i++) { if (s.scrollHeight > s.clientHeight + 4) break; s = s.parentElement; }
+            if (!s) return -1;
+            if (${JSON.stringify(dir)} === 'top') s.scrollTop = 0; else s.scrollTop = Math.min(s.scrollTop + s.clientHeight, s.scrollHeight);
+            return s.scrollTop;
+          })()`
+        )
+        .catch(() => -1);
+
+    await scroll('top');
+    await new Promise((r) => setTimeout(r, 400));
+    let lastTop = -2;
+    let stable = 0;
+    for (let i = 0; i < 40; i++) {
+      await scrape();
+      const top = await scroll('down');
+      if (top < 0) break; // no scroller — single visible-window pass
+      await new Promise((r) => setTimeout(r, 250));
+      if (top === lastTop) {
+        if (++stable >= 2) break;
+      } else {
+        stable = 0;
+        lastTop = top;
+      }
+    }
+    await scrape();
+    return [...collected.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t);
+  }
+
   async handoff({ openFile }: { openFile?: string } = {}): Promise<HandoffResult> {
     await this._ensureInSession();
     if (openFile) await this.openFile(openFile);
 
-    // Claude.ai/design moved Export actions under the Share dropdown
-    // (~2026-04-19). Try Share first; fall back to Export for older builds.
-    const opened = await this._clickButtonByText(/^Share$/).catch(() => null);
-    if (!opened) await this._clickButtonByText(/^Export$/);
-    await new Promise((r) => setTimeout(r, 400));
-    // ~2026-06: Share opens a tabbed dialog; handoff lives under the
-    // "Send to…" tab as a "Claude Code" destination row. Older builds had a
-    // direct "Handoff to Claude Code" menu item — keep it as the fallback.
-    const viaSendTo = await this._clickClaudeCodeSendTo().catch(() => false);
-    if (!viaSendTo) await this._clickButtonByText(/handoff to claude code/i);
+    const baseUrl = getSession(this.key)?.designUrl || (await this.currentUrl());
+    const m = baseUrl.match(SESSION_URL_RE);
+    if (!m || !m[1]) throw new Error(`No /design/p/<uuid> project bound to key=${this.key} to hand off.`);
+    const projectId = m[1];
+    const projectUrl = baseUrl.split('?')[0] ?? baseUrl;
 
-    let handoffUrl = '';
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 300));
-      const text = await this._dialogText();
-      const match = String(text || '').match(/https:\/\/api\.anthropic\.com\/v1\/design\/h\/[A-Za-z0-9_-]+(?:\?[^\s]*)?/);
-      if (match && match[0]) {
-        handoffUrl = match[0];
-        break;
-      }
-    }
-    if (!handoffUrl) throw new Error('Handoff URL did not appear in the dialog.');
+    // Cross-project guard: the in-page chat scrape AND the export fetch run on the
+    // ACTIVE tab. _ensureInSession returns early on any /design/p/ tab and tab
+    // drift is real, so the active tab can be a DIFFERENT project than the bound
+    // one — which would pair project B's chat with project A's files. Pin the tab
+    // to the bound project first so both come from one project.
+    const curId = (await this.currentUrl()).match(SESSION_URL_RE)?.[1];
+    if (curId !== projectId) await this.resumeSession();
 
-    await this.browser
-      .evalValue<boolean>(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
-      .catch(() => null);
+    // The export zip dropped the README + chat transcript the old tar.gz carried,
+    // so regenerate the decision record from the live chat (virtualization-aware).
+    const turns = await this._collectChatTurns().catch((): ChatTurn[] => []);
+    const decisionRecord = renderDecisionRecord(turns, projectId, projectUrl);
 
+    const zip = await this._downloadProjectZip(projectId);
+
+    // Build the bundle atomically: assemble in a temp dir, rename into place only
+    // on full success, so a crash/partial extract never leaves a half-built bundle
+    // that `tasting` would pick up as the latest complete handoff.
     const dir = sessionDir(this.key);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const bundleDir = path.join(dir, `handoff-${stamp}`);
-    fs.mkdirSync(bundleDir, { recursive: true });
-    const tgzPath = path.join(bundleDir, 'bundle.tar.gz');
+    const tmpDir = path.join(dir, `.handoff-${stamp}.tmp`);
+    const tmpProject = path.join(tmpDir, 'project');
+    fs.mkdirSync(tmpProject, { recursive: true });
+    try {
+      // Extract in-process (no external `unzip` — absent on Windows / minimal CI).
+      const entries = unzipSync(new Uint8Array(zip));
+      let extracted = 0;
+      for (const [name, data] of Object.entries(entries)) {
+        if (!name || name.endsWith('/')) continue;
+        const dest = path.join(tmpProject, name);
+        if (dest !== tmpProject && !dest.startsWith(tmpProject + path.sep)) continue; // zip-slip guard
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, Buffer.from(data));
+        extracted++;
+      }
+      if (extracted === 0) throw new Error('export zip contained no files');
+      fs.writeFileSync(path.join(tmpDir, 'bundle.zip'), zip);
+      fs.writeFileSync(path.join(tmpDir, 'decision-record.md'), decisionRecord);
+      const repaired = repairEmDashLinks(tmpProject);
+      fs.renameSync(tmpDir, bundleDir); // commit
 
-    const res = await fetch(handoffUrl);
-    if (!res.ok) throw new Error(`Handoff fetch failed: HTTP ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    fs.writeFileSync(tgzPath, buf);
-
-    await new Promise<void>((resolve, reject) => {
-      const child = xspawn('tar', ['-xzf', tgzPath, '-C', bundleDir], { stdio: 'pipe' });
-      let err = '';
-      child.stderr!.on('data', (d: Buffer) => (err += d.toString()));
-      child.on('close', (code: number | null) =>
-        code === 0 ? resolve() : reject(new Error(`tar exited ${code}: ${err}`))
-      );
-    });
-
-    const entries = fs.readdirSync(bundleDir).filter((e) => e !== 'bundle.tar.gz');
-    const projectSlug = entries.find((e) => fs.statSync(path.join(bundleDir, e)).isDirectory());
-    const slugDir = projectSlug ? path.join(bundleDir, projectSlug) : bundleDir;
-    const repaired = repairEmDashLinks(path.join(slugDir, 'project'));
-    const readmePath = path.join(slugDir, 'README.md');
-    const readme = fs.existsSync(readmePath) ? fs.readFileSync(readmePath, 'utf8') : null;
-    const files = listAllFiles(slugDir).map((p) => path.relative(bundleDir, p));
-
-    appendHistory(this.key, { kind: 'handoff', url: handoffUrl, bundleDir, fileCount: files.length, repaired });
-    return {
-      ok: true,
-      handoffUrl,
-      bundleDir,
-      slugDir,
-      readmePath,
-      readmeBytes: readme ? readme.length : 0,
-      tarballPath: tgzPath,
-      tarballBytes: buf.length,
-      files,
-      repaired
-    };
+      const projectDir = path.join(bundleDir, 'project');
+      // Design inventory = project/ only (the zip + record aren't design files).
+      const files = listAllFiles(projectDir).map((p) => path.relative(bundleDir, p));
+      appendHistory(this.key, { kind: 'handoff', projectId, bundleDir, fileCount: files.length, turns: turns.length, repaired });
+      return {
+        ok: true,
+        projectId,
+        projectUrl,
+        bundleDir,
+        slugDir: bundleDir,
+        projectDir,
+        decisionRecordPath: path.join(bundleDir, 'decision-record.md'),
+        decisionRecordBytes: Buffer.byteLength(decisionRecord),
+        decisionRecordTurns: turns.length,
+        decisionRecordEmpty: turns.length === 0,
+        zipPath: path.join(bundleDir, 'bundle.zip'),
+        zipBytes: zip.length,
+        files,
+        repaired
+      };
+    } catch (e) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      throw e;
+    }
   }
 
   async _clickButtonByText(pattern: RegExp | string): Promise<boolean> {
@@ -1390,51 +1529,6 @@ export class DesignerController {
     );
   }
 
-  // Navigate the tabbed Share dialog (2026-06 layout): "Send to…" tab →
-  // "Claude Code" destination row → its Send button. The row's Send button
-  // has no testid and its label text ("Claude Code", "Hand off the project
-  // to your terminal") lives in sibling elements, so match by walking up to
-  // the row container. Returns false if the tab or row isn't there, so the
-  // caller can fall back to the legacy direct menu item.
-  async _clickClaudeCodeSendTo(): Promise<boolean> {
-    const tabClicked = await this.browser.evalValue<boolean>(
-      `(() => {
-        const tab = Array.from(document.querySelectorAll('button[role="tab"]')).find(t => /send to/i.test(t.textContent || ''));
-        if (!tab) return false;
-        tab.click();
-        return true;
-      })()`
-    );
-    if (!tabClicked) return false;
-    await new Promise((r) => setTimeout(r, 400));
-    return this.browser.evalValue<boolean>(
-      `(() => {
-        const sends = Array.from(document.querySelectorAll('button')).filter(b => (b.textContent || '').trim() === 'Send');
-        const target = sends.find(b => {
-          let row = b;
-          for (let i = 0; i < 3 && row.parentElement; i++) row = row.parentElement;
-          return /claude code/i.test(row.textContent || '');
-        });
-        if (!target) return false;
-        target.click();
-        return true;
-      })()`
-    );
-  }
-
-  async _dialogText(): Promise<string> {
-    return (
-      (await this.browser
-        .evalValue<string>(
-          `(() => {
-            const dlg = document.querySelector('[role=dialog]');
-            return (dlg && dlg.innerText) || '';
-          })()`
-        )
-        .catch(() => '')) || ''
-    );
-  }
-
   async close(): Promise<void> {
     await this.browser.close().catch(() => null);
   }
@@ -1446,6 +1540,40 @@ function hashHex(s: string): string {
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// The export zip no longer ships the README + chat transcript the old tar.gz
+// did, so reconstruct a decision record from the live chat turns (every prompt +
+// reply, verbatim) — the "why" a coding agent needs alongside the files.
+function renderDecisionRecord(turns: ChatTurn[], projectId: string, projectUrl: string): string {
+  // getChatTurns role-detects off the turn text starting with "Claude"/"You";
+  // the current chat DOM dropped those text labels (turns carry only data-index),
+  // so roles can come back all-'unknown'. Don't mislabel them "Note" — fall back
+  // to sequential "Turn N" and flag the gap. (Role attribution is a separate
+  // getChatTurns drift, tracked independently.)
+  const attributed = turns.some((t) => t.role !== 'unknown');
+  const out = [
+    '# Design handoff — decision record',
+    '',
+    `Project: ${projectUrl}`,
+    `Project ID: ${projectId}`,
+    `Captured: ${new Date().toISOString()}`,
+    ''
+  ];
+  if (!turns.length) {
+    out.push('## Conversation', '', '_(no chat turns captured)_');
+    return out.join('\n');
+  }
+  out.push('## Conversation (verbatim — the decisions behind the design)');
+  if (!attributed) {
+    out.push('', '_Speaker labels unavailable (claude.ai dropped role markers from the chat DOM); turns are shown in order._');
+  }
+  out.push('');
+  turns.forEach((t, i) => {
+    const role = t.role === 'assistant' ? 'Claude' : t.role === 'user' ? 'You' : `Turn ${i + 1}`;
+    out.push(`### ${role}`, '', t.text.trim(), '');
+  });
+  return out.join('\n');
 }
 
 function extractFileParam(url: string): string | null {
