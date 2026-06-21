@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { isPreviewIframeSrc, previewIframeVariant } from '../preview-host.ts';
+import { isPreviewIframeSrc, previewIframeVariant, isBootstrapShellHtml } from '../preview-host.ts';
 import { SESSION_URL_RE } from '../designer-controller.ts';
 
 // Regression coverage for the 2026-06 claude.ai/design entry-layer drift
@@ -38,6 +38,28 @@ test('previewIframeVariant labels which addressing scheme matched', () => {
   assert.equal(previewIframeVariant(SIGNED), 'signed-token');
   assert.equal(previewIframeVariant(BOOTSTRAP), 'bootstrap-subdomain');
   assert.equal(previewIframeVariant('https://sub.claudeusercontent.com/foo.html'), 'other');
+});
+
+// The OOPIF read probe (session.oopifPreviewRead) fails when the capture returns
+// the loader shell instead of rendered HTML; isBootstrapShellHtml is that check.
+test('isBootstrapShellHtml detects the loader shell by its postMessage init signature', () => {
+  const shell =
+    '<!doctype html><meta charset=utf-8><title>.</title><script>(function(){var ALLOWED=["https://claude.ai"];window.addEventListener("message",function(e){if(e.data&&e.data.type==="omelette-preview-init"){}});})()</script>';
+  assert.equal(isBootstrapShellHtml(shell), true);
+});
+
+test('isBootstrapShellHtml treats rendered HTML and empty/no-sample as not-a-shell', () => {
+  assert.equal(isBootstrapShellHtml('<!doctype html><html><body><h1>Casefile Overview</h1></body></html>'), false);
+  assert.equal(isBootstrapShellHtml(''), false); // "no sample" must not read as a shell
+  // Defensive on non-string input (reader returns null → caller handles separately).
+  assert.equal(isBootstrapShellHtml(/** @type {any} */ (null)), false);
+});
+
+test('isBootstrapShellHtml is size-bounded — a large design documenting the protocol is not a shell', () => {
+  // A rendered design that legitimately mentions the marker (e.g. a doc explaining
+  // omelette-preview-init) but is far larger than the ~1.1KB loader → not a shell.
+  const bigDesign = '<!doctype html><html><body>' + 'x'.repeat(5000) + 'omelette-preview-init</body></html>';
+  assert.equal(isBootstrapShellHtml(bigDesign), false);
 });
 
 test('SESSION_URL_RE matches a /design/p/<uuid> tab and captures the project id', () => {

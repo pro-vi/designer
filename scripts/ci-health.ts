@@ -13,6 +13,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createBrowser, type Browser } from '../browser.ts';
 import { runHealth, type ProbeResult } from '../ui-anchors.ts';
 import { REPO_ROOT } from '../repo-root.ts';
+import { classifyInterstitial, INTERSTITIAL_PROBE_EXPR, type InterstitialKind, type InterstitialProbe } from '../interstitials.ts';
 
 const CDP_PORT = process.env.DESIGNER_CDP || '9222';
 const CHROME_PROFILE = path.join(os.homedir(), '.chrome-designer-profile');
@@ -234,6 +235,26 @@ async function maybeSnapshot(browser: Browser): Promise<{ url: string; htmlBytes
   }
 }
 
+// Which interstitial overlay (if any) is on the page Chrome ended on. Recorded
+// in every artifact so a wall of anchor failures isn't misattributed to selector
+// drift when the real cause was a transient overlay (token banner / "Something
+// went wrong" / Cloudflare bot-check) — the "misread" failure mode the live
+// pre-flight (designer clear) addresses for verbs. Diagnostic only: never fails
+// the run. Reuses the same classifier the pre-flight uses (interstitials.ts).
+async function probeInterstitial(browser: Browser): Promise<InterstitialKind | null> {
+  // Shared INTERSTITIAL_PROBE_EXPR keeps this diagnostic and the live pre-flight
+  // (designer-controller) classifying identically — including the appShellPresent
+  // guard, without which transcript text would false-classify here too.
+  //
+  // Note: unlike the controller's _classifyNow, this does NOT thread a
+  // selectors.override.json `continueHere` override, so an operator with a
+  // custom token-banner button label would see it recorded as null here. That's
+  // acceptable — this field is diagnostic-only (never fails the run), and CI runs
+  // the published selectors, not a local override (PR #77 Claude review).
+  const probe = await browser.evalValue<InterstitialProbe>(INTERSTITIAL_PROBE_EXPR).catch(() => null);
+  return probe ? classifyInterstitial(probe) : null;
+}
+
 async function main(): Promise<void> {
   const startedAt = new Date().toISOString();
 
@@ -324,6 +345,9 @@ async function main(): Promise<void> {
   const url = (await browser.url().catch(() => '')) || '';
 
   const diag = fail ? await maybeSnapshot(browser) : null;
+  // Captured on whichever page Chrome ended on (session if probeUrl set, else
+  // home) — same final-state semantics as maybeSnapshot.
+  const interstitial = await probeInterstitial(browser);
 
   const payload = {
     ok: !fail,
@@ -346,6 +370,7 @@ async function main(): Promise<void> {
       counts,
       results
     },
+    interstitial,
     diagnostics: diag
   };
 

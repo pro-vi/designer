@@ -1,7 +1,9 @@
 import type { Browser } from './browser.ts';
 import { RunStateObserver } from './run-state.ts';
-import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
+import { isPreviewIframeSrc, previewIframeVariant, isBootstrapShellHtml } from './preview-host.ts';
 import { isCdpEnabled } from './cdp-env.ts';
+import { OopifHtmlReader } from './oopif-reader.ts';
+import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
 
 // Every UI anchor this MCP depends on to work. Grouped by the surface state
 // they live on. A regression in Claude Design's UI will trip one or more of
@@ -46,6 +48,19 @@ async function hasButtonMatching(browser: Browser, pattern: RegExp): Promise<boo
       `(() => { const re = new RegExp(${JSON.stringify(pattern.source)}, ${JSON.stringify(pattern.flags)}); return Array.from(document.querySelectorAll('button')).some(b => re.test((b.textContent || '').trim())); })()`
     )
     .catch(() => false));
+}
+
+// The design-preview iframe's src. Shared by the preview anchors below
+// (iframeSrcPattern / previewBootstrap / oopifPreviewRead) so they read the
+// element the same way. '' when absent (caller decides skip vs fail).
+async function getPreviewIframeSrc(browser: Browser): Promise<string> {
+  return (
+    (await browser
+      .evalValue<string>(
+        `(() => { const el = document.querySelector('[data-testid="html-viewer-iframe"]'); return (el && el.src) || ''; })()`
+      )
+      .catch(() => '')) || ''
+  );
 }
 
 function sleep(ms: number): Promise<void> {
@@ -211,9 +226,11 @@ export const UI_ANCHORS: AnchorDef[] = [
   {
     id: 'home.highFiButton',
     category: 'home',
-    description: 'Prototype creation-type card',
+    // Renamed 'Prototype' → 'Product prototype' in the 2026-06-19 home build
+    // (auto-heal PR #75/#76). Off the create path — a drift sentinel only.
+    description: 'Product prototype creation-type card',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, /^Prototype/) })
+    check: async (b) => ({ ok: await hasButtonMatching(b, /^Product prototype/) })
   },
   {
     id: 'home.createButton',
@@ -334,9 +351,7 @@ export const UI_ANCHORS: AnchorDef[] = [
     requires: 'session',
     check: async (b, url) => {
       if (!/[?&]file=/.test(url)) return { ok: true, detail: '(no file open — iframe not expected)' };
-      const src = await b.evalValue<string>(
-        `(() => { const el = document.querySelector('[data-testid="html-viewer-iframe"]'); return (el && el.src) || ''; })()`
-      ).catch(() => '');
+      const src = await getPreviewIframeSrc(b);
       if (!src) return { ok: false, detail: 'file param present but iframe missing src' };
       const ok = isPreviewIframeSrc(src);
       return { ok, detail: ok ? `variant=${previewIframeVariant(src)}` : `src=${src.slice(0, 120)}...` };
@@ -349,20 +364,16 @@ export const UI_ANCHORS: AnchorDef[] = [
     // rendered DOM over CDP. This anchor records which regime the live preview
     // is in so a swing back to signed-token (or to an unrecognized 'other'
     // shape) — which would silently route capture down the wrong path — is
-    // visible in the daily health probe. It does not attach CDP (that needs a
-    // live signed-in session); the capture itself is covered by the turn-RPC
-    // canary + the unit tests.
+    // visible in the daily health probe. This anchor records the regime only;
+    // the sibling `session.oopifPreviewRead` below actually attaches CDP and
+    // verifies the bootstrap-subdomain capture returns rendered HTML.
     id: 'network.previewBootstrap',
     category: 'pattern',
     description: 'preview iframe regime (bootstrap-subdomain => OOPIF CDP capture; signed-token => node fetch)',
     requires: 'session',
     check: async (b, url) => {
       if (!/[?&]file=/.test(url)) return { ok: true, detail: '(no file open — preview regime not checked)' };
-      const src = await b
-        .evalValue<string>(
-          `(() => { const el = document.querySelector('[data-testid="html-viewer-iframe"]'); return (el && el.src) || ''; })()`
-        )
-        .catch(() => '');
+      const src = await getPreviewIframeSrc(b);
       if (!src) return { ok: false, detail: 'file param present but iframe missing src' };
       if (!isPreviewIframeSrc(src)) return { ok: false, detail: `preview left claudeusercontent.com: ${src.slice(0, 120)}` };
       const variant = previewIframeVariant(src);
@@ -375,6 +386,57 @@ export const UI_ANCHORS: AnchorDef[] = [
               ? 'variant=signed-token (legacy node-fetch path)'
               : `variant=other — unrecognized preview src shape (${src.slice(0, 120)}); capture path may be wrong`
       };
+    }
+  },
+  {
+    // End-to-end check of the OOPIF capture itself. iframeSrcPattern /
+    // previewBootstrap only inspect the src STRING — the CDP auto-attach read
+    // could silently return the ~1.1KB loader shell (or null) while both pass,
+    // handing snapshot/fetch/iterate empty HTML (inbox finding #3). This anchor
+    // attaches its own OopifHtmlReader (like checkTurnRpcContract attaches a
+    // RunStateObserver) and asserts the read returns rendered HTML, not the
+    // shell. Only the bootstrap-subdomain regime uses the OOPIF path; the
+    // signed-token / 'other' regimes use a node fetch, so they skip here.
+    id: 'session.oopifPreviewRead',
+    category: 'pattern',
+    description: 'OOPIF CDP read returns rendered preview HTML (not the bootstrap loader shell)',
+    requires: 'session',
+    check: async (b, url) => {
+      // Gate on a RENDERED preview iframe, not on ?file= in the URL: the daily-
+      // health canary (DESIGNER_PROBE_PROJECT_URL) is a BARE project URL, and
+      // claude.ai auto-opens a default file + renders its preview there — so a
+      // ?file= gate would skip the OOPIF check in exactly the CI run it exists to
+      // protect (PR #77 Codex P2). Wait briefly for the iframe to paint after nav.
+      let src = await getPreviewIframeSrc(b);
+      for (let i = 0; i < 6 && !isPreviewIframeSrc(src); i++) {
+        await sleep(500);
+        src = await getPreviewIframeSrc(b);
+      }
+      if (!isPreviewIframeSrc(src)) return { ok: true, status: 'skip', detail: 'no preview iframe rendered (no file open)' };
+      const variant = previewIframeVariant(src);
+      if (variant !== 'bootstrap-subdomain')
+        return { ok: true, status: 'skip', detail: `variant=${variant} — node-fetch path, OOPIF read not used` };
+      if (!isCdpEnabled()) return { ok: true, status: 'skip', detail: "CDP disabled (DESIGNER_CDP=''); OOPIF read not probed" };
+
+      // By here CDP is enabled AND the preview is on the bootstrap-subdomain
+      // (OOPIF) path — so an attach failure is NOT inconclusive. Production
+      // fetchServedHtml uses the same reader and falls back to EMPTY html on
+      // attach failure, so snapshot/fetch/iterate would silently get no content.
+      // Fail the probe (don't skip) — this is the exact regression it exists to
+      // catch (PR #77 Codex P2).
+      const reader = await OopifHtmlReader.attach({ preferUrlPrefix: url || null }).catch(() => null);
+      if (!reader)
+        return { ok: false, detail: 'OOPIF reader attach failed while CDP is enabled on the bootstrap-subdomain path — snapshot/fetch/iterate would get empty HTML' };
+      try {
+        const html = await reader.readPreviewHtml().catch(() => null);
+        if (!html)
+          return { ok: false, detail: 'OOPIF read returned null — CDP capture path broken (snapshot/fetch/iterate would get empty HTML)' };
+        if (isBootstrapShellHtml(html))
+          return { ok: false, detail: `OOPIF read returned the bootstrap loader shell (${html.length}B), not rendered HTML` };
+        return { ok: true, detail: `read ${html.length}B of rendered HTML via OOPIF CDP capture` };
+      } finally {
+        reader.close();
+      }
     }
   },
   {
@@ -516,17 +578,32 @@ export const UI_ANCHORS: AnchorDef[] = [
           )
           .catch(() => ({ files: [] as string[] }));
 
-      // The file-list panel renders a few seconds after navigation; scraping
-      // immediately races it — the recurring false "0 filenames" the daily probe
-      // filed (#64/#65/#68), even though `designer files` and a live scrape find
-      // the files once the panel is up. Retry with a bounded settle before
-      // concluding a regression.
+      // Production listFilesDetailed OPENS the "Design Files" panel before
+      // scraping; this anchor used to scrape the bare page, so on a project whose
+      // panel wasn't already rendered (e.g. a single-file standalone — PR #75/#76
+      // hit "Signup Wireframes (standalone)") it found 0 and false-failed while
+      // `designer files` worked. Open the panel first so the anchor exercises the
+      // same path. Idempotent + best-effort (matches listFilesDetailed).
+      // Shared, idempotent opener (file-panel.ts) — identical to the production
+      // listFilesDetailed opener so this probe exercises the real path.
+      const openFilesPanel = (): Promise<boolean> => b.evalValue<boolean>(OPEN_FILES_PANEL_EXPR).catch(() => false);
+
+      // Open the panel ONCE up front. Clicking it on every retry would toggle an
+      // already-open panel closed mid-settle (oscillation — review below-gate);
+      // the panel header renders immediately, its file rows a beat later, so one
+      // click + the retry-scrape settle covers the late render. The file-list
+      // panel renders a few seconds after navigation; scraping immediately races
+      // it — the recurring false "0 filenames" the daily probe filed
+      // (#64/#65/#68), even though `designer files` and a live scrape find the
+      // files once the panel is up. Retry with a bounded settle before concluding
+      // a regression.
+      await openFilesPanel();
       let files: string[] = [];
       for (let attempt = 0; attempt < 6; attempt++) {
+        await sleep(attempt === 0 ? 300 : 700);
         const result = await scrape();
         files = Array.isArray(result.files) ? result.files : [];
         if (files.length > 0) break;
-        if (attempt < 5) await sleep(1000);
       }
       if (files.length === 0) {
         // With no file open the file-list panel may legitimately be absent — don't
@@ -537,6 +614,13 @@ export const UI_ANCHORS: AnchorDef[] = [
         }
         return { ok: false, detail: 'found 0 filenames after ~5s settle — scraper regex or DOM layout regressed' };
       }
+      // The anchor's invariant is "the scraper still detects filenames" — ≥1
+      // filename means the regex + DOM walk work. Whether the URL's ?file=
+      // appears among them is NOT a reliable sub-assertion: the panel lists the
+      // authoritative project files, and the active ?file= can legitimately be
+      // absent from it (a stale/virtual URL file — observed live: ?file=
+      // direction-dock.html while the panel lists casefile-*.html). So treat an
+      // active-file mismatch as informational, not a failure.
       const match = url.match(/[?&]file=([^&]+)/);
       if (match && match[1]) {
         // Claude Design's URL bar form-encodes spaces as '+'. decodeURIComponent
@@ -545,8 +629,8 @@ export const UI_ANCHORS: AnchorDef[] = [
         const activeFile = decodeURIComponent(match[1].replace(/\+/g, ' '));
         if (!files.includes(activeFile)) {
           return {
-            ok: false,
-            detail: `active file "${activeFile}" not in scrape ([${files.slice(0, 3).join(', ')}...]) — scraper missing files`
+            ok: true,
+            detail: `${files.length} file(s) detected; active "${activeFile}" not among them (URL file may be stale/virtual)`
           };
         }
       }

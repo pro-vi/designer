@@ -12,6 +12,17 @@ import { RunStateObserver } from './run-state.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
 import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
 import { isCdpEnabled } from './cdp-env.ts';
+import {
+  classifyInterstitial,
+  plannedAction,
+  isBlockingInterstitial,
+  CONTINUE_HERE_TEXT,
+  INTERSTITIAL_PROBE_EXPR,
+  type InterstitialKind,
+  type InterstitialProbe,
+  type InterstitialReport
+} from './interstitials.ts';
+import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
 
 export interface Selectors {
   login: { signedInIndicator: string | null };
@@ -41,6 +52,10 @@ export interface Selectors {
     chatMessagesContainer: string;
     generatingIndicator: string | null;
   };
+  // Content-only interstitial overlays have no stable testid; detection regexes
+  // live in interstitials.ts. This optional block lets the one actionable button
+  // text be overridden alongside the other anchors (~/.designer/selectors.override.json).
+  interstitials?: { continueHere?: string };
   [k: string]: unknown;
 }
 
@@ -214,10 +229,33 @@ export class DesignerController {
     action = 'status',
     name,
     fidelity = 'wireframe'
-  }: { action?: 'status' | 'ensure_ready' | 'resume' | 'create' | 'adopt'; name?: string; fidelity?: 'wireframe' | 'highfi' } = {}): Promise<unknown> {
+  }: {
+    action?: 'status' | 'ensure_ready' | 'resume' | 'create' | 'adopt' | 'clear';
+    name?: string;
+    fidelity?: 'wireframe' | 'highfi';
+  } = {}): Promise<unknown> {
     if (action === 'status') return this.getStatus();
     if (action === 'ensure_ready') {
       const r = await this.ensureReady();
+      return { ...r, status: await this.getStatus() };
+    }
+    if (action === 'clear') {
+      // clearInterstitials acts on the currently-bound CDP tab; in a multi-key
+      // workflow that may be a DIFFERENT project. Select THIS key's stored tab
+      // first (scoped, activate-only — no navigation, so it won't hijack another
+      // key's tab) so the clear targets the requested session (PR #77 Codex P2).
+      if (isCdpEnabled()) await ensureCdpUp();
+      const picked = await this.selectMatchingTab().catch(() => ({ matched: false, candidates: 0 }));
+      // candidates===0 means NO tab matches this key — selectMatchingTab didn't
+      // activate anything, so the browser is still bound to whatever was active.
+      // Refuse rather than clear (click/reload) an unrelated key's tab (PR #77
+      // Codex P2). candidates>0 means this key's tab is bound (matched, or
+      // present-but-masked by the very interstitial we're here to clear) → proceed.
+      if (picked.candidates === 0) {
+        const report: InterstitialReport = { ok: true, handled: [], blocked: null };
+        return { ...report, matched: false, note: 'no live tab matches this key — nothing to clear', status: await this.getStatus() };
+      }
+      const r = await this.clearInterstitials();
       return { ...r, status: await this.getStatus() };
     }
     if (action === 'resume') {
@@ -317,12 +355,176 @@ export class DesignerController {
     return { matched: false, candidates: candidates.length };
   }
 
-  async ensureReady(): Promise<{ ok: true; url: string; inSession: boolean }> {
+  // --- interstitial pre-flight (see interstitials.ts) -----------------------
+  // claude.ai/design interrupts the flow with content-only overlays that carry
+  // no data-testid: the 495k-token "Continue here" banner, a transient "Something
+  // went wrong" page, and the Cloudflare bot-check. Verbs run clearInterstitials()
+  // through ensureReady so these don't silently stall automation or get misread
+  // as a finished / context-ceilinged generation.
+
+  // Read the page content the classifier needs in a single eval, via the shared
+  // INTERSTITIAL_PROBE_EXPR (same shape as the CI diagnostic). Returns null when
+  // the read FAILS — distinct from a successfully-read clear page — so callers
+  // never mistake "couldn't read" for "no interstitial" (review #5a).
+  async _probeInterstitial(): Promise<InterstitialProbe | null> {
+    return this.browser.evalValue<InterstitialProbe>(INTERSTITIAL_PROBE_EXPR).catch(() => null);
+  }
+
+  // The configured token-banner button text, threaded into every classify call so
+  // detection and the click stay on one source of truth (review #3b).
+  private get _classifyOpts(): { continueHere?: string } {
+    return { continueHere: this.selectors.interstitials?.continueHere };
+  }
+
+  // Classify the page now. Returns null on an unreadable page (probe failure) OR
+  // a clear page — callers that must distinguish the two re-probe explicitly.
+  private async _classifyNow(): Promise<InterstitialKind | null> {
+    const probe = await this._probeInterstitial();
+    return probe ? classifyInterstitial(probe, this._classifyOpts) : null;
+  }
+
+  // Detect and clear interstitials on the currently-bound tab. Loops because
+  // clearing one can reveal another (a reload can land back on the token banner),
+  // and each action re-probes to CONFIRM before counting it handled. Blocking
+  // kinds (cloudflare, transient-error) that survive are reported `blocked`; the
+  // token banner is non-blocking (the shell stays usable) so it never blocks a
+  // verb even if its button can't be clicked (review #3 / #6). In CDP mode,
+  // ensureCdpUp first so the standalone `designer clear` fails loud on a dead
+  // Chrome instead of a false recovery (review #5b) — but GATE it on isCdpEnabled
+  // so the documented DESIGNER_CDP='' opt-out (where ensureCdpUp throws by design)
+  // still works: the probe/click/reload run over agent-browser, not CDP, so the
+  // clear itself needs no CDP. Without this gate, the createSession pre-flight
+  // would break `create` in the opt-out flow (PR #77 Codex P2).
+  async clearInterstitials({
+    maxPasses = 4,
+    cloudflareWaitMs = 25_000,
+    pollMs = 1500
+  }: { maxPasses?: number; cloudflareWaitMs?: number; pollMs?: number } = {}): Promise<InterstitialReport> {
+    if (isCdpEnabled()) await ensureCdpUp();
+    const handled: InterstitialKind[] = [];
+    for (let pass = 0; pass < maxPasses; pass++) {
+      const kind = await this._classifyNow();
+      if (!kind) return { ok: true, handled, blocked: null };
+      const action = plannedAction(kind);
+
+      if (action === 'click-continue') {
+        // Benign banner: try to dismiss, but never block the verb on it.
+        const text = this.selectors.interstitials?.continueHere || CONTINUE_HERE_TEXT;
+        const clicked = await this._clickButtonByText(new RegExp(`^${escapeRegExp(text)}$`, 'i')).catch(() => false);
+        if (clicked) {
+          await new Promise((r) => setTimeout(r, 600));
+          if ((await this._classifyNow()) !== kind) {
+            handled.push(kind);
+            appendHistory(this.key, { kind: 'interstitial', interstitial: kind, action });
+            continue; // cleared — loop to catch any newly-revealed interstitial
+          }
+        }
+        appendHistory(this.key, {
+          kind: 'interstitial',
+          interstitial: kind,
+          action: clicked ? 'uncleared-nonblocking' : 'continue-button-missing'
+        });
+        return { ok: true, handled, blocked: null };
+      }
+
+      if (action === 'reload') {
+        const u = await this.currentUrl();
+        if (!u) break; // can't reload an unknown URL (review #4) — fall to residual
+        appendHistory(this.key, { kind: 'interstitial', interstitial: kind, action });
+        await this.browser.open(u).catch(() => null);
+        // 'load', not 'networkidle' — the SPA's persistent connections never go
+        // idle, so networkidle would burn the full timeout each pass (review #4).
+        await this.browser.waitLoad('load').catch(() => null);
+        await new Promise((r) => setTimeout(r, 800));
+        continue; // confirm on the next pass's probe
+      }
+
+      if (action === 'await-human') {
+        // Cloudflare can't be solved programmatically; wait for it to self-clear
+        // before declaring it blocked — it frequently resolves on its own.
+        const cleared = await this._waitForInterstitialClear(kind, cloudflareWaitMs, pollMs);
+        appendHistory(this.key, { kind: 'interstitial', interstitial: kind, action: cleared ? 'cleared-after-wait' : 'blocked' });
+        if (cleared) {
+          handled.push(kind);
+          continue;
+        }
+        return { ok: false, handled, blocked: kind };
+      }
+
+      // Exhaustiveness: a new InterstitialAction must be handled above, not fall
+      // silently into one of the branches (review below-gate).
+      const _exhaustive: never = action;
+      return _exhaustive;
+    }
+    // maxPasses exhausted (e.g. a transient error that survived every reload).
+    const residual = await this._classifyNow();
+    if (residual && isBlockingInterstitial(residual)) return { ok: false, handled, blocked: residual };
+    return { ok: true, handled, blocked: null };
+  }
+
+  private async _waitForInterstitialClear(kind: InterstitialKind, timeoutMs: number, pollMs: number): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      const probe = await this._probeInterstitial();
+      // A FAILED read (null probe) is NOT "cleared" — keep waiting (review #5a).
+      // Only a successful read that classifies as a different kind (or clear)
+      // means the challenge is gone; the outer loop handles whatever's now on top.
+      if (probe && classifyInterstitial(probe, this._classifyOpts) !== kind) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private _interstitialError(kind: InterstitialKind, candidates: number): Error {
+    const suffix = candidates > 0 ? ` (checked ${candidates} tab(s))` : '';
+    if (kind === 'cloudflare') {
+      return new Error(
+        `Cloudflare bot-check is up on claude.ai/design and didn't clear${suffix}. ` +
+          `Solve it in the CDP-attached Chrome, then retry.`
+      );
+    }
+    return new Error(`Unresolved interstitial '${kind}' on claude.ai/design${suffix}.`);
+  }
+
+  async ensureReady(): Promise<{ ok: true; url: string; inSession: boolean; interstitials?: InterstitialReport }> {
     await ensureCdpUp();
 
     const picked = await this.selectMatchingTab();
     if (picked.matched) {
-      return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession() };
+      // The token banner leaves the composer visible, so a tab can match with an
+      // interstitial still up — clear it before any verb runs against the page.
+      const interstitials = await this.clearInterstitials();
+      if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, picked.candidates);
+      return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession(), interstitials };
+    }
+
+    // selectMatchingTab matches on a visible composer/home anchor — but a
+    // transient-error or Cloudflare overlay HIDES those anchors, so a real design
+    // tab can be masked. Before falling back to opening home, activate the best
+    // design tab and try clearing; a successful clear re-exposes the anchors.
+    //
+    // SCOPE to the stored project (mirror selectMatchingTab): an unscoped /design
+    // filter would activate the lowest-index design tab — potentially an UNRELATED
+    // project — and a later clear/fall-through could silently bind this key to it
+    // (review #2, cross-project contamination). Only widen to any /design tab when
+    // this key has no stored project to be wrong about.
+    const recoveryRoot = getSession(this.key)?.designUrl?.split('?')[0];
+    const designTabs = await this.candidateTabs((u) =>
+      recoveryRoot ? u.startsWith(recoveryRoot) : /^https:\/\/claude\.ai\/design(\/|$|\?)/.test(u)
+    );
+    const recoveryTab = designTabs[0];
+    if (recoveryTab) {
+      await this.browser.activateTab(recoveryTab.index).catch(() => null);
+      const report = await this.clearInterstitials();
+      if (report.blocked) throw this._interstitialError(report.blocked, designTabs.length);
+      if (report.handled.length > 0) {
+        const retry = await this.selectMatchingTab();
+        if (retry.matched) {
+          return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession(), interstitials: report };
+        }
+      }
     }
 
     // No live design tab matched. Fall back to opening home and re-checking.
@@ -334,6 +536,9 @@ export class DesignerController {
       }
     }
 
+    const interstitials = await this.clearInterstitials();
+    if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, picked.candidates);
+
     const homeOk = this.selectors.login.signedInIndicator
       ? await this.browser.isVisible(this.selectors.login.signedInIndicator).catch(() => false)
       : false;
@@ -343,7 +548,7 @@ export class DesignerController {
       throw new Error(`Not signed in to claude.ai/design, or on an unrecognized page${suffix}. Sign in in the CDP-attached Chrome.`);
     }
     upsertSession(this.key, { lastUrl: await this.currentUrl() });
-    return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession() };
+    return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession(), interstitials };
   }
 
   async createSession(
@@ -369,6 +574,11 @@ export class DesignerController {
     if (!name?.trim()) throw new Error('create requires a non-empty name (used as the project seed prompt).');
     await this.browser.open(DESIGN_HOME);
     await this.browser.waitLoad('networkidle').catch(() => null);
+    // createSession opens home directly (not via ensureReady), so run the same
+    // interstitial pre-flight — a Cloudflare check or transient error on home
+    // would otherwise stall waitFor(creator) with a misleading timeout.
+    const interstitials = await this.clearInterstitials();
+    if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, 0);
     await this.browser.waitFor(this.selectors.home.creator);
 
     const fidelityHint =
@@ -640,6 +850,12 @@ export class DesignerController {
     const stored = getSession(this.key);
     if (!stored?.designUrl) throw new Error(`No active session for key=${this.key}. Call createSession first.`);
     await this.resumeSession();
+    // ensureReady's pre-flight cleared the home/current page, but this cold-start
+    // just navigated to the stored project — an interstitial on the PROJECT page
+    // itself (token banner, transient error, Cloudflare) would otherwise reach the
+    // verb that called us. Clear again on the resumed page (PR #77 Codex P2).
+    const interstitials = await this.clearInterstitials();
+    if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, 1);
   }
 
   async iterate(
@@ -785,20 +1001,14 @@ export class DesignerController {
       await new Promise((r) => setTimeout(r, 1500));
     }
 
-    // Open the Design Files dialog to get the richer file/folder listing.
-    // Idempotent — if already open, the click is a no-op (or toggles; we
-    // accept the occasional toggle as the tradeoff for not probing state).
-    await this.browser.evalValue<boolean>(
-      `(() => {
-        const spans = Array.from(document.querySelectorAll('span'));
-        const label = spans.find(s => s.children.length === 0 && (s.textContent || '').trim() === 'Design Files');
-        if (!label) return false;
-        let row = label;
-        while (row && row.onclick === null) row = row.parentElement;
-        if (row) row.click();
-        return true;
-      })()`
-    ).catch(() => null);
+    // Open the Design Files dialog to get the richer file/folder listing, via the
+    // shared idempotent opener (file-panel.ts) — the SAME expression the
+    // session.fileListScrape health anchor uses, so the probe can't pass while
+    // this silently no-ops. It clicks the label (React root delegation; the old
+    // walk-up-for-non-null-.onclick never fired) and is OPEN-ONLY so the before/
+    // after listFiles() calls in iterate() don't toggle it shut mid-run (PR #77
+    // Codex P2).
+    await this.browser.evalValue<boolean>(OPEN_FILES_PANEL_EXPR).catch(() => null);
     await new Promise((r) => setTimeout(r, 600));
 
     const result = await this.browser.evalValue<{ files: string[]; folders: string[]; designFilesLabelVisible: boolean }>(
@@ -1232,6 +1442,10 @@ export class DesignerController {
 
 function hashHex(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function extractFileParam(url: string): string | null {
