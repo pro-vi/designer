@@ -245,7 +245,16 @@ export class DesignerController {
       // first (scoped, activate-only — no navigation, so it won't hijack another
       // key's tab) so the clear targets the requested session (PR #77 Codex P2).
       if (isCdpEnabled()) await ensureCdpUp();
-      await this.selectMatchingTab().catch(() => null);
+      const picked = await this.selectMatchingTab().catch(() => ({ matched: false, candidates: 0 }));
+      // candidates===0 means NO tab matches this key — selectMatchingTab didn't
+      // activate anything, so the browser is still bound to whatever was active.
+      // Refuse rather than clear (click/reload) an unrelated key's tab (PR #77
+      // Codex P2). candidates>0 means this key's tab is bound (matched, or
+      // present-but-masked by the very interstitial we're here to clear) → proceed.
+      if (picked.candidates === 0) {
+        const report: InterstitialReport = { ok: true, handled: [], blocked: null };
+        return { ...report, matched: false, note: 'no live tab matches this key — nothing to clear', status: await this.getStatus() };
+      }
       const r = await this.clearInterstitials();
       return { ...r, status: await this.getStatus() };
     }
