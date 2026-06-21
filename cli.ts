@@ -113,8 +113,10 @@ async function main(): Promise<void> {
       break;
     }
     case 'clear': {
+      // Route through session({action:'clear'}) so it selects THIS key's tab
+      // before clearing (multi-key safety — PR #77 Codex P2), same as MCP.
       const c = new DesignerController({ key });
-      console.log(JSON.stringify(await c.clearInterstitials(), null, 2));
+      console.log(JSON.stringify(await c.session({ action: 'clear' }), null, 2));
       break;
     }
     case 'snapshot': {

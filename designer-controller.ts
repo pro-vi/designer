@@ -239,6 +239,12 @@ export class DesignerController {
       return { ...r, status: await this.getStatus() };
     }
     if (action === 'clear') {
+      // clearInterstitials acts on the currently-bound CDP tab; in a multi-key
+      // workflow that may be a DIFFERENT project. Select THIS key's stored tab
+      // first (scoped, activate-only — no navigation, so it won't hijack another
+      // key's tab) so the clear targets the requested session (PR #77 Codex P2).
+      if (isCdpEnabled()) await ensureCdpUp();
+      await this.selectMatchingTab().catch(() => null);
       const r = await this.clearInterstitials();
       return { ...r, status: await this.getStatus() };
     }
