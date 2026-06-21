@@ -22,6 +22,7 @@ import {
   type InterstitialProbe,
   type InterstitialReport
 } from './interstitials.ts';
+import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
 
 export interface Selectors {
   login: { signedInIndicator: string | null };
@@ -991,23 +992,14 @@ export class DesignerController {
       await new Promise((r) => setTimeout(r, 1500));
     }
 
-    // Open the Design Files dialog to get the richer file/folder listing.
-    // Click the label directly: React attaches handlers via root delegation, so
-    // the old walk-up-for-non-null-.onclick exhausted to null and never fired —
-    // a latent no-op that left this scrape seeing only bare-page filenames. A
-    // click on the label bubbles to React's delegated handler. Kept identical to
-    // the session.fileListScrape health anchor's opener so the probe exercises
-    // the SAME path production uses (PR #77 Codex P2). Idempotent — if already
-    // open it may toggle; we accept the occasional toggle vs probing panel state.
-    await this.browser.evalValue<boolean>(
-      `(() => {
-        const spans = Array.from(document.querySelectorAll('span'));
-        const label = spans.find(s => s.children.length === 0 && (s.textContent || '').trim() === 'Design Files');
-        if (!label) return false;
-        label.click();
-        return true;
-      })()`
-    ).catch(() => null);
+    // Open the Design Files dialog to get the richer file/folder listing, via the
+    // shared idempotent opener (file-panel.ts) — the SAME expression the
+    // session.fileListScrape health anchor uses, so the probe can't pass while
+    // this silently no-ops. It clicks the label (React root delegation; the old
+    // walk-up-for-non-null-.onclick never fired) and is OPEN-ONLY so the before/
+    // after listFiles() calls in iterate() don't toggle it shut mid-run (PR #77
+    // Codex P2).
+    await this.browser.evalValue<boolean>(OPEN_FILES_PANEL_EXPR).catch(() => null);
     await new Promise((r) => setTimeout(r, 600));
 
     const result = await this.browser.evalValue<{ files: string[]; folders: string[]; designFilesLabelVisible: boolean }>(

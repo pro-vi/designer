@@ -3,6 +3,7 @@ import { RunStateObserver } from './run-state.ts';
 import { isPreviewIframeSrc, previewIframeVariant, isBootstrapShellHtml } from './preview-host.ts';
 import { isCdpEnabled } from './cdp-env.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
+import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
 
 // Every UI anchor this MCP depends on to work. Grouped by the surface state
 // they live on. A regression in Claude Design's UI will trip one or more of
@@ -583,23 +584,9 @@ export const UI_ANCHORS: AnchorDef[] = [
       // hit "Signup Wireframes (standalone)") it found 0 and false-failed while
       // `designer files` worked. Open the panel first so the anchor exercises the
       // same path. Idempotent + best-effort (matches listFilesDetailed).
-      const openFilesPanel = (): Promise<boolean> =>
-        b
-          .evalValue<boolean>(
-            `(() => {
-            const spans = Array.from(document.querySelectorAll('span'));
-            const label = spans.find((s) => s.children.length === 0 && (s.textContent || '').trim() === 'Design Files');
-            if (!label) return false;
-            // Click the label directly. React attaches handlers via delegation at
-            // the root (element.onclick is null on React nodes), so walking up
-            // looking for a non-null .onclick exhausts to null and never fires.
-            // A click on the label bubbles to React's root listener, triggering
-            // the row's onClick (PR #77 Claude review).
-            label.click();
-            return true;
-          })()`
-          )
-          .catch(() => false);
+      // Shared, idempotent opener (file-panel.ts) — identical to the production
+      // listFilesDetailed opener so this probe exercises the real path.
+      const openFilesPanel = (): Promise<boolean> => b.evalValue<boolean>(OPEN_FILES_PANEL_EXPR).catch(() => false);
 
       // Open the panel ONCE up front. Clicking it on every retry would toggle an
       // already-open panel closed mid-settle (oscillation — review below-gate);
