@@ -14,9 +14,14 @@
 // read the bare page and corrupt newFiles/removedFiles (PR #77 Codex P2). So we
 // only click when we can tell the panel is closed:
 //   1. trigger exposes aria-expanded → obey it (open iff 'false', no-op if 'true')
-//   2. otherwise → only click when no file list is already visible (e.g. a
-//      single-file / standalone project whose list is collapsed); never click
-//      when a list is already showing, to avoid closing it.
+//   2. otherwise → click only when NO file-list row is visible at all (a
+//      collapsed / standalone project). ANY visible filename row is treated as
+//      "already showing" — including a single-file project's one row — so we
+//      never toggle an open panel shut (PR #77 Codex P2: a 1-row open panel was
+//      slipping past a >=2 threshold and being closed, making iterate() report
+//      the lone file as removed). This matches the pre-fix behavior for projects
+//      whose files are already visible (no completeness regression) while still
+//      opening a genuinely-collapsed list.
 // Returns true if the label was found (clicked or already-open), false otherwise.
 export const OPEN_FILES_PANEL_EXPR = `(() => {
   const spans = Array.from(document.querySelectorAll('span'));
@@ -30,14 +35,12 @@ export const OPEN_FILES_PANEL_EXPR = `(() => {
     t = t.parentElement;
   }
   const fileRe = /^[A-Za-z0-9 _.()\\-]+\\.(html|css|js|jsx|tsx|ts|md|json|svg)$/i;
-  let rows = 0;
   const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   let n;
   while ((n = w.nextNode())) {
     const tx = (n.textContent || '').trim();
-    if (fileRe.test(tx) && tx.length < 80 && ++rows >= 2) break;
+    if (fileRe.test(tx) && tx.length < 80) return true; // a file row is showing — don't toggle it shut
   }
-  if (rows >= 2) return true;
   label.click();
   return true;
 })()`;
