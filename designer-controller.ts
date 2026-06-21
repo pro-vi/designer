@@ -115,13 +115,20 @@ export interface AskResult {
 
 export interface HandoffResult {
   ok: true;
-  handoffUrl: string;
+  projectId: string;
+  projectUrl: string;
   bundleDir: string;
+  /** Alias of bundleDir (the bundle root). Kept so downstream consumers that
+   *  expected a slug subdir keep resolving; the new export zip is flat. */
   slugDir: string;
-  readmePath: string;
-  readmeBytes: number;
-  tarballPath: string;
-  tarballBytes: number;
+  /** Where the unzipped design files live (bundleDir/project). */
+  projectDir: string;
+  /** Self-generated from the live chat — the export zip no longer ships the
+   *  README/transcript the old tar.gz did. */
+  decisionRecordPath: string;
+  decisionRecordBytes: number;
+  zipPath: string;
+  zipBytes: number;
   files: string[];
   repaired: RepairReport;
 }
@@ -1303,75 +1310,98 @@ export class DesignerController {
     return OopifHtmlReader.attach({ preferUrlPrefix: (await this.currentUrl()) || null }).catch(() => null);
   }
 
+  // Fetch the project's export zip via the authenticated, same-origin endpoint
+  // the Share→Export "Download" button hits — `/design/v1/design/projects/<id>
+  // /download` (returns application/zip). The 2026-06-21 redesign removed the old
+  // public `api.anthropic.com/v1/design/h/<id>` tar.gz URL and replaced it with a
+  // browser download that needs a trusted gesture CDP can't fire — but the bytes
+  // come from a plain GET. We do it IN-PAGE (auth + Cloudflare just work there; a
+  // node-side fetch with copied cookies 403s) and transfer the bytes out as
+  // base64. Throws on non-200 / non-zip so the caller surfaces a clear failure.
+  private async _downloadProjectZip(projectId: string): Promise<Buffer> {
+    // Origin guard: the in-page fetch is same-origin, so if the bound tab has
+    // drifted off claude.ai (tab drift is real — it bit this very session) the
+    // '/design/v1/...' path would resolve against the wrong app and 404. Refuse
+    // rather than return junk.
+    const url = await this.currentUrl();
+    if (!/^https:\/\/claude\.ai\/design\//.test(url)) {
+      throw new Error(`Active tab is not on claude.ai/design (${url || 'unknown'}) — refusing to fetch the export from the wrong origin.`);
+    }
+    const expr = `(async () => {
+      try {
+        const r = await fetch('/design/v1/design/projects/' + ${JSON.stringify(projectId)} + '/download', { headers: { Accept: '*/*' } });
+        if (!r.ok) return 'ERR ' + r.status;
+        const bytes = new Uint8Array(await r.arrayBuffer());
+        let bin = '';
+        const CH = 0x8000;
+        for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+        return btoa(bin);
+      } catch (e) { return 'ERR ' + (e && e.message || e); }
+    })()`;
+    const out = (await this.browser.eval(expr)).trim();
+    let b64 = out;
+    if (b64.startsWith('"') && b64.endsWith('"')) b64 = JSON.parse(b64);
+    if (b64.startsWith('ERR')) throw new Error(`Project download failed (${b64.slice(4).trim()}). Are you signed in to claude.ai/design?`);
+    const buf = Buffer.from(b64, 'base64');
+    if (buf.length < 100 || buf.subarray(0, 2).toString('latin1') !== 'PK') {
+      throw new Error(`Project download did not return a zip (${buf.length} bytes).`);
+    }
+    return buf;
+  }
+
   async handoff({ openFile }: { openFile?: string } = {}): Promise<HandoffResult> {
     await this._ensureInSession();
     if (openFile) await this.openFile(openFile);
 
-    // Claude.ai/design moved Export actions under the Share dropdown
-    // (~2026-04-19). Try Share first; fall back to Export for older builds.
-    const opened = await this._clickButtonByText(/^Share$/).catch(() => null);
-    if (!opened) await this._clickButtonByText(/^Export$/);
-    await new Promise((r) => setTimeout(r, 400));
-    // ~2026-06: Share opens a tabbed dialog; handoff lives under the
-    // "Send to…" tab as a "Claude Code" destination row. Older builds had a
-    // direct "Handoff to Claude Code" menu item — keep it as the fallback.
-    const viaSendTo = await this._clickClaudeCodeSendTo().catch(() => false);
-    if (!viaSendTo) await this._clickButtonByText(/handoff to claude code/i);
+    const baseUrl = getSession(this.key)?.designUrl || (await this.currentUrl());
+    const m = baseUrl.match(SESSION_URL_RE);
+    if (!m || !m[1]) throw new Error(`No /design/p/<uuid> project bound to key=${this.key} to hand off.`);
+    const projectId = m[1];
+    const projectUrl = baseUrl.split('?')[0] ?? baseUrl;
 
-    let handoffUrl = '';
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 300));
-      const text = await this._dialogText();
-      const match = String(text || '').match(/https:\/\/api\.anthropic\.com\/v1\/design\/h\/[A-Za-z0-9_-]+(?:\?[^\s]*)?/);
-      if (match && match[0]) {
-        handoffUrl = match[0];
-        break;
-      }
-    }
-    if (!handoffUrl) throw new Error('Handoff URL did not appear in the dialog.');
+    // The export zip dropped the README + chat transcript the old tar.gz carried,
+    // so regenerate the decision record from the live chat before downloading.
+    const turns = await this.getChatTurns().catch((): ChatTurn[] => []);
+    const decisionRecord = renderDecisionRecord(turns, projectId, projectUrl);
 
-    await this.browser
-      .evalValue<boolean>(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
-      .catch(() => null);
+    const zip = await this._downloadProjectZip(projectId);
 
     const dir = sessionDir(this.key);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const bundleDir = path.join(dir, `handoff-${stamp}`);
-    fs.mkdirSync(bundleDir, { recursive: true });
-    const tgzPath = path.join(bundleDir, 'bundle.tar.gz');
+    const projectDir = path.join(bundleDir, 'project');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const zipPath = path.join(bundleDir, 'bundle.zip');
+    fs.writeFileSync(zipPath, zip);
 
-    const res = await fetch(handoffUrl);
-    if (!res.ok) throw new Error(`Handoff fetch failed: HTTP ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    fs.writeFileSync(tgzPath, buf);
-
+    // Unzip the flat archive into project/. unzip exit 1 = non-fatal warnings.
     await new Promise<void>((resolve, reject) => {
-      const child = xspawn('tar', ['-xzf', tgzPath, '-C', bundleDir], { stdio: 'pipe' });
+      const child = xspawn('unzip', ['-o', '-q', zipPath, '-d', projectDir], { stdio: 'pipe' });
       let err = '';
       child.stderr!.on('data', (d: Buffer) => (err += d.toString()));
       child.on('close', (code: number | null) =>
-        code === 0 ? resolve() : reject(new Error(`tar exited ${code}: ${err}`))
+        code === 0 || code === 1 ? resolve() : reject(new Error(`unzip exited ${code}: ${err}`))
       );
     });
 
-    const entries = fs.readdirSync(bundleDir).filter((e) => e !== 'bundle.tar.gz');
-    const projectSlug = entries.find((e) => fs.statSync(path.join(bundleDir, e)).isDirectory());
-    const slugDir = projectSlug ? path.join(bundleDir, projectSlug) : bundleDir;
-    const repaired = repairEmDashLinks(path.join(slugDir, 'project'));
-    const readmePath = path.join(slugDir, 'README.md');
-    const readme = fs.existsSync(readmePath) ? fs.readFileSync(readmePath, 'utf8') : null;
-    const files = listAllFiles(slugDir).map((p) => path.relative(bundleDir, p));
+    const decisionRecordPath = path.join(bundleDir, 'decision-record.md');
+    fs.writeFileSync(decisionRecordPath, decisionRecord);
 
-    appendHistory(this.key, { kind: 'handoff', url: handoffUrl, bundleDir, fileCount: files.length, repaired });
+    const repaired = repairEmDashLinks(projectDir);
+    const files = listAllFiles(bundleDir).map((p) => path.relative(bundleDir, p));
+
+    appendHistory(this.key, { kind: 'handoff', projectId, bundleDir, fileCount: files.length, repaired });
     return {
       ok: true,
-      handoffUrl,
+      projectId,
+      projectUrl,
       bundleDir,
-      slugDir,
-      readmePath,
-      readmeBytes: readme ? readme.length : 0,
-      tarballPath: tgzPath,
-      tarballBytes: buf.length,
+      slugDir: bundleDir,
+      projectDir,
+      decisionRecordPath,
+      decisionRecordBytes: Buffer.byteLength(decisionRecord),
+      zipPath,
+      zipBytes: zip.length,
       files,
       repaired
     };
@@ -1390,51 +1420,6 @@ export class DesignerController {
     );
   }
 
-  // Navigate the tabbed Share dialog (2026-06 layout): "Send to…" tab →
-  // "Claude Code" destination row → its Send button. The row's Send button
-  // has no testid and its label text ("Claude Code", "Hand off the project
-  // to your terminal") lives in sibling elements, so match by walking up to
-  // the row container. Returns false if the tab or row isn't there, so the
-  // caller can fall back to the legacy direct menu item.
-  async _clickClaudeCodeSendTo(): Promise<boolean> {
-    const tabClicked = await this.browser.evalValue<boolean>(
-      `(() => {
-        const tab = Array.from(document.querySelectorAll('button[role="tab"]')).find(t => /send to/i.test(t.textContent || ''));
-        if (!tab) return false;
-        tab.click();
-        return true;
-      })()`
-    );
-    if (!tabClicked) return false;
-    await new Promise((r) => setTimeout(r, 400));
-    return this.browser.evalValue<boolean>(
-      `(() => {
-        const sends = Array.from(document.querySelectorAll('button')).filter(b => (b.textContent || '').trim() === 'Send');
-        const target = sends.find(b => {
-          let row = b;
-          for (let i = 0; i < 3 && row.parentElement; i++) row = row.parentElement;
-          return /claude code/i.test(row.textContent || '');
-        });
-        if (!target) return false;
-        target.click();
-        return true;
-      })()`
-    );
-  }
-
-  async _dialogText(): Promise<string> {
-    return (
-      (await this.browser
-        .evalValue<string>(
-          `(() => {
-            const dlg = document.querySelector('[role=dialog]');
-            return (dlg && dlg.innerText) || '';
-          })()`
-        )
-        .catch(() => '')) || ''
-    );
-  }
-
   async close(): Promise<void> {
     await this.browser.close().catch(() => null);
   }
@@ -1446,6 +1431,40 @@ function hashHex(s: string): string {
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// The export zip no longer ships the README + chat transcript the old tar.gz
+// did, so reconstruct a decision record from the live chat turns (every prompt +
+// reply, verbatim) — the "why" a coding agent needs alongside the files.
+function renderDecisionRecord(turns: ChatTurn[], projectId: string, projectUrl: string): string {
+  // getChatTurns role-detects off the turn text starting with "Claude"/"You";
+  // the current chat DOM dropped those text labels (turns carry only data-index),
+  // so roles can come back all-'unknown'. Don't mislabel them "Note" — fall back
+  // to sequential "Turn N" and flag the gap. (Role attribution is a separate
+  // getChatTurns drift, tracked independently.)
+  const attributed = turns.some((t) => t.role !== 'unknown');
+  const out = [
+    '# Design handoff — decision record',
+    '',
+    `Project: ${projectUrl}`,
+    `Project ID: ${projectId}`,
+    `Captured: ${new Date().toISOString()}`,
+    ''
+  ];
+  if (!turns.length) {
+    out.push('## Conversation', '', '_(no chat turns captured)_');
+    return out.join('\n');
+  }
+  out.push('## Conversation (verbatim — the decisions behind the design)');
+  if (!attributed) {
+    out.push('', '_Speaker labels unavailable (claude.ai dropped role markers from the chat DOM); turns are shown in order._');
+  }
+  out.push('');
+  turns.forEach((t, i) => {
+    const role = t.role === 'assistant' ? 'Claude' : t.role === 'user' ? 'You' : `Turn ${i + 1}`;
+    out.push(`### ${role}`, '', t.text.trim(), '');
+  });
+  return out.join('\n');
 }
 
 function extractFileParam(url: string): string | null {

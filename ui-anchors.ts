@@ -492,42 +492,39 @@ export const UI_ANCHORS: AnchorDef[] = [
     check: async (b) => ({ ok: await hasButtonMatching(b, /^Share$/) })
   },
   {
+    // Id kept (not renamed) to preserve the persisted health-streak counter.
+    // Validates the path `designer handoff` actually takes: the same-origin
+    // project export endpoint returns a zip. The old check clicked the Share
+    // dialog and asserted "claude code" TEXT existed — which false-passed (it
+    // stayed green while handoff threw) because it never exercised the real
+    // mechanism (PR: handoff Share-redesign rework).
     id: 'share.handoffMenuItem',
     category: 'share',
-    description: 'Handoff-to-Claude-Code action (Share → Send to… tab → Claude Code row, or the legacy dropdown item)',
+    description: 'Project export endpoint (/design/v1/design/projects/<id>/download) returns a zip — the path designer handoff fetches',
     requires: 'session',
-    check: async (b) => {
-      const opened = await b.evalValue<boolean>(
-        `(() => { const btn = Array.from(document.querySelectorAll('button')).find(x => (x.textContent||'').trim() === 'Share'); if (!btn) return false; btn.click(); return true; })()`
-      ).catch(() => false);
-      if (!opened) return { ok: false, detail: 'Share button not clickable' };
-      await new Promise((r) => setTimeout(r, 400));
-      // Legacy layout (pre 2026-06): direct "Handoff to Claude Code" menu item.
-      let found = await hasButtonMatching(b, /handoff to claude code/i);
-      if (!found) {
-        // 2026-06 layout: Share opens a tabbed dialog; handoff lives under the
-        // "Send to…" tab as a "Claude Code" destination row with a Send button.
-        // Only assert the row exists — clicking Send would mint a handoff link.
-        const tabClicked = await b.evalValue<boolean>(
-          `(() => { const tab = Array.from(document.querySelectorAll('button[role="tab"]')).find(t => /send to/i.test(t.textContent || '')); if (!tab) return false; tab.click(); return true; })()`
-        ).catch(() => false);
-        if (tabClicked) {
-          await new Promise((r) => setTimeout(r, 400));
-          found = await b.evalValue<boolean>(
-            `(() => {
-              const sends = Array.from(document.querySelectorAll('button')).filter(x => (x.textContent || '').trim() === 'Send');
-              return sends.some(x => {
-                let row = x;
-                for (let i = 0; i < 3 && row.parentElement; i++) row = row.parentElement;
-                return /claude code/i.test(row.textContent || '');
-              });
-            })()`
-          ).catch(() => false);
-        }
-      }
-      // close dialog/dropdown
-      await b.evalValue<boolean>(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`).catch(() => null);
-      return { ok: found, detail: found ? undefined : 'Share opened but no Claude Code handoff action (checked legacy item and Send to… tab)' };
+    check: async (b, url) => {
+      const m = url.match(/\/design\/p\/([a-f0-9-]+)/i);
+      if (!m || !m[1]) return { ok: true, status: 'skip', detail: 'not in a /design/p/<uuid> session' };
+      const projectId = m[1];
+      // In-page GET (auth + Cloudflare just work there); read headers, cancel the
+      // body so health doesn't pull the multi-MB zip every run.
+      const res = await b
+        .evalValue<{ status: number; ct: string; err?: string }>(
+          `(async () => {
+            try {
+              const r = await fetch('/design/v1/design/projects/' + ${JSON.stringify(projectId)} + '/download', { headers: { Accept: '*/*' } });
+              const o = { status: r.status, ct: r.headers.get('content-type') || '' };
+              try { await r.body.cancel(); } catch {}
+              return o;
+            } catch (e) { return { status: 0, ct: '', err: String((e && e.message) || e) }; }
+          })()`
+        )
+        .catch(() => ({ status: 0, ct: '', err: 'eval failed' }));
+      const ok = res.status === 200 && /zip/i.test(res.ct);
+      return {
+        ok,
+        detail: ok ? `200 ${res.ct}` : `download endpoint status=${res.status} ct=${res.ct}${res.err ? ' err=' + res.err : ''}`
+      };
     }
   },
 

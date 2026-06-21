@@ -157,7 +157,7 @@ server.registerTool(
   'designer_handoff',
   {
     description:
-      "Promote: trigger Export → Handoff to Claude Code, download the public tar.gz bundle (no auth), extract under ./artifacts/{key}/handoff-{ts}/. Bundle contains README.md, chat transcripts (decision record — every prompt + reply, verbatim), all design files, standalone HTML, shared CSS, design-canvas.jsx. Call when the human says 'yes, that's it'.",
+      "Promote: fetch the project's export zip from the authenticated same-origin endpoint (/design/v1/design/projects/<id>/download) and extract it under ./artifacts/{key}/handoff-{ts}/project/. Also writes decision-record.md regenerated from the live chat (every prompt + reply, verbatim — the export zip no longer ships it). project/ holds all design files (HTML, standalone HTML, CSS, JS) + screenshots/. Call when the human says 'yes, that's it'.",
     inputSchema: {
       key: z.string().optional(),
       openFile: z.string().optional().describe('Set the open file before handoff.')
