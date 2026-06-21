@@ -400,9 +400,9 @@ export const UI_ANCHORS: AnchorDef[] = [
     category: 'pattern',
     description: 'OOPIF CDP read returns rendered preview HTML (not the bootstrap loader shell)',
     requires: 'session',
-    check: async (_b, url) => {
+    check: async (b, url) => {
       if (!/[?&]file=/.test(url)) return { ok: true, status: 'skip', detail: 'no file open — preview not expected' };
-      const src = await getPreviewIframeSrc(_b);
+      const src = await getPreviewIframeSrc(b);
       if (!src || !isPreviewIframeSrc(src)) return { ok: true, status: 'skip', detail: 'iframe not on a preview host' };
       const variant = previewIframeVariant(src);
       if (variant !== 'bootstrap-subdomain')
@@ -582,9 +582,12 @@ export const UI_ANCHORS: AnchorDef[] = [
             const spans = Array.from(document.querySelectorAll('span'));
             const label = spans.find((s) => s.children.length === 0 && (s.textContent || '').trim() === 'Design Files');
             if (!label) return false;
-            let row = label;
-            while (row && row.onclick === null) row = row.parentElement;
-            if (row) row.click();
+            // Click the label directly. React attaches handlers via delegation at
+            // the root (element.onclick is null on React nodes), so walking up
+            // looking for a non-null .onclick exhausts to null and never fires.
+            // A click on the label bubbles to React's root listener, triggering
+            // the row's onClick (PR #77 Claude review).
+            label.click();
             return true;
           })()`
           )

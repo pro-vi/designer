@@ -245,6 +245,12 @@ async function probeInterstitial(browser: Browser): Promise<InterstitialKind | n
   // Shared INTERSTITIAL_PROBE_EXPR keeps this diagnostic and the live pre-flight
   // (designer-controller) classifying identically — including the appShellPresent
   // guard, without which transcript text would false-classify here too.
+  //
+  // Note: unlike the controller's _classifyNow, this does NOT thread a
+  // selectors.override.json `continueHere` override, so an operator with a
+  // custom token-banner button label would see it recorded as null here. That's
+  // acceptable — this field is diagnostic-only (never fails the run), and CI runs
+  // the published selectors, not a local override (PR #77 Claude review).
   const probe = await browser.evalValue<InterstitialProbe>(INTERSTITIAL_PROBE_EXPR).catch(() => null);
   return probe ? classifyInterstitial(probe) : null;
 }
