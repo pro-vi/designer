@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.15](https://github.com/pro-vi/designer/compare/v0.3.14...v0.3.15) (2026-06-21)
+
+
+### Features
+
+* interstitial pre-flight + OOPIF/interstitial health probes + 2026-06 selector-drift repair ([#77](https://github.com/pro-vi/designer/issues/77)) ([4565112](https://github.com/pro-vi/designer/commit/456511249039e503b5e8364b4da605d64531cf36))
+
+
+### Bug Fixes
+
+* **handoff:** rework for the 2026-06-21 Share redesign (in-page export fetch) ([#80](https://github.com/pro-vi/designer/issues/80)) ([796d408](https://github.com/pro-vi/designer/commit/796d408d2eed3eae26f338c4a5a74f416d92f53c))
+
 ## [0.3.14](https://github.com/pro-vi/designer/compare/v0.3.13...v0.3.14) (2026-06-18)
 
 
