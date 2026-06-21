@@ -409,8 +409,15 @@ export const UI_ANCHORS: AnchorDef[] = [
         return { ok: true, status: 'skip', detail: `variant=${variant} — node-fetch path, OOPIF read not used` };
       if (!isCdpEnabled()) return { ok: true, status: 'skip', detail: "CDP disabled (DESIGNER_CDP=''); OOPIF read not probed" };
 
+      // By here CDP is enabled AND the preview is on the bootstrap-subdomain
+      // (OOPIF) path — so an attach failure is NOT inconclusive. Production
+      // fetchServedHtml uses the same reader and falls back to EMPTY html on
+      // attach failure, so snapshot/fetch/iterate would silently get no content.
+      // Fail the probe (don't skip) — this is the exact regression it exists to
+      // catch (PR #77 Codex P2).
       const reader = await OopifHtmlReader.attach({ preferUrlPrefix: url || null }).catch(() => null);
-      if (!reader) return { ok: true, status: 'skip', detail: 'OOPIF reader attach failed (CDP unavailable)' };
+      if (!reader)
+        return { ok: false, detail: 'OOPIF reader attach failed while CDP is enabled on the bootstrap-subdomain path — snapshot/fetch/iterate would get empty HTML' };
       try {
         const html = await reader.readPreviewHtml().catch(() => null);
         if (!html)
