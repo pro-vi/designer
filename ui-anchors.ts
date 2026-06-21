@@ -507,20 +507,27 @@ export const UI_ANCHORS: AnchorDef[] = [
       if (!m || !m[1]) return { ok: true, status: 'skip', detail: 'not in a /design/p/<uuid> session' };
       const projectId = m[1];
       // In-page GET (auth + Cloudflare just work there); read headers, cancel the
-      // body so health doesn't pull the multi-MB zip every run.
+      // body so health doesn't pull the multi-MB zip every run. Bounded by an
+      // abort deadline so a hung endpoint can't stall the whole health sweep.
       const res = await b
         .evalValue<{ status: number; ct: string; err?: string }>(
           `(async () => {
+            const ctrl = new AbortController();
+            const to = setTimeout(() => ctrl.abort(), 15000);
             try {
-              const r = await fetch('/design/v1/design/projects/' + ${JSON.stringify(projectId)} + '/download', { headers: { Accept: '*/*' } });
+              const r = await fetch('/design/v1/design/projects/' + ${JSON.stringify(projectId)} + '/download', { headers: { Accept: '*/*' }, signal: ctrl.signal });
               const o = { status: r.status, ct: r.headers.get('content-type') || '' };
               try { await r.body.cancel(); } catch {}
               return o;
             } catch (e) { return { status: 0, ct: '', err: String((e && e.message) || e) }; }
+            finally { clearTimeout(to); }
           })()`
         )
         .catch(() => ({ status: 0, ct: '', err: 'eval failed' }));
-      const ok = res.status === 200 && /zip/i.test(res.ct);
+      // Accept zip OR octet-stream: _downloadProjectZip validates by PK magic and
+      // ignores content-type, so a 200 octet-stream is a real success — don't go
+      // red where the download would succeed (the inverse of the old false-pass).
+      const ok = res.status === 200 && /(zip|octet-stream)/i.test(res.ct);
       return {
         ok,
         detail: ok ? `200 ${res.ct}` : `download endpoint status=${res.status} ct=${res.ct}${res.err ? ' err=' + res.err : ''}`

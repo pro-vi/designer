@@ -2,7 +2,7 @@
 
 MCP + CLI that lets your coding agent drive **[claude.ai/design](https://claude.ai/design)** (Claude's wireframe + hi-fi design tool, no API) with full context of your codebase — capabilities, data shape, existing tokens fed into every prompt.
 
-Human describes intent → agent surveys codebase and prompts Claude Design → hands you the URL → iterate → `designer_handoff` bundles the result (README + chats + HTML + JSX) back into your repo.
+Human describes intent → agent surveys codebase and prompts Claude Design → hands you the URL → iterate → `designer_handoff` fetches the project export zip into your repo (`project/` design files + a regenerated `decision-record.md`).
 
 > **Status:** v0.3.14, early. macOS only.
 
@@ -95,7 +95,7 @@ Six tools, registered at user scope by `designer setup`:
 | `designer_ask` | Q&A with the assistant, no file changes. |
 | `designer_list` | `projects` or `files` (flat-only — see quirks). |
 | `designer_snapshot` | Capture current file. Paths + hash by default; `includeHtml: true` inlines. |
-| `designer_handoff` | Export → download + extract tar.gz. Auto-repairs em-dash filename bugs. |
+| `designer_handoff` | Fetch + extract the project export zip → `project/` + `decision-record.md`. Auto-repairs em-dash filename bugs. |
 
 ## The loop
 

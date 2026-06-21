@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { xspawn } from './cross-platform.ts';
 import { createBrowser, type Browser } from './browser.ts';
 import { sessionDir, saveIteration, type IterationRecord } from './artifact-store.ts';
 import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
@@ -23,6 +22,7 @@ import {
   type InterstitialReport
 } from './interstitials.ts';
 import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
+import { unzipSync } from 'fflate';
 
 export interface Selectors {
   login: { signedInIndicator: string | null };
@@ -127,8 +127,14 @@ export interface HandoffResult {
    *  README/transcript the old tar.gz did. */
   decisionRecordPath: string;
   decisionRecordBytes: number;
+  /** Chat turns captured into the decision record. */
+  decisionRecordTurns: number;
+  /** True when no chat turns were captured — the record is header-only (the
+   *  caller advertises a verbatim transcript, so surface the gap). */
+  decisionRecordEmpty: boolean;
   zipPath: string;
   zipBytes: number;
+  /** Design files under project/ (NOT the zip or the record). */
   files: string[];
   repaired: RepairReport;
 }
@@ -1331,26 +1337,105 @@ export class DesignerController {
     if (!/^https:\/\/claude\.ai\/design\//.test(url)) {
       throw new Error(`Active tab is not on claude.ai/design (${url || 'unknown'}) — refusing to fetch the export from the wrong origin.`);
     }
-    const expr = `(async () => {
+    // In-page authed GET with an abort deadline; returns {status, bytes, b64} or
+    // {status, err}. Bytes are carried out as chunked base64 (byte-exact); the
+    // server byte count comes back too so we can detect a truncated transfer.
+    const expr = (timeoutMs: number) => `(async () => {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), ${timeoutMs});
       try {
-        const r = await fetch('/design/v1/design/projects/' + ${JSON.stringify(projectId)} + '/download', { headers: { Accept: '*/*' } });
-        if (!r.ok) return 'ERR ' + r.status;
+        const r = await fetch('/design/v1/design/projects/' + ${JSON.stringify(projectId)} + '/download', { headers: { Accept: '*/*' }, signal: ctrl.signal });
+        if (!r.ok) return { status: r.status };
         const bytes = new Uint8Array(await r.arrayBuffer());
         let bin = '';
         const CH = 0x8000;
         for (let i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
-        return btoa(bin);
-      } catch (e) { return 'ERR ' + (e && e.message || e); }
+        return { status: 200, bytes: bytes.length, b64: btoa(bin) };
+      } catch (e) { return { status: 0, err: String((e && e.message) || e) }; }
+      finally { clearTimeout(to); }
     })()`;
-    const out = (await this.browser.eval(expr)).trim();
-    let b64 = out;
-    if (b64.startsWith('"') && b64.endsWith('"')) b64 = JSON.parse(b64);
-    if (b64.startsWith('ERR')) throw new Error(`Project download failed (${b64.slice(4).trim()}). Are you signed in to claude.ai/design?`);
-    const buf = Buffer.from(b64, 'base64');
-    if (buf.length < 100 || buf.subarray(0, 2).toString('latin1') !== 'PK') {
-      throw new Error(`Project download did not return a zip (${buf.length} bytes).`);
+
+    // Bounded retry: fail fast on auth/not-found, retry transient (abort/0/429/5xx).
+    let lastErr = 'unknown';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await this.browser
+        .evalValue<{ status: number; bytes?: number; b64?: string; err?: string }>(expr(25_000))
+        .catch((e): { status: number; bytes?: number; b64?: string; err?: string } => ({ status: 0, err: String((e as Error)?.message || e) }));
+      if (res.status === 200 && typeof res.b64 === 'string') {
+        const buf = Buffer.from(res.b64, 'base64');
+        if (typeof res.bytes === 'number' && buf.length !== res.bytes) {
+          lastErr = `truncated transfer (${buf.length} of ${res.bytes} bytes)`; // retry
+        } else if (buf.length < 100 || buf.subarray(0, 2).toString('latin1') !== 'PK') {
+          throw new Error(`Project download is not a zip (${buf.length} bytes).`);
+        } else {
+          return buf;
+        }
+      } else {
+        lastErr = res.err ? res.err : `HTTP ${res.status}`;
+        if (res.status === 401 || res.status === 403 || res.status === 404) {
+          throw new Error(`Project download failed (HTTP ${res.status}). Are you signed in to claude.ai/design?`);
+        }
+      }
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
     }
-    return buf;
+    throw new Error(`Project download failed after 3 attempts: ${lastErr}.`);
+  }
+
+  // Capture the FULL chat transcript despite virtualization (claude.ai mounts only
+  // the visible rows). Scroll the chat history top→bottom, accumulating turns keyed
+  // by data-index so rows that unmount as we scroll are still kept. Best-effort: if
+  // the scroll container isn't found, degrades to the visible window.
+  private async _collectChatTurns(): Promise<ChatTurn[]> {
+    const collected = new Map<number, ChatTurn>();
+    const scrape = async (): Promise<void> => {
+      const rows = await this.browser
+        .evalValue<Array<{ idx: number; role: 'assistant' | 'user'; text: string }>>(
+          `(() => {
+            const c = document.querySelector('[data-testid="chat-messages"]');
+            const inner = c && c.children[0];
+            if (!inner) return [];
+            return Array.from(inner.children).map((d) => {
+              const idx = parseInt(d.getAttribute('data-index') || '-1', 10);
+              const txt = (d.innerText || '').trim();
+              const isAssistant = !!d.querySelector('[data-msgfb]') || /^Claude(\\n|$)/.test(txt);
+              return { idx, role: isAssistant ? 'assistant' : 'user', text: txt };
+            });
+          })()`
+        )
+        .catch(() => [] as Array<{ idx: number; role: 'assistant' | 'user'; text: string }>);
+      for (const r of rows) if (r.idx >= 0 && r.text) collected.set(r.idx, { role: r.role, text: r.text });
+    };
+    const scroll = (dir: 'top' | 'down'): Promise<number> =>
+      this.browser
+        .evalValue<number>(
+          `(() => {
+            let s = document.querySelector('[data-testid="chat-messages"]');
+            for (let i = 0; i < 8 && s; i++) { if (s.scrollHeight > s.clientHeight + 4) break; s = s.parentElement; }
+            if (!s) return -1;
+            if (${JSON.stringify(dir)} === 'top') s.scrollTop = 0; else s.scrollTop = Math.min(s.scrollTop + s.clientHeight, s.scrollHeight);
+            return s.scrollTop;
+          })()`
+        )
+        .catch(() => -1);
+
+    await scroll('top');
+    await new Promise((r) => setTimeout(r, 400));
+    let lastTop = -2;
+    let stable = 0;
+    for (let i = 0; i < 40; i++) {
+      await scrape();
+      const top = await scroll('down');
+      if (top < 0) break; // no scroller — single visible-window pass
+      await new Promise((r) => setTimeout(r, 250));
+      if (top === lastTop) {
+        if (++stable >= 2) break;
+      } else {
+        stable = 0;
+        lastTop = top;
+      }
+    }
+    await scrape();
+    return [...collected.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t);
   }
 
   async handoff({ openFile }: { openFile?: string } = {}): Promise<HandoffResult> {
@@ -1363,52 +1448,72 @@ export class DesignerController {
     const projectId = m[1];
     const projectUrl = baseUrl.split('?')[0] ?? baseUrl;
 
+    // Cross-project guard: the in-page chat scrape AND the export fetch run on the
+    // ACTIVE tab. _ensureInSession returns early on any /design/p/ tab and tab
+    // drift is real, so the active tab can be a DIFFERENT project than the bound
+    // one — which would pair project B's chat with project A's files. Pin the tab
+    // to the bound project first so both come from one project.
+    const curId = (await this.currentUrl()).match(SESSION_URL_RE)?.[1];
+    if (curId !== projectId) await this.resumeSession();
+
     // The export zip dropped the README + chat transcript the old tar.gz carried,
-    // so regenerate the decision record from the live chat before downloading.
-    const turns = await this.getChatTurns().catch((): ChatTurn[] => []);
+    // so regenerate the decision record from the live chat (virtualization-aware).
+    const turns = await this._collectChatTurns().catch((): ChatTurn[] => []);
     const decisionRecord = renderDecisionRecord(turns, projectId, projectUrl);
 
     const zip = await this._downloadProjectZip(projectId);
 
+    // Build the bundle atomically: assemble in a temp dir, rename into place only
+    // on full success, so a crash/partial extract never leaves a half-built bundle
+    // that `tasting` would pick up as the latest complete handoff.
     const dir = sessionDir(this.key);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const bundleDir = path.join(dir, `handoff-${stamp}`);
-    const projectDir = path.join(bundleDir, 'project');
-    fs.mkdirSync(projectDir, { recursive: true });
-    const zipPath = path.join(bundleDir, 'bundle.zip');
-    fs.writeFileSync(zipPath, zip);
+    const tmpDir = path.join(dir, `.handoff-${stamp}.tmp`);
+    const tmpProject = path.join(tmpDir, 'project');
+    fs.mkdirSync(tmpProject, { recursive: true });
+    try {
+      // Extract in-process (no external `unzip` — absent on Windows / minimal CI).
+      const entries = unzipSync(new Uint8Array(zip));
+      let extracted = 0;
+      for (const [name, data] of Object.entries(entries)) {
+        if (!name || name.endsWith('/')) continue;
+        const dest = path.join(tmpProject, name);
+        if (dest !== tmpProject && !dest.startsWith(tmpProject + path.sep)) continue; // zip-slip guard
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.writeFileSync(dest, Buffer.from(data));
+        extracted++;
+      }
+      if (extracted === 0) throw new Error('export zip contained no files');
+      fs.writeFileSync(path.join(tmpDir, 'bundle.zip'), zip);
+      fs.writeFileSync(path.join(tmpDir, 'decision-record.md'), decisionRecord);
+      const repaired = repairEmDashLinks(tmpProject);
+      fs.renameSync(tmpDir, bundleDir); // commit
 
-    // Unzip the flat archive into project/. unzip exit 1 = non-fatal warnings.
-    await new Promise<void>((resolve, reject) => {
-      const child = xspawn('unzip', ['-o', '-q', zipPath, '-d', projectDir], { stdio: 'pipe' });
-      let err = '';
-      child.stderr!.on('data', (d: Buffer) => (err += d.toString()));
-      child.on('close', (code: number | null) =>
-        code === 0 || code === 1 ? resolve() : reject(new Error(`unzip exited ${code}: ${err}`))
-      );
-    });
-
-    const decisionRecordPath = path.join(bundleDir, 'decision-record.md');
-    fs.writeFileSync(decisionRecordPath, decisionRecord);
-
-    const repaired = repairEmDashLinks(projectDir);
-    const files = listAllFiles(bundleDir).map((p) => path.relative(bundleDir, p));
-
-    appendHistory(this.key, { kind: 'handoff', projectId, bundleDir, fileCount: files.length, repaired });
-    return {
-      ok: true,
-      projectId,
-      projectUrl,
-      bundleDir,
-      slugDir: bundleDir,
-      projectDir,
-      decisionRecordPath,
-      decisionRecordBytes: Buffer.byteLength(decisionRecord),
-      zipPath,
-      zipBytes: zip.length,
-      files,
-      repaired
-    };
+      const projectDir = path.join(bundleDir, 'project');
+      // Design inventory = project/ only (the zip + record aren't design files).
+      const files = listAllFiles(projectDir).map((p) => path.relative(bundleDir, p));
+      appendHistory(this.key, { kind: 'handoff', projectId, bundleDir, fileCount: files.length, turns: turns.length, repaired });
+      return {
+        ok: true,
+        projectId,
+        projectUrl,
+        bundleDir,
+        slugDir: bundleDir,
+        projectDir,
+        decisionRecordPath: path.join(bundleDir, 'decision-record.md'),
+        decisionRecordBytes: Buffer.byteLength(decisionRecord),
+        decisionRecordTurns: turns.length,
+        decisionRecordEmpty: turns.length === 0,
+        zipPath: path.join(bundleDir, 'bundle.zip'),
+        zipBytes: zip.length,
+        files,
+        repaired
+      };
+    } catch (e) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+      throw e;
+    }
   }
 
   async _clickButtonByText(pattern: RegExp | string): Promise<boolean> {

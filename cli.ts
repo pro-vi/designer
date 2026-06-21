@@ -351,7 +351,7 @@ File / project introspection:
   fetch "<name>.html" [--key k] [--out p]      fetch served HTML to disk
 
 Exit / promotion:
-  handoff [--key k] [--file "<name>.html"]     download tar.gz bundle (README + chats + source)
+  handoff [--key k] [--file "<name>.html"]     fetch export zip → project/ + decision-record.md
   tasting [--key k]                            local full-viewport switcher for the latest bundle
                                                (fallback when Claude's URL framing hurts taste)
 
