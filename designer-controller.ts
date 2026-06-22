@@ -345,8 +345,14 @@ export class DesignerController {
 
   // Pick the live claude.ai/design tab among possibly many CDP pages, switch
   // agent-browser's binding to it, and verify readiness via DOM anchors.
-  // Returns the count of candidates considered (for error messaging).
-  private async selectMatchingTab(): Promise<{ matched: boolean; candidates: number }> {
+  // Activates/focuses the matched tab (that's its job) but performs NO
+  // session-store mutation — so read-only callers like `designer health` can
+  // correct tab drift before probing without persisting state. (Health probing
+  // whatever tab happens to be active — a localhost dev app, say — is the
+  // tab-drift failure it exists to catch.) Returns the count of candidates
+  // considered (for error messaging). No-ops (matched:false, candidates:0) when
+  // no design tab is open, leaving the current binding untouched.
+  async selectDesignTab(): Promise<{ matched: boolean; candidates: number }> {
     const stored = getSession(this.key);
     const targetRoot = stored?.designUrl?.split('?')[0];
     const candidates = await this.candidateTabs((u) =>
@@ -360,12 +366,17 @@ export class DesignerController {
       const homeOk = this.selectors.login.signedInIndicator
         ? await this.browser.isVisible(this.selectors.login.signedInIndicator).catch(() => false)
         : false;
-      if (composerOk || homeOk) {
-        upsertSession(this.key, { lastUrl: await this.currentUrl() });
-        return { matched: true, candidates: candidates.length };
-      }
+      if (composerOk || homeOk) return { matched: true, candidates: candidates.length };
     }
     return { matched: false, candidates: candidates.length };
+  }
+
+  // selectDesignTab + record the bound tab as this key's lastUrl. The mutating
+  // variant used by the write verbs (clear / ensureReady).
+  private async selectMatchingTab(): Promise<{ matched: boolean; candidates: number }> {
+    const r = await this.selectDesignTab();
+    if (r.matched) upsertSession(this.key, { lastUrl: await this.currentUrl() });
+    return r;
   }
 
   // --- interstitial pre-flight (see interstitials.ts) -----------------------
@@ -569,17 +580,17 @@ export class DesignerController {
     fidelity: 'wireframe' | 'highfi' = 'wireframe',
     { timeoutMs = 20 * 60_000, stabilityMs = 4000 }: { timeoutMs?: number; stabilityMs?: number } = {}
   ): Promise<{ ok: true; url: string; name: string; fidelity: string }> {
-    // 2026-06 redesign (#61): the home is composer-driven. There's no longer a
-    // project-name input or a wireframe/high-fi toggle — you seed an intent in
-    // the chat composer (`home.creator`, the same data-testid as the in-session
-    // composer) and click "Start project" (`home.createButton`, the same
-    // data-testid as the in-session send button). So `name` becomes the seed
+    // 2026-06 home (#61, re-drifted — re-captured live 2026-06-22): the home is
+    // composer-driven, but the composer is now a plain <textarea> (`home.creator`,
+    // placeholder rotates) with a separate `button[title="Create"]` submit
+    // (`home.createButton`) — NOT the in-session contenteditable / chat-send-button
+    // (those testids were stripped from the home). So `name` becomes the seed
     // prompt. The redesign removed the wireframe/high-fi toggle, so `fidelity` is
     // folded into the seed as a directive (and still stored) — otherwise highfi
     // and wireframe creates would behave identically while the session claimed a
     // fidelity that was never applied (#66 review). The creation-type cards
-    // (Slides / Prototype / Product wireframe / …) are text-only buttons left as a
-    // follow-up. Verified live against the redesigned home.
+    // (Slides / Prototype / Wireframe / Animation) set the Template pill but are
+    // off the seed path. Verified live against the redesigned home.
     //
     // `name` is the composer seed, so it must be non-empty — a whitespace-only
     // name leaves the send button disabled and would otherwise spin the full
@@ -623,9 +634,14 @@ export class DesignerController {
       : null;
     try {
       observer?.beginRun();
-      // Reuse the battle-tested composer fill+submit (contenteditable ProseMirror;
-      // waits for the send button to enable before clicking "Start project").
-      await this._submitPrompt(seed);
+      // Reuse the composer fill+submit, pointed at the HOME composer (<textarea> +
+      // "Create"), not the in-session defaults. Note button[title="Create"] is
+      // always enabled, so the enable-wait is a no-op here — the synchronous fill
+      // above is what guarantees the seed text is present before the click.
+      await this._submitPrompt(seed, {
+        textarea: this.selectors.home.creator,
+        sendButton: this.selectors.home.createButton
+      });
 
       let inSession = false;
       for (let i = 0; i < 60; i++) {
@@ -656,8 +672,14 @@ export class DesignerController {
     return { ok: true, url: stored.designUrl };
   }
 
-  async _submitPrompt(prompt: string): Promise<void> {
-    const { promptTextarea, sendButton } = this.selectors.composer;
+  // Fill the composer and click send. Defaults to the in-session composer
+  // (contenteditable + chat-send-button); pass `sel` to drive a different
+  // composer — the home create surface is a plain <textarea> + button[title="Create"]
+  // (see createSession). The fill branch already handles both <textarea> (native
+  // value setter) and contenteditable (synthetic paste), so only the selectors differ.
+  async _submitPrompt(prompt: string, sel?: { textarea?: string; sendButton?: string }): Promise<void> {
+    const promptTextarea = sel?.textarea ?? this.selectors.composer.promptTextarea;
+    const sendButton = sel?.sendButton ?? this.selectors.composer.sendButton;
     await this.browser.waitFor(promptTextarea);
     // The composer has shipped as both a React-controlled <textarea> and a
     // ProseMirror contenteditable <div> — branch on what's actually there.
@@ -697,12 +719,25 @@ export class DesignerController {
         throw new Error('composer input is neither textarea nor contenteditable: ' + el.tagName);
       })()`
     );
+    // Wait until the composer is actually ready to submit: the send/create button
+    // is enabled AND the input holds the text we just wrote. In-session, "enabled"
+    // already implies content (send disables when empty); but the home "Create"
+    // button is always enabled, so the content check is what prevents firing an
+    // empty/wrong-target submit there (home.creator is the generic `textarea` —
+    // a stray earlier textarea, or a fill that didn't register, would otherwise
+    // submit blank and spin the navigation poll into a misleading timeout).
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 150));
-      const disabled = await this.browser.evalValue<boolean>(
-        `(() => { const b = document.querySelector(${JSON.stringify(sendButton)}); return !b || b.disabled || b.getAttribute('aria-disabled') === 'true'; })()`
+      const ready = await this.browser.evalValue<boolean>(
+        `(() => {
+          const el = document.querySelector(${JSON.stringify(promptTextarea)});
+          const hasText = !!el && (el instanceof HTMLTextAreaElement ? el.value : (el.textContent || '')).trim().length > 0;
+          const b = document.querySelector(${JSON.stringify(sendButton)});
+          const enabled = !!b && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
+          return hasText && enabled;
+        })()`
       );
-      if (!disabled) break;
+      if (ready) break;
     }
     await this.browser.evalValue<boolean>(
       `(() => {

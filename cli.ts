@@ -220,7 +220,15 @@ async function main(): Promise<void> {
       process.exit(code);
     }
     case 'health': {
-      const browser = createBrowser({ session: `designer-${key}` });
+      // Correct tab drift before probing: bind to the live claude.ai/design tab
+      // if one is open, so health validates the design surface rather than
+      // whatever tab happens to be active (e.g. a localhost dev app) — the exact
+      // failure health exists to catch. selectDesignTab activates/focuses that tab
+      // (its purpose) but does NOT persist session state, and no-ops if no design
+      // tab is open.
+      const c = new DesignerController({ key });
+      await c.selectDesignTab().catch(() => null);
+      const browser = c.browser;
       const results = await runHealth(browser);
       const counts = results.reduce<Record<string, number>>((acc, r) => {
         acc[r.status] = (acc[r.status] || 0) + 1;

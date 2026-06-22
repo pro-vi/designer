@@ -185,12 +185,17 @@ export const UI_ANCHORS: AnchorDef[] = [
       if (/claude\.ai\/login/.test(url)) {
         return { ok: false, detail: `signed out — Chrome is on the login wall (${url.slice(0, 80)}). Run: designer setup` };
       }
-      // On a design surface, the signed-in app shell renders the chat composer
-      // (chat-composer-input) on BOTH the home (creation composer, post-2026-06
-      // redesign #61) and inside a session. Its absence here means the login
-      // wall is being served at the /design URL — fail loudly.
+      // On a design surface, the signed-in app shell renders a composer-or-create
+      // affordance: in-session that's the chat composer (chat-composer-input);
+      // on the 2026-06-22 re-drifted home it's a plain <textarea> + a
+      // `button[title="Create"]` (the chat-composer-input testid was stripped from
+      // the home — see selectors.json `_drift`). Accept EITHER. We key the home arm
+      // on the design-specific Create button, not a bare <textarea>, so a login
+      // wall / re-auth page that happens to render some textarea can't false-pass
+      // this signed-in check (the #16/#32 false-positive this anchor guards). Its
+      // absence means the login wall is served at the /design URL — fail loudly.
       if (/claude\.ai\/design/.test(url)) {
-        const signedIn = await hasSelector(b, '[data-testid="chat-composer-input"]');
+        const signedIn = await hasSelector(b, '[data-testid="chat-composer-input"], button[title="Create"]');
         return signedIn
           ? { ok: true }
           : { ok: false, detail: `login wall rendered at ${url.slice(0, 80)} (no app shell) — signed out. Run: designer setup` };
@@ -202,42 +207,45 @@ export const UI_ANCHORS: AnchorDef[] = [
   },
 
   // --- home page ---
-  // 2026-06 redesign (#61): the home is composer-driven — no project-name input
-  // and no wireframe/high-fi toggle. Creation = seed the chat composer
-  // (chat-composer-input) + click "Start project" (chat-send-button, same
-  // testids as the in-session composer/send). The old home.nameInput anchor was
-  // dropped (no equivalent); home.wireframeButton/highFiButton are repurposed to
-  // the surviving creation-type cards (text-only buttons) so they still detect
-  // drift of the creation UI. Captured live from Chrome 149.
+  // 2026-06 home (#61), re-captured live 2026-06-22: still composer-driven, but
+  // the composer is now a plain <textarea> (placeholder rotates — don't key on it)
+  // and the submit is button[title="Create"]. The home no longer carries
+  // chat-composer-input / chat-send-button — those testids were stripped from the
+  // home and exist only in-session. Creation = type intent in the textarea + click
+  // Create. The old home.nameInput anchor stays dropped (no equivalent);
+  // home.wireframeButton/highFiButton track the creation-type cards (now labelled
+  // "Wireframe"/"Prototype" — the earlier "Product …" labels never matched) so they
+  // still detect drift of the creation UI. Captured live from Chrome 149.
   {
     id: 'home.creator',
     category: 'home',
-    description: 'creation composer (chat-composer-input)',
+    description: 'creation composer (textarea)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-composer-input"]') })
+    check: async (b) => ({ ok: await hasSelector(b, 'textarea') })
   },
   {
     id: 'home.wireframeButton',
     category: 'home',
-    description: 'Product wireframe creation-type card',
+    description: 'Wireframe creation-type card',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, /^Product wireframe/) })
+    check: async (b) => ({ ok: await hasButtonMatching(b, /^Wireframe/) })
   },
   {
     id: 'home.highFiButton',
     category: 'home',
-    // Renamed 'Prototype' → 'Product prototype' in the 2026-06-19 home build
-    // (auto-heal PR #75/#76). Off the create path — a drift sentinel only.
-    description: 'Product prototype creation-type card',
+    // Card labelled just "Prototype" (the 2026-06-19 auto-heal PR #75/#76
+    // "Product prototype" rename never matched live). Off the create path — a
+    // drift sentinel only.
+    description: 'Prototype creation-type card',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, /^Product prototype/) })
+    check: async (b) => ({ ok: await hasButtonMatching(b, /^Prototype/) })
   },
   {
     id: 'home.createButton',
     category: 'home',
-    description: '"Start project" create button (chat-send-button)',
+    description: '"Create" submit button (button[title="Create"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-send-button"], button[title^="Send ("]') })
+    check: async (b) => ({ ok: await hasSelector(b, 'button[title="Create"]') })
   },
   {
     id: 'home.projectsList',
