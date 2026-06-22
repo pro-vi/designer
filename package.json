@@ -43,7 +43,7 @@
     "trace:analyze": "tsx scripts/trace-analyze.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.104.1",
+    "@anthropic-ai/sdk": "^0.105.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "cross-spawn": "^7.0.6",
     "fflate": "^0.8.3",
