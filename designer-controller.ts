@@ -1,11 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import crypto from 'node:crypto';
 import { createBrowser, type Browser } from './browser.ts';
 import { sessionDir, saveIteration, type IterationRecord } from './artifact-store.ts';
 import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
-import { REPO_ROOT } from './repo-root.ts';
+import { getSelectors, type Selectors } from './selectors.ts';
 import { ensureCdpUp } from './cdp-ensure.ts';
 import { RunStateObserver } from './run-state.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
@@ -23,41 +22,6 @@ import {
 } from './interstitials.ts';
 import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
 import { unzipSync } from 'fflate';
-
-export interface Selectors {
-  login: { signedInIndicator: string | null };
-  home: {
-    creator: string;
-    nameInput: string;
-    wireframeButtonText: string;
-    highFiButtonText: string;
-    createButton: string;
-    projectsList: string;
-    projectCard: string;
-  };
-  composer: {
-    promptTextarea: string;
-    sendButton: string;
-    stopButton: string | null;
-    attachButton?: string;
-    modelButton?: string;
-  };
-  preview: {
-    iframeOrContainer: string;
-    exportButtonText: string;
-    shareButtonText: string;
-    emptyStateHeading: string;
-  };
-  messages: {
-    chatMessagesContainer: string;
-    generatingIndicator: string | null;
-  };
-  // Content-only interstitial overlays have no stable testid; detection regexes
-  // live in interstitials.ts. This optional block lets the one actionable button
-  // text be overridden alongside the other anchors (~/.designer/selectors.override.json).
-  interstitials?: { continueHere?: string };
-  [k: string]: unknown;
-}
 
 export interface ChatTurn {
   role: 'assistant' | 'user' | 'unknown';
@@ -161,28 +125,6 @@ const FLAT_LAYOUT_SUFFIX = '\n\nFile layout: keep all generated files at the pro
 const DECISIVE_SUFFIX =
   '\n\nIf you would otherwise stop to ask clarifying questions, do not. Choose the most defensible answer for each axis yourself and proceed. Note your assumption in a one-line `<!-- assumed: ... -->` comment at the top of the relevant file so I can override on the next turn.';
 
-function loadSelectors(): Selectors {
-  const base = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'selectors.json'), 'utf8')) as Selectors;
-  const overridePath = path.join(os.homedir(), '.designer', 'selectors.override.json');
-  if (fs.existsSync(overridePath)) {
-    try {
-      return deepMerge(base, JSON.parse(fs.readFileSync(overridePath, 'utf8'))) as Selectors;
-    } catch (e) {
-      console.warn(`[designer] failed to parse ${overridePath}: ${(e as Error).message}`);
-    }
-  }
-  return base;
-}
-
-function deepMerge(a: unknown, b: unknown): unknown {
-  if (Array.isArray(a) || Array.isArray(b)) return b ?? a;
-  if (typeof a !== 'object' || typeof b !== 'object' || !a || !b) return b ?? a;
-  const out: Record<string, unknown> = { ...(a as Record<string, unknown>) };
-  for (const k of Object.keys(b as Record<string, unknown>))
-    out[k] = deepMerge((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]);
-  return out;
-}
-
 export class DesignerController {
   readonly key: string;
   readonly selectors: Selectors;
@@ -191,7 +133,7 @@ export class DesignerController {
 
   constructor({ key, headed = true }: { key?: string; headed?: boolean } = {}) {
     this.key = key || 'default';
-    this.selectors = loadSelectors();
+    this.selectors = getSelectors();
     this.browser = createBrowser({ session: `designer-${this.key}`, headed });
   }
 
@@ -1186,7 +1128,7 @@ export class DesignerController {
       (await this.browser
         .evalValue<ChatTurn[]>(
           `(() => {
-            const c = document.querySelector('[data-testid="chat-messages"]');
+            const c = document.querySelector(${JSON.stringify(this.selectors.messages.chatMessagesContainer)});
             const inner = c && c.children[0];
             if (!inner) return [];
             return Array.from(inner.children).map((d) => {
@@ -1426,7 +1368,7 @@ export class DesignerController {
       const rows = await this.browser
         .evalValue<Array<{ idx: number; role: 'assistant' | 'user'; text: string }>>(
           `(() => {
-            const c = document.querySelector('[data-testid="chat-messages"]');
+            const c = document.querySelector(${JSON.stringify(this.selectors.messages.chatMessagesContainer)});
             const inner = c && c.children[0];
             if (!inner) return [];
             return Array.from(inner.children).map((d) => {
@@ -1444,7 +1386,7 @@ export class DesignerController {
       this.browser
         .evalValue<number>(
           `(() => {
-            let s = document.querySelector('[data-testid="chat-messages"]');
+            let s = document.querySelector(${JSON.stringify(this.selectors.messages.chatMessagesContainer)});
             for (let i = 0; i < 8 && s; i++) { if (s.scrollHeight > s.clientHeight + 4) break; s = s.parentElement; }
             if (!s) return -1;
             if (${JSON.stringify(dir)} === 'top') s.scrollTop = 0; else s.scrollTop = Math.min(s.scrollTop + s.clientHeight, s.scrollHeight);

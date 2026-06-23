@@ -4,10 +4,21 @@ import { isPreviewIframeSrc, previewIframeVariant, isBootstrapShellHtml } from '
 import { isCdpEnabled } from './cdp-env.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
 import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
+import { getSelectors } from './selectors.ts';
 
 // Every UI anchor this MCP depends on to work. Grouped by the surface state
 // they live on. A regression in Claude Design's UI will trip one or more of
 // these; `designer health` walks all of them and reports what broke.
+//
+// Anchors read their DOM selectors from the shared selectors.json (via SEL)
+// rather than hardcoding literals, so `designer health` validates the SAME
+// contract the controller's verbs use — a drift repair in selectors.json can't
+// leave a stale health probe behind (the login.signedIn class of bug).
+const SEL = getSelectors();
+
+// Build a "button text starts with <literal>" matcher from a selectors.json
+// text value (the creation-card sentinels), escaping regex specials.
+const startsWithRegExp = (text: string): RegExp => new RegExp('^' + text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
 
 export type AnchorCategory = 'home' | 'session' | 'share' | 'pattern';
 export type AnchorState = 'home' | 'session' | 'any';
@@ -57,7 +68,7 @@ async function getPreviewIframeSrc(browser: Browser): Promise<string> {
   return (
     (await browser
       .evalValue<string>(
-        `(() => { const el = document.querySelector('[data-testid="html-viewer-iframe"]'); return (el && el.src) || ''; })()`
+        `(() => { const el = document.querySelector(${JSON.stringify(SEL.preview.iframeOrContainer)}); return (el && el.src) || ''; })()`
       )
       .catch(() => '')) || ''
   );
@@ -73,7 +84,7 @@ async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; det
   const filled = await browser
     .evalValue<boolean>(
       `(() => {
-        const el = document.querySelector('[data-testid="chat-composer-input"]');
+        const el = document.querySelector(${JSON.stringify(SEL.composer.promptTextarea)});
         if (!el) return false;
         const text = ${JSON.stringify(prompt)};
         if (el instanceof HTMLTextAreaElement) {
@@ -106,7 +117,7 @@ async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; det
     const disabled = await browser
       .evalValue<boolean>(
         `(() => {
-          const b = document.querySelector('[data-testid="chat-send-button"], button[title^="Send ("]');
+          const b = document.querySelector(${JSON.stringify(SEL.composer.sendButton)});
           return !b || b.disabled || b.getAttribute('aria-disabled') === 'true';
         })()`
       )
@@ -118,7 +129,7 @@ async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; det
   const clicked = await browser
     .evalValue<boolean>(
       `(() => {
-        const b = document.querySelector('[data-testid="chat-send-button"], button[title^="Send ("]');
+        const b = document.querySelector(${JSON.stringify(SEL.composer.sendButton)});
         if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
         b.click();
         return true;
@@ -195,7 +206,7 @@ export const UI_ANCHORS: AnchorDef[] = [
       // this signed-in check (the #16/#32 false-positive this anchor guards). Its
       // absence means the login wall is served at the /design URL — fail loudly.
       if (/claude\.ai\/design/.test(url)) {
-        const signedIn = await hasSelector(b, '[data-testid="chat-composer-input"], button[title="Create"]');
+        const signedIn = await hasSelector(b, SEL.login.signedInIndicator ?? '');
         return signedIn
           ? { ok: true }
           : { ok: false, detail: `login wall rendered at ${url.slice(0, 80)} (no app shell) — signed out. Run: designer setup` };
@@ -221,14 +232,14 @@ export const UI_ANCHORS: AnchorDef[] = [
     category: 'home',
     description: 'creation composer (textarea)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, 'textarea') })
+    check: async (b) => ({ ok: await hasSelector(b, SEL.home.creator) })
   },
   {
     id: 'home.wireframeButton',
     category: 'home',
     description: 'Wireframe creation-type card',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, /^Wireframe/) })
+    check: async (b) => ({ ok: await hasButtonMatching(b, startsWithRegExp(SEL.home.wireframeButtonText)) })
   },
   {
     id: 'home.highFiButton',
@@ -238,28 +249,28 @@ export const UI_ANCHORS: AnchorDef[] = [
     // drift sentinel only.
     description: 'Prototype creation-type card',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, /^Prototype/) })
+    check: async (b) => ({ ok: await hasButtonMatching(b, startsWithRegExp(SEL.home.highFiButtonText)) })
   },
   {
     id: 'home.createButton',
     category: 'home',
     description: '"Create" submit button (button[title="Create"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, 'button[title="Create"]') })
+    check: async (b) => ({ ok: await hasSelector(b, SEL.home.createButton) })
   },
   {
     id: 'home.projectsList',
     category: 'home',
     description: 'project list (>=1 /design/p/ link)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, 'a[href*="/design/p/"]') })
+    check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectsList) })
   },
   {
     id: 'home.projectCard',
     category: 'home',
     description: 'project card (a[href*="/design/p/"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, 'a[href*="/design/p/"]') })
+    check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectCard) })
   },
 
   // --- inside a session (after /design/p/{uuid}) ---
@@ -268,7 +279,7 @@ export const UI_ANCHORS: AnchorDef[] = [
     category: 'session',
     description: 'chat composer textarea',
     requires: 'session',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-composer-input"]') })
+    check: async (b) => ({ ok: await hasSelector(b, SEL.composer.promptTextarea) })
   },
   {
     // Existence (above) isn't enough — _submitPrompt can only fill a composer
@@ -300,7 +311,7 @@ export const UI_ANCHORS: AnchorDef[] = [
       const shape: ComposerShape = await b
         .evalValue<ComposerShape>(
           `(() => {
-            const el = document.querySelector('[data-testid="chat-composer-input"]');
+            const el = document.querySelector(${JSON.stringify(SEL.composer.promptTextarea)});
             if (!el) return { found: false };
             const fillable = el instanceof HTMLTextAreaElement || el.isContentEditable;
             return { found: true, tag: el.tagName, contentEditable: el.isContentEditable, fillable };
@@ -324,7 +335,7 @@ export const UI_ANCHORS: AnchorDef[] = [
     requires: 'session',
     // The 2026-06 build dropped data-testid="chat-send-button"; the button is
     // now only identifiable by its title="Send (Enter)". Match either.
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-send-button"], button[title^="Send ("]') })
+    check: async (b) => ({ ok: await hasSelector(b, SEL.composer.sendButton) })
   },
   {
     id: 'session.htmlViewerIframe',
@@ -335,7 +346,7 @@ export const UI_ANCHORS: AnchorDef[] = [
       // The iframe only renders when a file is open. Without ?file= in the URL,
       // its absence is expected, not a regression.
       if (!/[?&]file=/.test(url)) return { ok: true, detail: '(no file open — iframe not expected)' };
-      return { ok: await hasSelector(b, '[data-testid="html-viewer-iframe"]') };
+      return { ok: await hasSelector(b, SEL.preview.iframeOrContainer) };
     }
   },
   {
@@ -343,7 +354,7 @@ export const UI_ANCHORS: AnchorDef[] = [
     category: 'session',
     description: 'chat-messages container',
     requires: 'session',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-messages"]') })
+    check: async (b) => ({ ok: await hasSelector(b, SEL.messages.chatMessagesContainer) })
   },
   {
     id: 'network.turnRpcContract',
@@ -472,7 +483,7 @@ export const UI_ANCHORS: AnchorDef[] = [
       const countRows = (): Promise<number> =>
         b
           .evalValue<number>(
-            `(() => { const cm = document.querySelector('[data-testid="chat-messages"]'); if (!cm) return -1; return cm.querySelectorAll('[data-index]').length; })()`
+            `(() => { const cm = document.querySelector(${JSON.stringify(SEL.messages.chatMessagesContainer)}); if (!cm) return -1; return cm.querySelectorAll('[data-index]').length; })()`
           )
           .catch(() => -1);
       // The chat renders progressively after navigation; settle before judging.

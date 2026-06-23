@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { REPO_ROOT } from './repo-root.ts';
 import { defaultChromeBin, isChromeRunning, xspawnSync, WHICH, IS_WIN, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { createBrowser, type Browser } from './browser.ts';
+import { getSelectors } from './selectors.ts';
 
 const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
 const SKILL_DEST_DIR = path.join(os.homedir(), '.claude', 'skills', 'designer-loop');
@@ -35,17 +36,20 @@ async function isCdpUp(port: string): Promise<boolean> {
 }
 
 async function verifySignedIn(browser: Browser): Promise<boolean> {
-  // A signed-in claude.ai/design session renders one of these app-shell
-  // anchors — `project-creator` on the home surface, `chat-composer-input`
-  // inside a project. A logged-out visit to claude.ai/design renders a
-  // login wall with neither.
+  // A signed-in claude.ai/design session renders the same app-shell anchor the
+  // health probe and the verbs rely on — login.signedInIndicator from the shared
+  // selectors (in-session: chat-composer-input; on the home: the Create button).
+  // A logged-out visit renders a login wall with neither.
   //
-  // This replaces the old URL-only check (URL matches /design && !/login/).
-  // That check passed the login wall served AT the /design URL — the URL
-  // stays `/design` when logged out, no `/login` substring — which is the
-  // #16 false positive. The DOM is the only reliable signal.
-  const js =
-    '!!(document.querySelector(\'[data-testid="project-creator"]\') || document.querySelector(\'[data-testid="chat-composer-input"]\'))';
+  // This replaces the old URL-only check (URL matches /design && !/login/), which
+  // passed the login wall served AT the /design URL — no `/login` substring (the
+  // #16 false positive). The DOM is the only reliable signal. Read the selector
+  // from the single source so a home redesign updates it in one place: the prior
+  // inline copy (`project-creator`/`chat-composer-input`) went stale when the home
+  // dropped those testids, so setup false-negated sign-in on the redesigned home.
+  const sel = getSelectors().login.signedInIndicator;
+  if (!sel) return false;
+  const js = `!!document.querySelector(${JSON.stringify(sel)})`;
   return browser.evalValue<boolean>(js).catch(() => false);
 }
 
