@@ -173,8 +173,14 @@ export class OopifHtmlReader extends CdpSession {
   static async attach(opts: CdpSessionOptions = {}): Promise<OopifHtmlReader | null> {
     if (typeof WebSocket === 'undefined') return null;
     try {
-      const { ws, target } = await OopifHtmlReader.connectTarget(opts);
-      return new OopifHtmlReader(ws, target, opts);
+      // A one-shot, read-only preview capture: when the probing Chrome holds a
+      // duplicate tab at the same project+file URL (the daily-health confound),
+      // bind the active one rather than throw — the duplicate serves identical
+      // preview content and a wrong pick degrades to the node-fetch fallback.
+      // Caller-supplied opts still win if they pin it off.
+      const resolved: CdpSessionOptions = { tolerateDuplicateUrl: true, ...opts };
+      const { ws, target } = await OopifHtmlReader.connectTarget(resolved);
+      return new OopifHtmlReader(ws, target, resolved);
     } catch {
       return null;
     }

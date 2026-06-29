@@ -97,6 +97,10 @@ export interface CdpSessionOptions {
   urlPattern?: RegExp;
   preferUrlPrefix?: string | null;
   reconnect?: boolean;
+  // Read-only sessions opt in to bind one of several same-URL tabs instead of
+  // throwing on the duplicate (see findDesignTarget). The OOPIF preview reader
+  // sets this; write-path sessions leave it false.
+  tolerateDuplicateUrl?: boolean;
 }
 
 type ResolvedCdpSessionOptions = Required<Omit<CdpSessionOptions, 'preferUrlPrefix'>> & {
@@ -167,17 +171,35 @@ export async function listTargets(port: string = DEFAULT_PORT): Promise<CdpTarge
 export async function findDesignTarget({
   port = DEFAULT_PORT,
   urlPattern = DESIGN_URL_PATTERN,
-  preferUrlPrefix = null
+  preferUrlPrefix = null,
+  tolerateDuplicateUrl = false
 }: {
   port?: string;
   urlPattern?: RegExp;
   preferUrlPrefix?: string | null;
+  // Read-only callers (the OOPIF preview reader) set this: two tabs at the same
+  // project+file URL serve byte-identical preview content, so binding either is
+  // safe, and the worst case (an idle duplicate with no rendered OOPIF) degrades
+  // to the node-fetch fallback. The default stays false so write-path callers
+  // still refuse to drive an ambiguous tab.
+  tolerateDuplicateUrl?: boolean;
 } = {}): Promise<CdpTarget> {
   const targets = await listTargets(port);
   const candidates = targets.filter((t) => t.type === 'page' && urlPattern.test(t.url) && t.webSocketDebuggerUrl);
   if (candidates.length === 0) {
     throw new Error(`No page target matching ${urlPattern} on CDP :${port}. Open claude.ai/design first.`);
   }
+  return selectDesignTarget(candidates, { preferUrlPrefix, tolerateDuplicateUrl });
+}
+
+// Pure tab-selection over already-fetched page candidates (>=1 guaranteed by the
+// caller). Split out so the disambiguation rules — the part that has drifted and
+// regressed (#66, the duplicate-tab false drift) — are unit-testable without a
+// live Chrome. Throws the same messages findDesignTarget always has.
+export function selectDesignTarget(
+  candidates: CdpTarget[],
+  { preferUrlPrefix = null, tolerateDuplicateUrl = false }: { preferUrlPrefix?: string | null; tolerateDuplicateUrl?: boolean } = {}
+): CdpTarget {
   if (preferUrlPrefix) {
     // Exact URL first: the home URL (https://claude.ai/design) is a *prefix* of
     // every /design/p/<uuid> tab, so a startsWith match alone could bind to an
@@ -188,8 +210,15 @@ export async function findDesignTarget({
     if (exactMatches.length > 1) {
       // An exact URL match still isn't an exact TAB match: two tabs at the same
       // URL (e.g. duplicate claude.ai/design home tabs) can't be told apart by
-      // URL, so fail rather than bind an arbitrary (possibly idle) one (#66).
-      // Callers that tolerate it (RunStateObserver.attach) degrade to null.
+      // URL, so for write-path callers fail rather than bind an arbitrary
+      // (possibly idle) one (#66). Callers that tolerate it (RunStateObserver,
+      // the read-only OOPIF reader) degrade to null / pick the first candidate.
+      // /json/list orders most-recently-active first, so exactMatches[0] is the
+      // tab a human is looking at — the one whose preview actually rendered.
+      // This is the exact confound that filed daily false `session.oopifPreviewRead`
+      // drift: the probe Chrome accumulated a duplicate idle tab and the reader's
+      // attach threw, handing snapshot/fetch/iterate 0 bytes.
+      if (tolerateDuplicateUrl && onlyExact) return onlyExact;
       throw new Error(
         `Multiple tabs open at exactly ${preferUrlPrefix} — close the duplicate(s) so the right tab can be identified.`
       );
@@ -223,7 +252,8 @@ export abstract class CdpSession {
       port: opts.port ?? DEFAULT_PORT,
       urlPattern: opts.urlPattern ?? DESIGN_URL_PATTERN,
       preferUrlPrefix: opts.preferUrlPrefix ?? null,
-      reconnect: opts.reconnect ?? true
+      reconnect: opts.reconnect ?? true,
+      tolerateDuplicateUrl: opts.tolerateDuplicateUrl ?? false
     };
     this.wire(ws);
   }
@@ -233,7 +263,8 @@ export abstract class CdpSession {
     const target = await findDesignTarget({
       port: opts.port ?? DEFAULT_PORT,
       urlPattern: opts.urlPattern,
-      preferUrlPrefix: opts.preferUrlPrefix ?? null
+      preferUrlPrefix: opts.preferUrlPrefix ?? null,
+      tolerateDuplicateUrl: opts.tolerateDuplicateUrl ?? false
     });
     const ws = await this.openSocket(target.webSocketDebuggerUrl);
     return { ws, target };
@@ -367,7 +398,8 @@ export abstract class CdpSession {
         const target = await findDesignTarget({
           port: this.sessionOpts.port,
           urlPattern: this.sessionOpts.urlPattern,
-          preferUrlPrefix: this.sessionOpts.preferUrlPrefix
+          preferUrlPrefix: this.sessionOpts.preferUrlPrefix,
+          tolerateDuplicateUrl: this.sessionOpts.tolerateDuplicateUrl
         });
         const ws = await CdpSession.openSocket(target.webSocketDebuggerUrl);
         this.ws = ws;
