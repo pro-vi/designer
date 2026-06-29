@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.16](https://github.com/pro-vi/designer/compare/v0.3.15...v0.3.16) (2026-06-29)
+
+
+### Bug Fixes
+
+* **health,cdp:** tolerate duplicate same-URL tabs in the read-only OOPIF reader ([6e87e21](https://github.com/pro-vi/designer/commit/6e87e2172b2f3e92136de6082b64adeb8cf46bb6))
+* **selectors,health:** repoint re-drifted home create UI + make health tab-drift-robust ([8c55d4c](https://github.com/pro-vi/designer/commit/8c55d4cb1a41139d0f96ec6bee6d1edeb49d8e83))
+
 ## [0.3.15](https://github.com/pro-vi/designer/compare/v0.3.14...v0.3.15) (2026-06-21)
 
 
