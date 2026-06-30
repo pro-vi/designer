@@ -31,6 +31,19 @@ export function shouldAcceptBeforeUnload(method: string, params: unknown): boole
   return asRec(params).type === 'beforeunload';
 }
 
+// Bound a CDP call so a live-but-silent socket can't hang the guard. The base
+// CdpSession.send() has no timeout (only the WS *open* is bounded), so a wedged
+// Chrome that never answers Page.enable would otherwise hang attach() BEFORE the
+// navigation even starts — strictly worse than a plain open() (second-opinion
+// 2026-06-30, H3). Reject on timeout so attach()'s catch degrades to no-guard.
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
 export class BeforeUnloadAccepter extends CdpSession {
   private accepted = 0;
 
@@ -43,16 +56,23 @@ export class BeforeUnloadAccepter extends CdpSession {
 
   static async attach(opts: CdpSessionOptions = {}): Promise<BeforeUnloadAccepter | null> {
     if (typeof WebSocket === 'undefined') return null;
+    let accepter: BeforeUnloadAccepter | null = null;
     try {
-      // tolerateDuplicateUrl: a duplicate tab at the same URL must not throw — the
-      // guard is best-effort; a wrong/failed pick simply means the navigation isn't
-      // guarded (degrades to the prior behavior), never a crash.
-      const resolved: CdpSessionOptions = { tolerateDuplicateUrl: true, ...opts };
+      // tolerateDuplicateUrl DEFAULTS FALSE here (unlike the read-only OOPIF
+      // reader): for a dialog accepter, a WRONG-tab pick is materially worse than
+      // no guard — it would arm auto-accept on an unrelated tab AND miss the real
+      // dialog (second-opinion 2026-06-30, H3). On a duplicate-URL ambiguity,
+      // connectTarget throws -> we degrade to no-guard (a plain open), never an
+      // arbitrary tab. Callers can still override.
+      const resolved: CdpSessionOptions = { tolerateDuplicateUrl: false, ...opts };
       const { ws, target } = await BeforeUnloadAccepter.connectTarget(resolved);
-      const accepter = new BeforeUnloadAccepter(ws, target, resolved);
+      accepter = new BeforeUnloadAccepter(ws, target, resolved);
       await accepter.start();
       return accepter;
     } catch {
+      // Close the socket if start() (the bounded Page.enable) failed/timed out, so
+      // a failed attach can't leak a half-open Page-enabled client on a tab.
+      accepter?.close();
       return null;
     }
   }
@@ -62,8 +82,10 @@ export class BeforeUnloadAccepter extends CdpSession {
   }
 
   // Only Page is needed; skip the base's Network buffering for a one-shot guard.
+  // Bounded so a wedged-but-open socket degrades to no-guard instead of hanging
+  // the navigation before it starts (second-opinion 2026-06-30, H3).
   protected override async enableDomains(): Promise<void> {
-    await this.send('Page.enable');
+    await withTimeout(this.send('Page.enable'), 2000, 'Page.enable');
   }
 
   // Count of dialogs auto-accepted this session (diagnostic / test signal).

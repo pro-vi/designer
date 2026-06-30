@@ -100,18 +100,22 @@ test('STRICT: multiple preview children for DIFFERENT files (old+new mid-switch)
   assert.equal(html, null, 'distinct serve filenames cannot be disambiguated -> null, not an arbitrary/stale frame');
 });
 
-test('DC DUAL-FRAME: two preview children for the SAME file (.dc.html token + _omeo frames) -> read one', async () => {
+test('DC DUAL-FRAME: two preview children for the SAME file (.dc.html token + _omeo frames) -> read the FRESHEST', async () => {
   // A .dc.html canvas renders the SAME file in two OOPIFs differing only in query
-  // (a signed ?t= token frame and an _omeo frame), both identical content. The
-  // old strict uniqueness floored this to null -> empty snapshot/iterate capture
-  // (live regression 2026-06-30). Same /serve/<filename> => duplicate renders =>
-  // pick one and read it, rather than bail.
+  // (a signed ?t= token frame and an _omeo frame). The old strict uniqueness
+  // floored this to null -> empty snapshot/iterate capture (live regression
+  // 2026-06-30). Same /serve/<filename> => duplicate renders => pick one. Among
+  // same-file dups pick the LAST attached (freshest) — during a re-prompt the new
+  // frame attaches after the stale one, so the freshest is the better bet for
+  // current content (second-opinion H1). childA attaches first (stale), the token
+  // frame second (fresh).
   const SRC_A_TOKEN = 'https://abc-uuid.claudeusercontent.com/v1/design/projects/abc-uuid/serve/a.html?t=tok.abc.123&srcmap=1';
-  const childAToken = { sessionId: 'sidAt', url: SRC_A_TOKEN, type: 'iframe' };
-  const send = fakeSend({ domHtml: { sidA: '<html><body>dc-A-marker</body></html>', sidAt: '<html><body>dc-A-marker</body></html>' } });
-  const html = await captureOopifHtml(send, { ...base, attachedTargets: () => [childA, childAToken], waitForAttachMs: 30 });
+  const childAFresh = { sessionId: 'sidAt', url: SRC_A_TOKEN, type: 'iframe' };
+  const send = fakeSend({ domHtml: { sidA: '<html><body>STALE-A</body></html>', sidAt: '<html><body>FRESH-A</body></html>' } });
+  const html = await captureOopifHtml(send, { ...base, attachedTargets: () => [childA, childAFresh], waitForAttachMs: 30 });
   assert.ok(html, 'two frames of the SAME file must read one, not null');
-  assert.ok(html.includes('dc-A-marker'), 'must return the file content, not the shell');
+  assert.ok(html.includes('FRESH-A'), 'must return the freshest (last-attached) same-file frame');
+  assert.ok(!html.includes('STALE-A'), 'must NOT return the stale (first-attached) same-file frame');
   assert.notEqual(html, SHELL);
 });
 
