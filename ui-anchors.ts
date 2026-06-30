@@ -207,8 +207,31 @@ export const UI_ANCHORS: AnchorDef[] = [
       // absence means the login wall is served at the /design URL — fail loudly.
       if (/claude\.ai\/design/.test(url)) {
         const signedIn = await hasSelector(b, SEL.login.signedInIndicator ?? '');
-        return signedIn
-          ? { ok: true }
+        if (signedIn) return { ok: true };
+        // The signed-in marker is absent. Before reporting "signed out" (which
+        // sends the user to re-login), check for an unambiguous signed-in-home
+        // landmark the login wall never renders — a project link or the home
+        // heading. If one is present, the app shell IS up and the MARKER has
+        // drifted, not the session: say so, so the fix is "re-capture
+        // login.signedInIndicator", not a fruitless re-login. This is the
+        // self-diagnosis the 2026-06-29 inbox (#73) asked for, after a prior home
+        // redesign sent the reporter chasing a non-existent auth problem.
+        //
+        // Deliberately NOT keyed on a bare <textarea> (unlike the create-flow
+        // anchors): a re-auth/login page can render a textarea, and this arm must
+        // not call a genuine login wall "drift". Project links and the home
+        // heading only render for a signed-in home — the same anti-false-positive
+        // stance the signed-in arm takes by keying on the Create button.
+        const shellPresent = await b
+          .evalValue<boolean>(
+            `!!(document.querySelector('a[href*="/design/p/"]') || /what will you design today/i.test(document.body ? document.body.innerText : ''))`
+          )
+          .catch(() => false);
+        return shellPresent
+          ? {
+              ok: false,
+              detail: `app shell IS rendering at ${url.slice(0, 80)} but the signed-in marker (${SEL.login.signedInIndicator}) is missing — likely SELECTOR DRIFT, not signed out. Re-capture login.signedInIndicator in selectors.json; do NOT re-login.`
+            }
           : { ok: false, detail: `login wall rendered at ${url.slice(0, 80)} (no app shell) — signed out. Run: designer setup` };
       }
       // Off the claude.ai/design surface entirely (e.g. an unrelated tab) —
