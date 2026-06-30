@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.18](https://github.com/pro-vi/designer/compare/v0.3.17...v0.3.18) (2026-06-30)
+
+
+### Bug Fixes
+
+* capture .dc canvas previews, unhang create/resume, honest soft anchors ([#98](https://github.com/pro-vi/designer/issues/98)) ([b3537df](https://github.com/pro-vi/designer/commit/b3537df0e02e80bb7e4ae2f0972e01a92ecef1ed))
+
 ## [0.3.17](https://github.com/pro-vi/designer/compare/v0.3.16...v0.3.17) (2026-06-30)
 
 
