@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { isPreviewIframeSrc, previewIframeVariant } from '../preview-host.ts';
 import { SESSION_URL_RE } from '../designer-controller.ts';
+import { UI_ANCHORS } from '../ui-anchors.ts';
 
 // Regression coverage for the 2026-06 claude.ai/design entry-layer drift
 // (issue #61): the preview iframe moved off the signed `?t=` token onto a
@@ -52,4 +53,67 @@ test('SESSION_URL_RE rejects the home and non-design URLs', () => {
   assert.equal(SESSION_URL_RE.test('https://claude.ai/design/'), false);
   assert.equal(SESSION_URL_RE.test('https://claude.ai/chat/p/abc'), false);
   assert.equal(SESSION_URL_RE.test('https://example.com/design/p/abc'), false);
+});
+
+// Regression coverage for the 2026-06-30 signed-in detection drift (issue #73
+// inbox): the redesigned "What will you design today?" home dropped ALL
+// data-testids, so the old chat-composer-input signed-in marker false-failed as
+// "signed out" even for fully signed-in users. The fix re-anchors detection on
+// the account-menu avatar (present on home AND session) and teaches the health
+// probe to distinguish real selector drift from a genuine login wall.
+//
+// `evalValue(expr)` is the only browser method these anchor checks call; a stub
+// that decides truthiness from the evaluated expression text exercises them
+// without a live page.
+const anchor = (id) => {
+  const a = UI_ANCHORS.find((x) => x.id === id);
+  if (!a) throw new Error(`anchor not found: ${id}`);
+  return a;
+};
+const stubBrowser = (decide) => ({ evalValue: async (expr) => decide(expr) });
+
+test('login.signedIn: account-menu marker on a /design URL => signed in (home or session)', async () => {
+  const b = stubBrowser((expr) => expr.includes('Account menu'));
+  const r = await anchor('login.signedIn').check(b, 'https://claude.ai/design');
+  assert.equal(r.ok, true);
+});
+
+test('login.signedIn: marker missing but app shell rendering => SELECTOR DRIFT, not signed out', async () => {
+  // account-menu probe fails; the shell-present probe (textarea / project links /
+  // heading) succeeds — exactly the redesigned-home drift state.
+  const b = stubBrowser((expr) => !expr.includes('Account menu'));
+  const r = await anchor('login.signedIn').check(b, 'https://claude.ai/design');
+  assert.equal(r.ok, false);
+  assert.match(r.detail, /SELECTOR DRIFT/);
+  assert.doesNotMatch(r.detail, /designer setup/); // must NOT send the user to re-login
+});
+
+test('login.signedIn: no marker and no app shell => genuinely signed out', async () => {
+  const b = stubBrowser(() => false);
+  const r = await anchor('login.signedIn').check(b, 'https://claude.ai/design');
+  assert.equal(r.ok, false);
+  assert.match(r.detail, /signed out/);
+});
+
+test('login.signedIn: explicit /login URL => signed out without probing the DOM', async () => {
+  let touched = false;
+  const b = stubBrowser(() => {
+    touched = true;
+    return true;
+  });
+  const r = await anchor('login.signedIn').check(b, 'https://claude.ai/login?returnTo=%2Fdesign');
+  assert.equal(r.ok, false);
+  assert.equal(touched, false, 'URL login wall is decided without a DOM probe');
+});
+
+test('home.creator anchors the sole home <textarea> (home dropped all data-testids)', async () => {
+  const b = stubBrowser((expr) => expr.includes('textarea'));
+  const r = await anchor('home.creator').check(b, 'https://claude.ai/design');
+  assert.equal(r.ok, true);
+});
+
+test('home.createButton anchors button[title="Create"], not the in-session chat-send-button', async () => {
+  const b = stubBrowser((expr) => expr.includes('Create'));
+  const r = await anchor('home.createButton').check(b, 'https://claude.ai/design');
+  assert.equal(r.ok, true);
 });

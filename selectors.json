@@ -1,19 +1,19 @@
 {
   "_notes": "Captured 2026-04-17 from Chrome 147 via CDP. Override at ~/.designer/selectors.override.json. Prefer data-testid over class names — Claude's styled-components classes (sc-xxx) are regenerated on every build.",
-  "_drift": "2026-06 (issue #61): the home was rebuilt around a composer. Captured live 2026-06-16 from Chrome 149 (signed-in profile). There is no project-name input or wireframe/high-fi toggle anymore — you seed an intent in the chat composer ([data-testid=chat-composer-input], the SAME element as the in-session composer) and click 'Start project' ([data-testid=chat-send-button], the same as the in-session send button). Creation-type cards (Start anywhere / Slides / Prototype / Product wireframe / Doc / Animation / Blank canvas) are text-only buttons with no data-testid; the default flow doesn't require clicking one. Projects render as <a href=/design/p/<uuid>> with the name as text (no project-card/projects-list testid). `designer adopt` remains available to bind an already-open tab to a key.",
+  "_drift": "2026-06-30 re-capture (Chrome 149, signed-in profile): the redesigned 'What will you design today?' home (issue #73 inbox) dropped ALL data-testids — the home renders ZERO [data-testid] nodes. The composer is now the page's sole bare <textarea> (its placeholder ROTATES — 'Drag in a PRD…', 'Make a pitch deck…', etc. — so do NOT anchor on placeholder text), and the create action is button[title=\"Create\"]. The signed-in app-shell marker is button[aria-label=\"Account menu\"] (the account avatar), present on BOTH the home and inside a session; the login wall renders neither it nor the composer. The IN-SESSION view is UNCHANGED — it still exposes [data-testid=chat-composer-input] (a contenteditable ProseMirror div), [data-testid=chat-send-button] (title='Send (Enter)'), chat-messages, html-viewer-iframe, etc. So home selectors and in-session selectors are DISTINCT again (the #61 'same testid on both surfaces' assumption no longer holds). Prior 2026-06 (#61) note: the home was first rebuilt around a composer that briefly shared the in-session testids; that build is gone. Creation-type cards (Prototype / Slides / Document / Wireframe / Animation / blank project) are text-only buttons with no data-testid; the default flow doesn't require clicking one. Projects render as <a href=/design/p/<uuid>> with the name as text (no project-card/projects-list testid). `designer adopt` remains the robust path around home-creation drift.",
   "_urls": {
     "home": "https://claude.ai/design",
     "session": "https://claude.ai/design/p/{uuid}"
   },
   "login": {
-    "signedInIndicator": "[data-testid=\"chat-composer-input\"]"
+    "signedInIndicator": "button[aria-label=\"Account menu\"], [data-testid=\"chat-composer-input\"]"
   },
   "home": {
-    "creator": "[data-testid=\"chat-composer-input\"]",
-    "nameInput": "[data-testid=\"chat-composer-input\"]",
-    "wireframeButtonText": "Product wireframe",
+    "creator": "textarea",
+    "nameInput": "textarea",
+    "wireframeButtonText": "Wireframe",
     "highFiButtonText": "Prototype",
-    "createButton": "[data-testid=\"chat-send-button\"]",
+    "createButton": "button[title=\"Create\"]",
     "projectsList": "a[href*=\"/design/p/\"]",
     "projectCard": "a[href*=\"/design/p/\"]"
   },

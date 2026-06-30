@@ -351,12 +351,15 @@ export class DesignerController {
     fidelity: 'wireframe' | 'highfi' = 'wireframe',
     { timeoutMs = 20 * 60_000, stabilityMs = 4000 }: { timeoutMs?: number; stabilityMs?: number } = {}
   ): Promise<{ ok: true; url: string; name: string; fidelity: string }> {
-    // 2026-06 redesign (#61): the home is composer-driven. There's no longer a
-    // project-name input or a wireframe/high-fi toggle — you seed an intent in
-    // the chat composer (`home.creator`, the same data-testid as the in-session
-    // composer) and click "Start project" (`home.createButton`, the same
-    // data-testid as the in-session send button). So `name` becomes the seed
-    // prompt. The redesign removed the wireframe/high-fi toggle, so `fidelity` is
+    // 2026-06 redesign (#61), re-captured 2026-06-30 (#73): the home is
+    // composer-driven. There's no longer a project-name input or a
+    // wireframe/high-fi toggle — you seed an intent in the home composer
+    // (`home.creator`, now the page's sole bare <textarea>; the home dropped all
+    // data-testids) and click "Create" (`home.createButton` = button[title=
+    // "Create"]). These are DISTINCT from the in-session composer/send testids,
+    // so _submitPrompt is given the home selectors explicitly below. `name`
+    // becomes the seed prompt. The redesign removed the wireframe/high-fi toggle,
+    // so `fidelity` is
     // folded into the seed as a directive (and still stored) — otherwise highfi
     // and wireframe creates would behave identically while the session claimed a
     // fidelity that was never applied (#66 review). The creation-type cards
@@ -400,9 +403,14 @@ export class DesignerController {
       : null;
     try {
       observer?.beginRun();
-      // Reuse the battle-tested composer fill+submit (contenteditable ProseMirror;
-      // waits for the send button to enable before clicking "Start project").
-      await this._submitPrompt(seed);
+      // Reuse the battle-tested composer fill+submit, but against the HOME
+      // selectors (sole <textarea> + button[title="Create"]) — the redesigned
+      // home no longer shares the in-session testids. The textarea branch of
+      // _submitPrompt fills it; it waits for "Create" to enable before clicking.
+      await this._submitPrompt(seed, {
+        composer: this.selectors.home.creator,
+        send: this.selectors.home.createButton
+      });
 
       let inSession = false;
       for (let i = 0; i < 60; i++) {
@@ -433,8 +441,13 @@ export class DesignerController {
     return { ok: true, url: stored.designUrl };
   }
 
-  async _submitPrompt(prompt: string): Promise<void> {
-    const { promptTextarea, sendButton } = this.selectors.composer;
+  // `sel` overrides the composer/send selectors for surfaces that don't use the
+  // in-session testids — notably the redesigned home, whose composer is a bare
+  // <textarea> and whose create button is button[title="Create"] (no data-testid;
+  // 2026-06-30 re-capture). Defaults to the in-session composer selectors.
+  async _submitPrompt(prompt: string, sel?: { composer?: string; send?: string }): Promise<void> {
+    const promptTextarea = sel?.composer ?? this.selectors.composer.promptTextarea;
+    const sendButton = sel?.send ?? this.selectors.composer.sendButton;
     await this.browser.waitFor(promptTextarea);
     // The composer has shipped as both a React-controlled <textarea> and a
     // ProseMirror contenteditable <div> — branch on what's actually there.

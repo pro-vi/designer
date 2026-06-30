@@ -170,14 +170,31 @@ export const UI_ANCHORS: AnchorDef[] = [
       if (/claude\.ai\/login/.test(url)) {
         return { ok: false, detail: `signed out — Chrome is on the login wall (${url.slice(0, 80)}). Run: designer setup` };
       }
-      // On a design surface, the signed-in app shell renders the chat composer
-      // (chat-composer-input) on BOTH the home (creation composer, post-2026-06
-      // redesign #61) and inside a session. Its absence here means the login
-      // wall is being served at the /design URL — fail loudly.
+      // On a design surface, the signed-in app shell renders the account-menu
+      // avatar (aria-label="Account menu") on BOTH the home and inside a session;
+      // the in-session composer (chat-composer-input) is a second signed-in
+      // marker. The login wall renders neither. (2026-06-30 #73: the redesigned
+      // home dropped ALL data-testids, so the old chat-composer-input home check
+      // false-failed as "signed out" — the inbox blocker. The account menu is the
+      // universal signed-in landmark now.)
       if (/claude\.ai\/design/.test(url)) {
-        const signedIn = await hasSelector(b, '[data-testid="chat-composer-input"]');
-        return signedIn
-          ? { ok: true }
+        const signedIn = await hasSelector(b, 'button[aria-label="Account menu"], [data-testid="chat-composer-input"]');
+        if (signedIn) return { ok: true };
+        // No signed-in marker. Before crying "signed out", check for any app-shell
+        // landmark (project links, the home composer textarea, the home heading).
+        // If the shell IS rendering, this is SELECTOR DRIFT of the signed-in
+        // marker — not a login wall — and telling the user to re-login is the
+        // fruitless dead end the 2026-06-29 inbox called out. Say "drift" instead.
+        const shellPresent = await b
+          .evalValue<boolean>(
+            `!!(document.querySelector('a[href*="/design/p/"]') || document.querySelector('textarea') || /what will you design today/i.test(document.body ? document.body.innerText : ''))`
+          )
+          .catch(() => false);
+        return shellPresent
+          ? {
+              ok: false,
+              detail: `app shell IS rendering at ${url.slice(0, 80)} but the signed-in marker (account menu) is missing — likely SELECTOR DRIFT, not signed out. Re-capture login.signedInIndicator; do NOT re-login.`
+            }
           : { ok: false, detail: `login wall rendered at ${url.slice(0, 80)} (no app shell) — signed out. Run: designer setup` };
       }
       // Off the claude.ai/design surface entirely (e.g. an unrelated tab) —
@@ -187,26 +204,26 @@ export const UI_ANCHORS: AnchorDef[] = [
   },
 
   // --- home page ---
-  // 2026-06 redesign (#61): the home is composer-driven — no project-name input
-  // and no wireframe/high-fi toggle. Creation = seed the chat composer
-  // (chat-composer-input) + click "Start project" (chat-send-button, same
-  // testids as the in-session composer/send). The old home.nameInput anchor was
-  // dropped (no equivalent); home.wireframeButton/highFiButton are repurposed to
-  // the surviving creation-type cards (text-only buttons) so they still detect
-  // drift of the creation UI. Captured live from Chrome 149.
+  // 2026-06 redesign (#61), re-captured 2026-06-30 (#73): the home is
+  // composer-driven AND has dropped ALL data-testids. Creation = fill the
+  // composer (now the page's sole bare <textarea> — its placeholder rotates, so
+  // it can't be anchored on placeholder text) + click "Create" (button[title=
+  // "Create"], NOT the in-session chat-send-button). home.wireframeButton/
+  // highFiButton track the surviving creation-type cards (text-only buttons) so
+  // they still detect drift of the creation UI. Captured live from Chrome 149.
   {
     id: 'home.creator',
     category: 'home',
-    description: 'creation composer (chat-composer-input)',
+    description: 'creation composer (sole home <textarea>; home dropped all data-testids)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-composer-input"]') })
+    check: async (b) => ({ ok: await hasSelector(b, 'textarea') })
   },
   {
     id: 'home.wireframeButton',
     category: 'home',
-    description: 'Product wireframe creation-type card',
+    description: 'Wireframe creation-type card',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, /^Product wireframe/) })
+    check: async (b) => ({ ok: await hasButtonMatching(b, /^Wireframe/) })
   },
   {
     id: 'home.highFiButton',
@@ -218,9 +235,9 @@ export const UI_ANCHORS: AnchorDef[] = [
   {
     id: 'home.createButton',
     category: 'home',
-    description: '"Start project" create button (chat-send-button)',
+    description: '"Create" project button (button[title="Create"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, '[data-testid="chat-send-button"], button[title^="Send ("]') })
+    check: async (b) => ({ ok: await hasSelector(b, 'button[title="Create"]') })
   },
   {
     id: 'home.projectsList',

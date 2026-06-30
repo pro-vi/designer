@@ -35,17 +35,22 @@ async function isCdpUp(port: string): Promise<boolean> {
 }
 
 async function verifySignedIn(browser: Browser): Promise<boolean> {
-  // A signed-in claude.ai/design session renders one of these app-shell
-  // anchors — `project-creator` on the home surface, `chat-composer-input`
-  // inside a project. A logged-out visit to claude.ai/design renders a
-  // login wall with neither.
+  // A signed-in claude.ai/design session renders the account-menu avatar
+  // (aria-label="Account menu") on BOTH the home and inside a project; the
+  // in-session composer (chat-composer-input) is a second signed-in marker.
+  // A logged-out visit renders a login wall with neither.
+  //
+  // 2026-06-30 (#73): the redesigned home dropped ALL data-testids, so the old
+  // `project-creator`/`chat-composer-input` home markers vanished and this
+  // verifier false-failed for signed-in users. The account menu is the
+  // universal signed-in landmark now.
   //
   // This replaces the old URL-only check (URL matches /design && !/login/).
   // That check passed the login wall served AT the /design URL — the URL
   // stays `/design` when logged out, no `/login` substring — which is the
   // #16 false positive. The DOM is the only reliable signal.
   const js =
-    '!!(document.querySelector(\'[data-testid="project-creator"]\') || document.querySelector(\'[data-testid="chat-composer-input"]\'))';
+    '!!(document.querySelector(\'button[aria-label="Account menu"]\') || document.querySelector(\'[data-testid="chat-composer-input"]\'))';
   return browser.evalValue<boolean>(js).catch(() => false);
 }
 
