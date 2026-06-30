@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.19](https://github.com/pro-vi/designer/compare/v0.3.18...v0.3.19) (2026-06-30)
+
+
+### Bug Fixes
+
+* **nav,oopif:** bound the beforeunload accepter, scope to exact tab, prefer freshest preview ([#100](https://github.com/pro-vi/designer/issues/100)) ([621a635](https://github.com/pro-vi/designer/commit/621a6351ac788433e2d6fbd583104d97a6253581))
+
 ## [0.3.18](https://github.com/pro-vi/designer/compare/v0.3.17...v0.3.18) (2026-06-30)
 
 
