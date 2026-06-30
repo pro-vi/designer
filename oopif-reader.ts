@@ -94,15 +94,22 @@ function pickPreviewChild(children: AttachedChild[], isPreviewUrl: (u: string) =
   if (previews.length === 0) return null;
   if (previews.length === 1) return previews[0] ?? null;
   // Multiple preview OOPIFs. A design-canvas (`.dc.html`) file renders TWO frames
-  // of the SAME file — a signed `?t=` token frame plus an `_omeo` frame, both
-  // identical rendered content (live-verified 2026-06-30; plain `.html` renders
-  // exactly one). Disambiguate by the per-file `/serve/<filename>` path: if every
-  // preview serves the SAME file they're duplicate renders, so pick one. Only a
-  // GENUINE ambiguity — frames for DIFFERENT files, e.g. old+new coexisting during
-  // a file switch — stays null, so we never serve a stale wrong-file frame as the
-  // requested file (the #67 invariant this guard was built to protect).
+  // of the SAME file — a signed `?t=` token frame plus an `_omeo` frame, ~identical
+  // rendered content (live-verified 2026-06-30; plain `.html` renders exactly one).
+  // Disambiguate by the per-file `/serve/<filename>` path: if every preview serves
+  // the SAME file they're duplicate renders, so pick one. Only a GENUINE ambiguity
+  // — frames for DIFFERENT files, e.g. old+new coexisting during a file switch —
+  // stays null, so we never serve a stale wrong-FILE frame (the #67 invariant).
+  //
+  // Among same-file duplicates pick the LAST attached, not the first: during a
+  // re-prompt/regeneration of the same file a fresh preview frame attaches after
+  // the stale one, so the freshest entry is the better bet for current content
+  // (second-opinion 2026-06-30, H1). This is a heuristic, not a freshness proof —
+  // same-file frames can't be byte-compared (their token/theme query is reflected
+  // in the HTML); the load-bearing guard against stale capture remains the
+  // caller's capture-after-generation-settles, not frame selection.
   const names = new Set(previews.map((c) => serveFileName(c.url)));
-  if (names.size === 1 && !names.has(null)) return previews[0] ?? null;
+  if (names.size === 1 && !names.has(null)) return previews[previews.length - 1] ?? null;
   return null;
 }
 

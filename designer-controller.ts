@@ -152,17 +152,32 @@ export class DesignerController {
   // prior behavior, never worse. We bind it to the CURRENT tab (the one about to
   // be navigated, which is the one that holds the dirty canvas).
   private async openGuarded(url: string): Promise<void> {
-    if (!isCdpEnabled()) {
+    // Only guard when we can bind the accepter to a DEFINITE single design tab —
+    // the one about to be navigated. With CDP off, an unknown current URL, or a
+    // non-design tab, attaching with a null/loose prefix could land on an arbitrary
+    // tab and arm auto-accept there (second-opinion 2026-06-30, H3). In those cases
+    // just open plainly: no dirty design canvas is at risk anyway.
+    const cur = await this.currentUrl();
+    if (!isCdpEnabled() || !/claude\.ai\/design/.test(cur)) {
       await this.browser.open(url);
       return;
     }
-    const cur = await this.currentUrl();
-    const accepter = await BeforeUnloadAccepter.attach({
-      preferUrlPrefix: cur && /claude\.ai\/design/.test(cur) ? cur : null
-    }).catch(() => null);
+    // Exact-URL match + the accepter's tolerateDuplicateUrl:false default: if
+    // duplicate tabs make the target ambiguous, attach returns null and we degrade
+    // to a plain open rather than guess the wrong tab. attach is internally bounded
+    // (Page.enable can't hang it), so this can never wedge before browser.open.
+    const accepter = await BeforeUnloadAccepter.attach({ preferUrlPrefix: cur }).catch(() => null);
     try {
       await this.browser.open(url);
     } finally {
+      // Telemetry: surface when we actually dismissed a "Leave site?" modal, since
+      // accept discards the canvas's dirty state — make the (rare) destructive
+      // moment observable rather than silent.
+      if (accepter && accepter.acceptedCount > 0) {
+        console.warn(
+          `[designer] auto-dismissed ${accepter.acceptedCount} "Leave site?" dialog(s) navigating ${cur.slice(0, 60)} -> ${url.slice(0, 60)}`
+        );
+      }
       accepter?.close();
     }
   }
