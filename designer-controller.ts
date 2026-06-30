@@ -10,6 +10,7 @@ import { RunStateObserver } from './run-state.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
 import { isPreviewIframeSrc, previewIframeVariant } from './preview-host.ts';
 import { isCdpEnabled } from './cdp-env.ts';
+import { BeforeUnloadAccepter } from './cdp-dialog.ts';
 import {
   classifyInterstitial,
   plannedAction,
@@ -139,6 +140,31 @@ export class DesignerController {
 
   async currentUrl(): Promise<string> {
     return (await this.browser.url().catch(() => '')) || '';
+  }
+
+  // browser.open() with the design-canvas "Leave site? Changes you made may not be
+  // saved." beforeunload modal auto-dismissed for the duration of the navigation.
+  // A dirty .dc canvas tab otherwise wedges Page.navigate forever — nothing clicks
+  // the modal — which is the create/resume hang (live-verified 2026-06-30). The
+  // accepter is a separate CDP client on the SAME tab; it answers the target-global
+  // dialog so agent-browser's navigate proceeds. Best-effort + CDP-gated: with
+  // DESIGNER_CDP='' (or an attach failure) it degrades to a plain open() — the
+  // prior behavior, never worse. We bind it to the CURRENT tab (the one about to
+  // be navigated, which is the one that holds the dirty canvas).
+  private async openGuarded(url: string): Promise<void> {
+    if (!isCdpEnabled()) {
+      await this.browser.open(url);
+      return;
+    }
+    const cur = await this.currentUrl();
+    const accepter = await BeforeUnloadAccepter.attach({
+      preferUrlPrefix: cur && /claude\.ai\/design/.test(cur) ? cur : null
+    }).catch(() => null);
+    try {
+      await this.browser.open(url);
+    } finally {
+      accepter?.close();
+    }
   }
 
   async isOnHome(): Promise<boolean> {
@@ -397,7 +423,7 @@ export class DesignerController {
         const u = await this.currentUrl();
         if (!u) break; // can't reload an unknown URL (review #4) — fall to residual
         appendHistory(this.key, { kind: 'interstitial', interstitial: kind, action });
-        await this.browser.open(u).catch(() => null);
+        await this.openGuarded(u).catch(() => null);
         // 'load', not 'networkidle' — the SPA's persistent connections never go
         // idle, so networkidle would burn the full timeout each pass (review #4).
         await this.browser.waitLoad('load').catch(() => null);
@@ -497,7 +523,7 @@ export class DesignerController {
     if (picked.candidates === 0) {
       const u = await this.currentUrl();
       if (!/claude\.ai\/design/.test(u)) {
-        await this.browser.open(DESIGN_HOME);
+        await this.openGuarded(DESIGN_HOME);
         await this.browser.waitLoad('networkidle').catch(() => null);
       }
     }
@@ -538,7 +564,7 @@ export class DesignerController {
     // name leaves the send button disabled and would otherwise spin the full
     // navigation poll before failing with a misleading message.
     if (!name?.trim()) throw new Error('create requires a non-empty name (used as the project seed prompt).');
-    await this.browser.open(DESIGN_HOME);
+    await this.openGuarded(DESIGN_HOME);
     await this.browser.waitLoad('networkidle').catch(() => null);
     // createSession opens home directly (not via ensureReady), so run the same
     // interstitial pre-flight — a Cloudflare check or transient error on home
@@ -609,7 +635,7 @@ export class DesignerController {
   async resumeSession(): Promise<{ ok: true; url: string }> {
     const stored = getSession(this.key);
     if (!stored?.designUrl) throw new Error(`No designUrl stored for key=${this.key}. Create one first.`);
-    await this.browser.open(stored.designUrl);
+    await this.openGuarded(stored.designUrl);
     await this.browser.waitLoad('networkidle').catch(() => null);
     return { ok: true, url: stored.designUrl };
   }
@@ -940,7 +966,7 @@ export class DesignerController {
   }
 
   async listProjects(): Promise<Array<{ name: string | null; sub: string | null; url: string | null }>> {
-    await this.browser.open(DESIGN_HOME);
+    await this.openGuarded(DESIGN_HOME);
     await this.browser.waitLoad('networkidle').catch(() => null);
     await this.browser.waitFor(this.selectors.home.projectsList).catch(() => null);
     const json = await this.browser.evalValue<Array<{ name: string | null; sub: string | null; url: string | null }>>(
@@ -986,7 +1012,7 @@ export class DesignerController {
       throw new Error(`No designUrl stored for key=${this.key}. createSession or resumeSession first.`);
     }
     if (currentRoot !== targetRoot) {
-      await this.browser.open(stored.designUrl!);
+      await this.openGuarded(stored.designUrl!);
       await this.browser.waitLoad('networkidle').catch(() => null);
       await new Promise((r) => setTimeout(r, 1500));
     }
@@ -1073,7 +1099,7 @@ export class DesignerController {
     }
 
     const target = `${targetRoot}?file=${wanted}`;
-    await this.browser.open(target);
+    await this.openGuarded(target);
 
     // Readiness across two UI generations — and the file-switch false-positive
     // Codex flagged on #66:

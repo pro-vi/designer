@@ -70,13 +70,40 @@ function evaluatedString(result: unknown): string | null {
 // matching the child against getIframeSrc() (`_bootstrap`) is wrong; host+uniqueness
 // is the correct signal. A future multi-preview disambiguation can match the active
 // file via that `/serve/<filename>` path, but single-preview is the steady state.
+// The per-file segment of an OOPIF document URL: `…/serve/<filename>?…`. Two
+// frames serving the SAME filename (differing only in query — e.g. a signed `?t=`
+// token vs an `_omeo` param) are duplicate renders of one file; two DIFFERENT
+// filenames are a genuine old+new-during-switch ambiguity. Returns null when the
+// URL is unparseable or carries no `/serve/` segment (can't confirm sameness).
+function serveFileName(u: string): string | null {
+  try {
+    const path = new URL(u).pathname;
+    const marker = '/serve/';
+    const i = path.indexOf(marker);
+    return i >= 0 ? decodeURIComponent(path.slice(i + marker.length)) : null;
+  } catch {
+    return null;
+  }
+}
+
 function pickPreviewChild(children: AttachedChild[], isPreviewUrl: (u: string) => boolean): AttachedChild | null {
   // type === 'iframe' guards against a same-origin worker/service-worker on
   // claudeusercontent.com counting as a second "preview" and flooring the read to
   // null (#67 review) — the preview is an iframe document, not a worker target.
   const previews = children.filter((c) => typeof c.url === 'string' && c.type === 'iframe' && isPreviewUrl(c.url));
-  const only = previews[0];
-  return previews.length === 1 && only ? only : null;
+  if (previews.length === 0) return null;
+  if (previews.length === 1) return previews[0] ?? null;
+  // Multiple preview OOPIFs. A design-canvas (`.dc.html`) file renders TWO frames
+  // of the SAME file — a signed `?t=` token frame plus an `_omeo` frame, both
+  // identical rendered content (live-verified 2026-06-30; plain `.html` renders
+  // exactly one). Disambiguate by the per-file `/serve/<filename>` path: if every
+  // preview serves the SAME file they're duplicate renders, so pick one. Only a
+  // GENUINE ambiguity — frames for DIFFERENT files, e.g. old+new coexisting during
+  // a file switch — stays null, so we never serve a stale wrong-file frame as the
+  // requested file (the #67 invariant this guard was built to protect).
+  const names = new Set(previews.map((c) => serveFileName(c.url)));
+  if (names.size === 1 && !names.has(null)) return previews[0] ?? null;
+  return null;
 }
 
 /**

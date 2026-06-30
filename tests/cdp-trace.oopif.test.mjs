@@ -94,10 +94,25 @@ test('records setAutoAttach{autoAttach:true,flatten:true} and tears down with au
   assert.ok(auto.some((c) => c.params?.autoAttach === false), 'must tear down autoAttach');
 });
 
-test('STRICT: multiple preview children (old+new mid-switch) -> null, never a guess', async () => {
+test('STRICT: multiple preview children for DIFFERENT files (old+new mid-switch) -> null, never a guess', async () => {
   const send = fakeSend({ domHtml: { sidA: '<html>A</html>', sidB: '<html>B</html>' } });
   const html = await captureOopifHtml(send, { ...base, attachedTargets: () => [childA, childB], waitForAttachMs: 30 });
-  assert.equal(html, null, 'cannot disambiguate multiple previews -> null, not an arbitrary/stale frame');
+  assert.equal(html, null, 'distinct serve filenames cannot be disambiguated -> null, not an arbitrary/stale frame');
+});
+
+test('DC DUAL-FRAME: two preview children for the SAME file (.dc.html token + _omeo frames) -> read one', async () => {
+  // A .dc.html canvas renders the SAME file in two OOPIFs differing only in query
+  // (a signed ?t= token frame and an _omeo frame), both identical content. The
+  // old strict uniqueness floored this to null -> empty snapshot/iterate capture
+  // (live regression 2026-06-30). Same /serve/<filename> => duplicate renders =>
+  // pick one and read it, rather than bail.
+  const SRC_A_TOKEN = 'https://abc-uuid.claudeusercontent.com/v1/design/projects/abc-uuid/serve/a.html?t=tok.abc.123&srcmap=1';
+  const childAToken = { sessionId: 'sidAt', url: SRC_A_TOKEN, type: 'iframe' };
+  const send = fakeSend({ domHtml: { sidA: '<html><body>dc-A-marker</body></html>', sidAt: '<html><body>dc-A-marker</body></html>' } });
+  const html = await captureOopifHtml(send, { ...base, attachedTargets: () => [childA, childAToken], waitForAttachMs: 30 });
+  assert.ok(html, 'two frames of the SAME file must read one, not null');
+  assert.ok(html.includes('dc-A-marker'), 'must return the file content, not the shell');
+  assert.notEqual(html, SHELL);
 });
 
 test('STRICT: a same-origin worker on claudeusercontent.com is ignored (iframe-type only)', async () => {

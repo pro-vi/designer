@@ -30,7 +30,7 @@
     "cli": "tsx cli.ts",
     "setup": "tsx cli.ts setup",
     "doctor": "tsx cli.ts doctor",
-    "test": "npm run build && node --test tests/cli-metadata.test.mjs && node --import tsx --test tests/run-state.*.test.mjs tests/cdp-trace.*.test.mjs tests/ui-drift.*.test.mjs tests/interstitials.*.test.mjs",
+    "test": "npm run build && node --test tests/cli-metadata.test.mjs && node --import tsx --test tests/run-state.*.test.mjs tests/cdp-trace.*.test.mjs tests/ui-drift.*.test.mjs tests/interstitials.*.test.mjs tests/cdp-dialog.*.test.mjs",
     "check": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run check && npm run build",

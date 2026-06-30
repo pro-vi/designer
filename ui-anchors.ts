@@ -53,6 +53,21 @@ async function hasSelector(browser: Browser, sel: string): Promise<boolean> {
     .catch(() => false));
 }
 
+// True on a `.dc.html` DESIGN-CANVAS session (a Figma-like editor — dc-tool-*,
+// dc-mode-* toolbars; live-verified 2026-06-30). The canvas is a different surface
+// than the plain-HTML file view the flat DOM scrapers target: it collapses the
+// chat into a closed overlay (so chat-messages renders 0 turn rows) and hides the
+// project files behind a page switcher (so the flat filename scrape finds none).
+// The designer tool doesn't support the canvas editor, so the soft scrape anchors
+// SKIP here (inconclusive in this view) rather than false-fail as "drift" — the
+// same stance as their existing "no file open -> skip" guards. Plain-HTML sessions
+// have no dc-* toolbar, so they still run the scrapers and catch real regressions.
+async function isCanvasEditorView(browser: Browser): Promise<boolean> {
+  return !!(await browser
+    .evalValue<boolean>(`!!document.querySelector('[data-testid^="dc-tool-"], [data-testid^="dc-mode-"]')`)
+    .catch(() => false));
+}
+
 async function hasButtonMatching(browser: Browser, pattern: RegExp): Promise<boolean> {
   return !!(await browser
     .evalValue<boolean>(
@@ -519,8 +534,15 @@ export const UI_ANCHORS: AnchorDef[] = [
       if (n >= 2) return { ok: true };
       if (n === 1)
         return { ok: true, status: 'skip', detail: 'only 1 turn row (short conversation) — data-index API present, >=2 unverifiable' };
-      if (n === 0)
+      if (n === 0) {
+        // A design-canvas (.dc.html) session collapses the chat into a closed
+        // overlay, so chat-messages renders with 0 turn rows — that's the view,
+        // not drift. Skip rather than false-fail (plain-HTML sessions still fail
+        // here on real data-index API drift).
+        if (await isCanvasEditorView(b))
+          return { ok: true, status: 'skip', detail: 'design-canvas view — chat collapsed in a closed overlay; turn rows not rendered (not drift)' };
         return { ok: false, detail: 'chat-messages present but 0 [data-index] rows after ~5s settle — turn-row data-index API drifted' };
+      }
       return { ok: false, detail: 'chat-messages testid not found after ~5s settle — testid drifted' };
     }
   },
@@ -551,9 +573,10 @@ export const UI_ANCHORS: AnchorDef[] = [
       // In-page GET (auth + Cloudflare just work there); read headers, cancel the
       // body so health doesn't pull the multi-MB zip every run. Bounded by an
       // abort deadline so a hung endpoint can't stall the whole health sweep.
-      const res = await b
-        .evalValue<{ status: number; ct: string; err?: string }>(
-          `(async () => {
+      const probeOnce = (): Promise<{ status: number; ct: string; err?: string }> =>
+        b
+          .evalValue<{ status: number; ct: string; err?: string }>(
+            `(async () => {
             const ctrl = new AbortController();
             const to = setTimeout(() => ctrl.abort(), 15000);
             try {
@@ -564,15 +587,27 @@ export const UI_ANCHORS: AnchorDef[] = [
             } catch (e) { return { status: 0, ct: '', err: String((e && e.message) || e) }; }
             finally { clearTimeout(to); }
           })()`
-        )
-        .catch(() => ({ status: 0, ct: '', err: 'eval failed' }));
+          )
+          .catch(() => ({ status: 0, ct: '', err: 'eval failed' }));
       // Accept zip OR octet-stream: _downloadProjectZip validates by PK magic and
       // ignores content-type, so a 200 octet-stream is a real success — don't go
       // red where the download would succeed (the inverse of the old false-pass).
-      const ok = res.status === 200 && /(zip|octet-stream)/i.test(res.ct);
+      const good = (r: { status: number; ct: string }) => r.status === 200 && /(zip|octet-stream)/i.test(r.ct);
+      // The export zip is built lazily server-side, so a freshly-touched project's
+      // /download can transiently 404 ("export not ready yet") for a few seconds
+      // then serve 200 — live-verified 2026-06-30 (the same project 404'd then
+      // 200'd minutes apart). A single GET flapped the daily probe red; retry with
+      // a bounded settle (same pattern as fileListScrape/chatTurnPrefix) so only a
+      // PERSISTENT failure is reported.
+      let res = await probeOnce();
+      for (let attempt = 0; attempt < 3 && !good(res); attempt++) {
+        await sleep(1500);
+        res = await probeOnce();
+      }
+      const ok = good(res);
       return {
         ok,
-        detail: ok ? `200 ${res.ct}` : `download endpoint status=${res.status} ct=${res.ct}${res.err ? ' err=' + res.err : ''}`
+        detail: ok ? `200 ${res.ct}` : `download endpoint status=${res.status} ct=${res.ct}${res.err ? ' err=' + res.err : ''} (after retries)`
       };
     }
   },
@@ -657,6 +692,14 @@ export const UI_ANCHORS: AnchorDef[] = [
         // session (a file open) is expected to list filenames.
         if (!/[?&]file=/.test(url)) {
           return { ok: true, status: 'skip', detail: 'no file open; file-list panel not rendered — inconclusive' };
+        }
+        // A design-canvas (.dc.html) session keeps its pages behind a switcher
+        // ("<name> / N pages"), not a flat Design Files list — so the flat
+        // filename scrape (and `designer files`, which shares it) finds none. That's
+        // the canvas surface, which the tool doesn't target; skip rather than
+        // false-fail (plain-HTML sessions still fail here on a real scraper regression).
+        if (await isCanvasEditorView(b)) {
+          return { ok: true, status: 'skip', detail: 'design-canvas view — files are behind the page switcher, not a flat list; flat scrape N/A' };
         }
         return { ok: false, detail: 'found 0 filenames after ~5s settle — scraper regex or DOM layout regressed' };
       }
