@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.17](https://github.com/pro-vi/designer/compare/v0.3.16...v0.3.17) (2026-06-30)
+
+
+### Bug Fixes
+
+* **health:** distinguish signed-in marker drift from a genuine login wall ([#96](https://github.com/pro-vi/designer/issues/96)) ([3add4d9](https://github.com/pro-vi/designer/commit/3add4d9c7237a83fad18001a622573f0008266dc))
+
 ## [0.3.16](https://github.com/pro-vi/designer/compare/v0.3.15...v0.3.16) (2026-06-29)
 
 
