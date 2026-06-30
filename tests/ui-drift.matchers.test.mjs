@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { isPreviewIframeSrc, previewIframeVariant, isBootstrapShellHtml } from '../preview-host.ts';
 import { SESSION_URL_RE } from '../designer-controller.ts';
+import { UI_ANCHORS } from '../ui-anchors.ts';
 
 // Regression coverage for the 2026-06 claude.ai/design entry-layer drift
 // (issue #61): the preview iframe moved off the signed `?t=` token onto a
@@ -74,4 +75,52 @@ test('SESSION_URL_RE rejects the home and non-design URLs', () => {
   assert.equal(SESSION_URL_RE.test('https://claude.ai/design/'), false);
   assert.equal(SESSION_URL_RE.test('https://claude.ai/chat/p/abc'), false);
   assert.equal(SESSION_URL_RE.test('https://example.com/design/p/abc'), false);
+});
+
+// login.signedIn health diagnostic (inbox #73 proposal #3): when the signed-in
+// marker is missing but the app shell IS rendering, the probe must say "selector
+// DRIFT, not signed out" rather than sending the user to re-login — the dead end
+// the fract-ai report hit on a stale build. The verdict stays `fail` either way;
+// only the guidance changes. `evalValue(expr)` is the sole browser call these
+// checks make, so a stub that decides from the evaluated expression exercises
+// them without a live page.
+const anchor = (id) => {
+  const a = UI_ANCHORS.find((x) => x.id === id);
+  if (!a) throw new Error(`anchor not found: ${id}`);
+  return a;
+};
+const stubBrowser = (decide) => ({ evalValue: async (expr) => decide(expr) });
+
+test('login.signedIn: signed-in marker present on /design => ok', async () => {
+  // The marker probe (signedInIndicator) matches; shell probe never reached.
+  const b = stubBrowser((expr) => /chat-composer-input|title="Create"/.test(expr));
+  const r = await anchor('login.signedIn').check(b, 'https://claude.ai/design');
+  assert.equal(r.ok, true);
+});
+
+test('login.signedIn: marker missing but app shell rendering => SELECTOR DRIFT, not signed out', async () => {
+  // Marker probe fails; the shell probe (project link / home heading) succeeds.
+  const b = stubBrowser((expr) => /what will you design|design\/p\//.test(expr));
+  const r = await anchor('login.signedIn').check(b, 'https://claude.ai/design');
+  assert.equal(r.ok, false);
+  assert.match(r.detail, /SELECTOR DRIFT/);
+  assert.doesNotMatch(r.detail, /designer setup/); // must NOT send the user to re-login
+});
+
+test('login.signedIn: marker missing and no app shell => genuinely signed out', async () => {
+  const b = stubBrowser(() => false);
+  const r = await anchor('login.signedIn').check(b, 'https://claude.ai/design');
+  assert.equal(r.ok, false);
+  assert.match(r.detail, /signed out/);
+});
+
+test('login.signedIn: explicit /login URL => signed out without probing the DOM', async () => {
+  let touched = false;
+  const b = stubBrowser(() => {
+    touched = true;
+    return true;
+  });
+  const r = await anchor('login.signedIn').check(b, 'https://claude.ai/login?returnTo=%2Fdesign');
+  assert.equal(r.ok, false);
+  assert.equal(touched, false, 'URL login wall is decided without a DOM probe');
 });
