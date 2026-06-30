@@ -86,6 +86,7 @@ Do not:
 - **Ask for tweaks** on the dimensions you expect to iterate (type, spacing, palette). Claude wires live sliders.
 - **Quantities help.** "N variations", "N loaders on a grid", "N-screen onboarding."
 - **Flat file layout for multi-file variants.** Tell Claude "all files at project root, no subfolders." Claude tends to organize variants under a folder (`directions/`, `variants/`) which the current MCP's file list doesn't see through — use the handoff bundle if you need nested layouts.
+- **Pre-empt the clarifying-questions flow; don't lean on it.** A decision-bearing prompt (scope and constraints pinned up front) leaves Claude nothing to ask, so the "Claude has some questions →" popover never appears. If it punts anyway — surfaced as `awaitingClarification` — answer by re-prompting with the missing specifics, or send `decisive: true` (which tells Claude to choose the most defensible answer and proceed). Do **not** expect designer to read or click that popover: it's ephemeral with no stable DOM contract, so designer deliberately won't scrape or auto-answer it. Deciding the requirement stays with you, the human designer.
 
 ### Picking the right artifact shape
 
