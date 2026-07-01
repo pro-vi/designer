@@ -100,7 +100,7 @@ jobs:
       # latest streak- prefix.
       - name: Restore streak file
         id: streak-cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: artifacts/health/streak.json
           key: streak-${{ github.run_id }}
@@ -132,7 +132,7 @@ jobs:
         # always get a new cache entry, and old entries age out per
         # GitHub's cache eviction policy.
         if: always()
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: artifacts/health/streak.json
           key: streak-${{ github.run_id }}
