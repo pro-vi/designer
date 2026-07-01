@@ -38,6 +38,17 @@ jobs:
     runs-on: [self-hosted, macOS, designer-health]
     timeout-minutes: 15
 
+    # The "canary" project for session-state anchors, shared by the preflight
+    # (validates it) and the probe (opens it). SINGLE SOURCE at the job level so the
+    # two steps can't drift apart. Keep it SINGLE-FILE: a multi-file project puts
+    # its files behind a "N pages" switcher instead of a flat Design Files list, so
+    # session.fileListScrape's flat text-scrape intermittently finds 0 filenames
+    # (the 4-file "designer smoke test" flaked that way). To swap: create a fresh
+    # one-file project, open its file, replace the URL, then
+    # `gh workflow run daily-health.yml` to verify green before the next cron.
+    env:
+      DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/6c5115ec-b27c-46b8-a7d9-1b09df042eff
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -54,18 +65,19 @@ jobs:
         # silently no-op (`|| true` hides the failure; step exits "success").
         run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
 
-      # The runner already has a node, but pinning it here keeps the Mac mini's
-      # global node version free to drift without breaking this job.
-      # MUST be >=22 (package.json engines): the in-process CDP readers
-      # (OopifHtmlReader / RunStateObserver) use the native global WebSocket, which
-      # only exists on Node >=22. On Node 20 `typeof WebSocket === 'undefined'`, so
-      # both attach() return null and every CDP anchor (session.oopifPreviewRead,
-      # network.turnRpcContract) false-fails "attach failed" — the chronic drift the
-      # probe kept filing. Do NOT drop below 22.
+      # Node version comes from ONE source of truth — the repo's `.nvmrc` — read by
+      # every workflow AND by `nvm` on dev machines, so CI can't drift out of sync
+      # (the failure that hid for weeks: this job was pinned to Node 20 while
+      # package.json engines require >=22). It MUST stay >=22: the in-process CDP
+      # readers (OopifHtmlReader / RunStateObserver) use the native global
+      # WebSocket, which only exists on Node >=22; on Node 20 `WebSocket` is
+      # undefined, both attach() return null, and every CDP anchor false-fails. The
+      # `Environment preflight` step below hard-asserts this, so a bad Node can
+      # never again masquerade as claude.ai UI drift.
       - name: Setup node
         uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version-file: '.nvmrc'
           cache: 'npm'
 
       - name: Install
@@ -95,29 +107,21 @@ jobs:
           restore-keys: |
             streak-
 
+      # Fail the job HERE — loud + distinct — if the probe ENVIRONMENT can't do its
+      # job (Node <22 / no native WebSocket, CDP endpoint down, canary unset). No
+      # continue-on-error: a red preflight stops the job before the probe + drift-PR
+      # steps run, so an environment problem can NEVER again masquerade as a
+      # selectors-drift PR (the way the Node-20 WebSocket bug did for weeks).
+      - name: Environment preflight
+        run: npm run -s preflight
+
       - name: Run health probe
         id: probe
-        # DESIGNER_PROBE_PROJECT_URL is the "canary" project for session-state
-        # anchors. The probe opens it after the home-phase pass so session.*
-        # / share.* anchors get exercised. It must be a project the user
-        # commits to keeping around ("designer health canary" today).
-        #
-        # Keep the canary SINGLE-FILE. A multi-file project (the old "designer
-        # smoke test", 72e73856, had 4) puts its files behind a "N pages" switcher
-        # instead of a flat Design Files list, so session.fileListScrape's flat
-        # text-scrape intermittently finds 0 -> chronic false-drift (2026-06-30).
-        # A one-file project renders `index.html` as a scrapable text node with no
-        # switcher, so the anchor is deterministic.
-        #
-        # To swap canaries:
-        #   1. Create a fresh SINGLE-FILE project on claude.ai/design (one index.html).
-        #   2. Open that file so the htmlViewer / fileListScrape anchors land.
-        #   3. Replace the URL below + commit + `gh workflow run daily-health.yml`
-        #      to verify green before the next scheduled run.
-        # If the canary 404s or vanishes mid-cycle, session anchors fail loudly
-        # — that's the signal to swap.
-        env:
-          DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/6c5115ec-b27c-46b8-a7d9-1b09df042eff
+        # Canary URL is inherited from the job-level env above. The probe opens it
+        # after the home-phase pass so session.* / share.* anchors get exercised.
+        # continue-on-error so an ANCHOR (content) failure flows into the
+        # selectors-drift PR rather than a hard red — that path is UI-drift signal;
+        # the preflight above already caught the environment-broken case.
         run: npm run -s probe:health
         continue-on-error: true
 
