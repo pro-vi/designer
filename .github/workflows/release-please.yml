@@ -60,7 +60,7 @@ jobs:
       # opens/updates the release PR and emits release_created=false, so the
       # publish steps are skipped.
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         if: steps.release.outputs.release_created || inputs.publish-tag
         with:
           ref: ${{ inputs.publish-tag || steps.release.outputs.tag_name }}
