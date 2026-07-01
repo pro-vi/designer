@@ -36,6 +36,7 @@
     "prepack": "npm run check && npm run build",
     "postinstall": "node scripts/postinstall.mjs",
     "probe": "tsx scripts/probe.ts",
+    "preflight": "tsx scripts/ci-preflight.ts",
     "probe:health": "tsx scripts/ci-health.ts",
     "auto-heal": "tsx scripts/auto-heal.ts",
     "smoke": "bash scripts/install-smoke.sh",
