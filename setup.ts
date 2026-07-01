@@ -4,7 +4,7 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { REPO_ROOT } from './repo-root.ts';
-import { defaultChromeBin, isChromeRunning, xspawnSync, WHICH, IS_WIN, QUIT_CHROME_HINT } from './cross-platform.ts';
+import { defaultChromeBin, isChromeRunning, xspawnSync, WHICH, IS_WIN, IS_MAC, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { createBrowser, type Browser } from './browser.ts';
 import { getSelectors } from './selectors.ts';
 
@@ -74,9 +74,12 @@ function cdpChromeProfileStatus(port: string): ProfileStatus {
   // No `ps`/`sh` on Windows; 'unknown' is adopt-ok and step4's DOM-marker
   // check remains the backstop there.
   if (IS_WIN) return 'unknown';
+  // macOS (BSD) ps needs `-Axww`; GNU/Linux ps rejects `-x` ("must set
+  // personality to get -x option") — use `-eww` there instead.
+  const psCmd = IS_MAC ? 'ps -Axww -o command' : 'ps -eww -o command';
   const r = xspawnSync(
     'sh',
-    ['-c', `ps -Axww -o command | grep -- '--remote-debugging-port=${port}' | grep -v grep`],
+    ['-c', `${psCmd} | grep -- '--remote-debugging-port=${port}' | grep -v grep`],
     { stdio: 'pipe' }
   );
   if (r.status !== 0) return 'unknown';
