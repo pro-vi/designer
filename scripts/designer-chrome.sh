@@ -35,4 +35,7 @@ echo "[designer-chrome] When done, leave this window open. The CDP server runs a
 exec "$CHROME" \
   --remote-debugging-port="$PORT" \
   --user-data-dir="$PROFILE" \
+  --no-first-run \
+  --no-default-browser-check \
+  --disable-search-engine-choice-screen \
   "https://claude.ai/design"
