@@ -68,7 +68,7 @@ jobs:
       - uses: actions/setup-node@v6
         if: steps.release.outputs.release_created || inputs.publish-tag
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           # No registry-url: setup-node would write an .npmrc that references
           # $NODE_AUTH_TOKEN, and npm hard-fails on unset env vars in config.

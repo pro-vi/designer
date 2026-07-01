@@ -56,10 +56,16 @@ jobs:
 
       # The runner already has a node, but pinning it here keeps the Mac mini's
       # global node version free to drift without breaking this job.
+      # MUST be >=22 (package.json engines): the in-process CDP readers
+      # (OopifHtmlReader / RunStateObserver) use the native global WebSocket, which
+      # only exists on Node >=22. On Node 20 `typeof WebSocket === 'undefined'`, so
+      # both attach() return null and every CDP anchor (session.oopifPreviewRead,
+      # network.turnRpcContract) false-fails "attach failed" — the chronic drift the
+      # probe kept filing. Do NOT drop below 22.
       - name: Setup node
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install
