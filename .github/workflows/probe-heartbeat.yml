@@ -1,0 +1,70 @@
+name: probe-heartbeat
+
+# Dead-man's-switch for the daily-health probe.
+#
+# The daily-health job runs on a SELF-HOSTED Mac mini runner. If that box is down
+# (asleep, or awaiting a FileVault login after a power outage) or its runner is
+# offline, the probe simply never fires — a silent gap no other signal catches. And
+# if the probe's ENVIRONMENT is broken (debug Chrome down / Node < 22 / canary gone),
+# its preflight fails the job red. This workflow runs on a GitHub-HOSTED runner —
+# independent of the Mac mini — and FAILS (which emails the repo owner via the
+# default Actions failure notification) when the latest daily-health run is stale or
+# didn't conclude success.
+#
+# What it does NOT alert on: real claude.ai UI/selector drift. That leaves the
+# daily-health job green (the probe step is continue-on-error) and opens a
+# selectors-drift PR instead — a separate, intentional signal.
+
+on:
+  schedule:
+    - cron: '0 16 * * *' # 16:00 UTC — 2h after daily-health's 14:00 cron, so it has finished
+  workflow_dispatch:
+
+permissions:
+  actions: read
+
+concurrency:
+  group: probe-heartbeat
+  cancel-in-progress: false
+
+jobs:
+  heartbeat:
+    name: alert if the daily-health probe went stale or broke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the latest daily-health run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MAX_AGE_HOURS: '26' # daily cadence (24h) + ~2h grace
+        run: |
+          set -euo pipefail
+          runs=$(gh run list --repo "$REPO" --workflow=daily-health.yml --limit 1 \
+            --json createdAt,status,conclusion,url)
+          if [ "$(echo "$runs" | jq 'length')" -eq 0 ]; then
+            echo "::error::No daily-health runs found at all — the probe has never run."
+            exit 1
+          fi
+          status=$(echo "$runs" | jq -r '.[0].status')
+          conclusion=$(echo "$runs" | jq -r '.[0].conclusion')
+          created=$(echo "$runs" | jq -r '.[0].createdAt')
+          url=$(echo "$runs" | jq -r '.[0].url')
+          age_h=$(( ( $(date -u +%s) - $(date -u -d "$created" +%s) ) / 3600 ))
+          echo "latest daily-health: status=$status conclusion=$conclusion age=${age_h}h"
+          echo "  $url"
+
+          fail=0
+          if [ "$age_h" -gt "$MAX_AGE_HOURS" ]; then
+            echo "::error::daily-health hasn't run in ${age_h}h (> ${MAX_AGE_HOURS}h) — the probe may be dead: the self-hosted Mac mini runner is offline, or the box is down / awaiting a FileVault login after an outage."
+            fail=1
+          fi
+          if [ "$status" = "completed" ] && [ "$conclusion" != "success" ]; then
+            echo "::error::latest daily-health run concluded '$conclusion' — the probe ENVIRONMENT is broken (debug Chrome down / Node < 22 / canary project gone), NOT claude.ai UI drift. See: $url"
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "heartbeat ok — daily-health ran ${age_h}h ago and concluded success."

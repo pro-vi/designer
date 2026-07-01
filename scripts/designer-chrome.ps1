@@ -47,4 +47,7 @@ Write-Host "[designer-chrome] When done, leave this window open. The CDP server 
 & $Chrome `
   "--remote-debugging-port=$Port" `
   "--user-data-dir=$Profile" `
+  "--no-first-run" `
+  "--no-default-browser-check" `
+  "--disable-search-engine-choice-screen" `
   "https://claude.ai/design"
