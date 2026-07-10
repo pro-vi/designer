@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.20](https://github.com/pro-vi/designer/compare/v0.3.19...v0.3.20) (2026-07-10)
+
+
+### Miscellaneous Chores
+
+* release @pro-vi/designer 0.3.20 ([c55fe0d](https://github.com/pro-vi/designer/commit/c55fe0de941c624434eb519d7800bf02a4962e37))
+
 ## [0.3.19](https://github.com/pro-vi/designer/compare/v0.3.18...v0.3.19) (2026-06-30)
 
 
