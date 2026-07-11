@@ -51,7 +51,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup gh PATH
         # The self-hosted Mac mini runner has gh at /opt/homebrew/bin/gh
