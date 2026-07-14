@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.21](https://github.com/pro-vi/designer/compare/v0.3.20...v0.3.21) (2026-07-14)
+
+
+### Bug Fixes
+
+* **cli:** stop false-positive lockfile staleness warning in doctor ([ad9d244](https://github.com/pro-vi/designer/commit/ad9d244187db27a71f3e18c97d7cfa21d871a929))
+
 ## [0.3.20](https://github.com/pro-vi/designer/compare/v0.3.19...v0.3.20) (2026-07-10)
 
 
