@@ -1,7 +1,6 @@
 #!/usr/bin/env -S node --import tsx
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { xspawn, xspawnSync, WHICH, IS_WIN } from './cross-platform.ts';
 import { DesignerController } from './designer-controller.ts';
 import { listSessions, getSession } from './session-store.ts';
@@ -605,9 +604,36 @@ function checkDeps(): DoctorCheck {
   if (!fs.existsSync(innerLock)) {
     return { name: 'dependencies installed', status: 'ok', detail: 'node_modules present (no inner lockfile)' };
   }
-  const h = (p: string): string => createHash('sha1').update(fs.readFileSync(p)).digest('hex');
-  if (h(rootLock) !== h(innerLock)) {
-    return { name: 'dependencies installed', status: 'warn', detail: 'node_modules stale (lockfile mismatch) — run `npm install`' };
+  // npm's node_modules/.package-lock.json structurally omits the top-level ""
+  // self-entry and any optional platform-specific packages it skipped (e.g.
+  // @esbuild/win32-x64 on darwin), so a whole-file hash never matches even
+  // right after a clean install. Compare per-package identity instead.
+  interface LockPkg { version?: string; resolved?: string; integrity?: string; optional?: boolean }
+  let root: Record<string, LockPkg>;
+  let inner: Record<string, LockPkg>;
+  try {
+    const readPkgs = (p: string): Record<string, LockPkg> =>
+      (JSON.parse(fs.readFileSync(p, 'utf8')) as { packages?: Record<string, LockPkg> }).packages || {};
+    root = readPkgs(rootLock);
+    inner = readPkgs(innerLock);
+  } catch {
+    return { name: 'dependencies installed', status: 'warn', detail: 'could not parse lockfiles — run `npm install`' };
+  }
+  const stale: string[] = [];
+  for (const [key, want] of Object.entries(root)) {
+    if (key === '') continue; // self-entry: never present in the inner lockfile
+    const got = inner[key];
+    if (!got) {
+      if (!want.optional) stale.push(key); // optional deps are legitimately skipped on platform mismatch
+    } else if (got.version !== want.version || got.resolved !== want.resolved || got.integrity !== want.integrity) {
+      stale.push(key);
+    }
+  }
+  for (const key of Object.keys(inner)) {
+    if (!(key in root)) stale.push(key); // installed but no longer in the lockfile
+  }
+  if (stale.length > 0) {
+    return { name: 'dependencies installed', status: 'warn', detail: `node_modules stale (${stale.length} package(s) out of sync, e.g. ${stale[0]}) — run \`npm install\`` };
   }
   return { name: 'dependencies installed', status: 'ok', detail: 'in sync with package-lock' };
 }
