@@ -4,7 +4,7 @@ MCP + CLI that lets your coding agent drive **[claude.ai/design](https://claude.
 
 Human describes intent → agent surveys codebase and prompts Claude Design → hands you the URL → iterate → `designer_handoff` fetches the project export zip into your repo (`project/` design files + a regenerated `decision-record.md`).
 
-> **Status:** v0.3.14, early. macOS only.
+> **Status:** v0.3.14, early. macOS and Linux.
 
 ## Stance
 

@@ -8,7 +8,18 @@ set -e
 
 PORT="${DESIGNER_CDP:-9222}"
 PROFILE="$HOME/.chrome-designer-profile"
-CHROME="${CHROME_BIN:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
+
+# Cross-platform Chrome resolution: CHROME_BIN wins; else per-OS default.
+if [ -n "$CHROME_BIN" ]; then
+  CHROME="$CHROME_BIN"
+elif [ "$(uname -s)" = "Darwin" ]; then
+  CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+else
+  for c in /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser; do
+    [ -x "$c" ] && CHROME="$c" && break
+  done
+  CHROME="${CHROME:-/usr/bin/google-chrome}"
+fi
 
 if [ ! -x "$CHROME" ]; then
   echo "[designer-chrome] Chrome not found at: $CHROME" >&2
@@ -22,10 +33,11 @@ if curl -fs -o /dev/null "http://127.0.0.1:$PORT/json/version"; then
   exit 0
 fi
 
-if pgrep -f "Google Chrome" >/dev/null; then
+if [ "$(uname -s)" = "Darwin" ]; then CHROME_PAT="Google Chrome"; QUIT_HINT="Quit existing Chrome (Cmd+Q) first"; else CHROME_PAT="chrome"; QUIT_HINT="Quit existing Chrome (or 'pkill chrome') first"; fi
+if pgrep -f "$CHROME_PAT" >/dev/null; then
   echo "[designer-chrome] WARNING: Chrome is already running." >&2
   echo "                  If it's NOT a debug-mode Chrome, the launched window may not get the debug port." >&2
-  echo "                  Quit existing Chrome (Cmd+Q) first, or accept the risk and continue." >&2
+  echo "                  $QUIT_HINT, or accept the risk and continue." >&2
 fi
 
 echo "[designer-chrome] Launching: $CHROME --remote-debugging-port=$PORT --user-data-dir=$PROFILE"
