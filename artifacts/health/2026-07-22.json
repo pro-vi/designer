@@ -1,0 +1,238 @@
+{
+  "ok": false,
+  "generatedAt": "2026-07-22T15:44:50.590Z",
+  "finishedAt": "2026-07-22T15:45:23.269Z",
+  "designerVersion": "0.3.21",
+  "chromeUrl": "https://claude.ai/design/p/<redacted>",
+  "canary": {
+    "target": "https://claude.ai/design/p/<redacted>",
+    "landedOn": "https://claude.ai/design/p/<redacted>"
+  },
+  "homeNav": {
+    "target": "https://claude.ai/design",
+    "landedOn": "https://claude.ai/design"
+  },
+  "doctor": {
+    "exitCode": -1,
+    "stdout": "",
+    "stderr": ""
+  },
+  "health": {
+    "ok": false,
+    "counts": {
+      "ok": 22,
+      "fail": 2,
+      "skip": 0
+    },
+    "results": [
+      {
+        "id": "login.signedIn",
+        "category": "pattern",
+        "description": "signed in (claude.ai is rendering the app shell, not the login wall)",
+        "requires": "any",
+        "phase": "home",
+        "status": "ok"
+      },
+      {
+        "id": "home.creator",
+        "category": "home",
+        "description": "creation composer (textarea)",
+        "requires": "home",
+        "phase": "home",
+        "status": "fail"
+      },
+      {
+        "id": "home.wireframeButton",
+        "category": "home",
+        "description": "Wireframe creation-type card",
+        "requires": "home",
+        "phase": "home",
+        "status": "ok"
+      },
+      {
+        "id": "home.highFiButton",
+        "category": "home",
+        "description": "Prototype creation-type card",
+        "requires": "home",
+        "phase": "home",
+        "status": "fail"
+      },
+      {
+        "id": "home.createButton",
+        "category": "home",
+        "description": "\"Create\" submit button (button[title=\"Create\"])",
+        "requires": "home",
+        "phase": "home",
+        "status": "ok"
+      },
+      {
+        "id": "home.projectsList",
+        "category": "home",
+        "description": "project list (>=1 /design/p/ link)",
+        "requires": "home",
+        "phase": "home",
+        "status": "ok"
+      },
+      {
+        "id": "home.projectCard",
+        "category": "home",
+        "description": "project card (a[href*=\"/design/p/\"])",
+        "requires": "home",
+        "phase": "home",
+        "status": "ok"
+      },
+      {
+        "id": "pattern.sessionUrl",
+        "category": "pattern",
+        "description": "session URL matches /design/p/<uuid>",
+        "requires": "any",
+        "phase": "home",
+        "status": "ok",
+        "detail": "url=https://claude.ai/design"
+      },
+      {
+        "id": "login.signedIn",
+        "category": "pattern",
+        "description": "signed in (claude.ai is rendering the app shell, not the login wall)",
+        "requires": "any",
+        "phase": "session",
+        "status": "ok"
+      },
+      {
+        "id": "session.promptTextarea",
+        "category": "session",
+        "description": "chat composer textarea",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok"
+      },
+      {
+        "id": "session.composerFillable",
+        "category": "session",
+        "description": "composer is fillable (textarea or contenteditable, per _submitPrompt)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok",
+        "detail": "contenteditable"
+      },
+      {
+        "id": "session.sendButton",
+        "category": "session",
+        "description": "send button",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok"
+      },
+      {
+        "id": "session.htmlViewerIframe",
+        "category": "session",
+        "description": "html-viewer-iframe (design preview)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok"
+      },
+      {
+        "id": "session.chatMessages",
+        "category": "session",
+        "description": "chat-messages container",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok"
+      },
+      {
+        "id": "network.turnRpcContract",
+        "category": "pattern",
+        "description": "OmeletteService Chat/RenewTurn/ReleaseTurn network contract",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok",
+        "detail": "heartbeat x0, release seen, chat x1, chunks x2, terminal=finished, observed=[anthropic.omelette.api.v1alpha.OmeletteService/Chat, anthropic.omelette.api.v1alpha.OmeletteService/ReleaseTurn, anthropic.omelette.api.v1alpha.OmeletteService/UpdateProjectData]"
+      },
+      {
+        "id": "session.iframeSrcPattern",
+        "category": "pattern",
+        "description": "iframe src serves from claudeusercontent.com (signed-token or bootstrap-subdomain)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok",
+        "detail": "variant=bootstrap-subdomain"
+      },
+      {
+        "id": "network.previewBootstrap",
+        "category": "pattern",
+        "description": "preview iframe regime (bootstrap-subdomain => OOPIF CDP capture; signed-token => node fetch)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok",
+        "detail": "variant=bootstrap-subdomain (OOPIF CDP capture path)"
+      },
+      {
+        "id": "session.oopifPreviewRead",
+        "category": "pattern",
+        "description": "OOPIF CDP read returns rendered preview HTML (not the bootstrap loader shell)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok",
+        "detail": "read 23399B of rendered HTML via OOPIF CDP capture"
+      },
+      {
+        "id": "session.chatTurnPrefix",
+        "category": "pattern",
+        "description": "chat-messages renders >=2 turn rows (data-index API)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok"
+      },
+      {
+        "id": "share.shareButton",
+        "category": "share",
+        "description": "Share button (opens the dropdown containing handoff/export actions)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok"
+      },
+      {
+        "id": "share.handoffMenuItem",
+        "category": "share",
+        "description": "Project export endpoint (/design/v1/design/projects/<id>/download) returns a zip — the path designer handoff fetches",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok",
+        "detail": "200 application/zip"
+      },
+      {
+        "id": "pattern.sessionUrl",
+        "category": "pattern",
+        "description": "session URL matches /design/p/<uuid>",
+        "requires": "any",
+        "phase": "session",
+        "status": "ok",
+        "detail": "url=https://claude.ai/design/p/6c5115ec-b27c-46b8-a7d9-1b09df042eff?file=index.html"
+      },
+      {
+        "id": "pattern.fileQueryParam",
+        "category": "pattern",
+        "description": "?file=<name> opens a specific file (URL-based file switching)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok",
+        "detail": "file param present"
+      },
+      {
+        "id": "session.fileListScrape",
+        "category": "session",
+        "description": "filename text nodes detectable (listFiles scrape still works)",
+        "requires": "session",
+        "phase": "session",
+        "status": "ok",
+        "detail": "2 file(s) detected"
+      }
+    ]
+  },
+  "interstitial": null,
+  "diagnostics": {
+    "url": "https://claude.ai/design/p/6c5115ec-b27c-46b8-a7d9-1b09df042eff?file=index.html",
+    "htmlBytes": 68379,
+    "screenshotPath": "artifacts/health/2026-07-22/page.png"
+  }
+}
