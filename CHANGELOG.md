@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.22](https://github.com/pro-vi/designer/compare/v0.3.21...v0.3.22) (2026-07-25)
+
+
+### Bug Fixes
+
+* **selectors:** re-capture drifted home anchors onto data-testids ([#127](https://github.com/pro-vi/designer/issues/127)) ([ac30dfe](https://github.com/pro-vi/designer/commit/ac30dfedf1f040c5499ea19279a9983cd39d0cf7))
+
 ## [0.3.21](https://github.com/pro-vi/designer/compare/v0.3.20...v0.3.21) (2026-07-14)
 
 
