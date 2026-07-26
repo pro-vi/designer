@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.23](https://github.com/pro-vi/designer/compare/v0.3.22...v0.3.23) (2026-07-26)
+
+
+### Bug Fixes
+
+* **health:** make the probe, healer, and scrape assert outcomes not activity ([#131](https://github.com/pro-vi/designer/issues/131)) ([2371459](https://github.com/pro-vi/designer/commit/2371459db513437c2202f5771142b95f9e5b7367))
+
 ## [0.3.22](https://github.com/pro-vi/designer/compare/v0.3.21...v0.3.22) (2026-07-25)
 
 
