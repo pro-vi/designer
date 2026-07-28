@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.24](https://github.com/pro-vi/designer/compare/v0.3.23...v0.3.24) (2026-07-28)
+
+
+### Features
+
+* **files:** agent-driven file deletion via designer_files_delete ([#134](https://github.com/pro-vi/designer/issues/134)) ([e41d927](https://github.com/pro-vi/designer/commit/e41d927b4d937ae6461a9d7dfdebf0d3d341a446))
+
 ## [0.3.23](https://github.com/pro-vi/designer/compare/v0.3.22...v0.3.23) (2026-07-26)
 
 
