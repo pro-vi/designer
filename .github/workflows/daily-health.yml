@@ -75,7 +75,7 @@ jobs:
       # `Environment preflight` step below hard-asserts this, so a bad Node can
       # never again masquerade as claude.ai UI drift.
       - name: Setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'

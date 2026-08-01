@@ -65,7 +65,7 @@ jobs:
         with:
           ref: ${{ inputs.publish-tag || steps.release.outputs.tag_name }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: steps.release.outputs.release_created || inputs.publish-tag
         with:
           node-version-file: '.nvmrc'
