@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.25](https://github.com/pro-vi/designer/compare/v0.3.24...v0.3.25) (2026-08-03)
+
+
+### Features
+
+* **auto-heal:** patcher V2 — repair selectors.json, gated and authenticated ([#146](https://github.com/pro-vi/designer/issues/146)) ([2bfee83](https://github.com/pro-vi/designer/commit/2bfee83b7bbdb41c255f8c75b3c135c33bc3835e))
+
+
+### Bug Fixes
+
+* **health:** repair live selector drift, revive the dead canary, and assert the probe environment ([#144](https://github.com/pro-vi/designer/issues/144)) ([04de0f3](https://github.com/pro-vi/designer/commit/04de0f3c77eeb22ad44bc985bbe90e2682103174))
+
 ## [0.3.24](https://github.com/pro-vi/designer/compare/v0.3.23...v0.3.24) (2026-07-28)
 
 
