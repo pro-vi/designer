@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.26](https://github.com/pro-vi/designer/compare/v0.3.25...v0.3.26) (2026-08-18)
+
+
+### Bug Fixes
+
+* Linux support (cross-platform Chrome default + GNU-safe ps probe) ([#110](https://github.com/pro-vi/designer/issues/110)) ([18ba25f](https://github.com/pro-vi/designer/commit/18ba25ffd360944572d024d905b700db4cfd9625))
+* **setup:** give the launcher script the same Chrome probe as the CLI ([#114](https://github.com/pro-vi/designer/issues/114)) ([#152](https://github.com/pro-vi/designer/issues/152)) ([58bb750](https://github.com/pro-vi/designer/commit/58bb750798bb8424902b72b9e1d2d42600b26e47))
+* **setup:** match Chrome by process name, not command line ([#114](https://github.com/pro-vi/designer/issues/114)) ([#150](https://github.com/pro-vi/designer/issues/150)) ([08b5355](https://github.com/pro-vi/designer/commit/08b5355b68e79304a505ea73ab7329365eebce22))
+
 ## [0.3.25](https://github.com/pro-vi/designer/compare/v0.3.24...v0.3.25) (2026-08-03)
 
 
