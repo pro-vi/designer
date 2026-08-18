@@ -43,15 +43,25 @@ jobs:
     # two steps can't drift apart. Keep it SINGLE-FILE: a multi-file project puts
     # its files behind a "N pages" switcher instead of a flat Design Files list, so
     # session.fileListScrape's flat text-scrape intermittently finds 0 filenames
-    # (the 4-file "designer smoke test" flaked that way). To swap: create a fresh
-    # one-file project, open its file, replace the URL, then
+    # (the 4-file "designer smoke test" flaked that way).
+    #
+    # A canary can be DELETED out from under the probe, and the URL keeps
+    # answering — claude.ai serves a "Project not found" body on the same
+    # /design/p/<uuid> path. Both previous canaries died that way and the
+    # session anchors went on being read as UI drift, so `npm run preflight`
+    # now opens this project and fails the job when it is gone. Replacing it is
+    # a real step, not a formality.
+    #
+    # To swap: create a fresh one-file project, open its file, replace the URL
+    # HERE AND in auto-heal.yml (preflight asserts the two match), then
     # `gh workflow run daily-health.yml` to verify green before the next cron.
+    # Current canary created 2026-08-02, single page (index.html).
     env:
-      DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/6c5115ec-b27c-46b8-a7d9-1b09df042eff
+      DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/9a2066ca-e9e4-4972-a294-560092e6a216
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup gh PATH
         # The self-hosted Mac mini runner has gh at /opt/homebrew/bin/gh
@@ -75,7 +85,7 @@ jobs:
       # `Environment preflight` step below hard-asserts this, so a bad Node can
       # never again masquerade as claude.ai UI drift.
       - name: Setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
@@ -152,7 +162,14 @@ jobs:
           retention-days: 30
 
       - name: Close stale drift PRs on green
-        if: steps.probe.outcome == 'success'
+        # Gated on the probe's own verdict, not on step outcome. A tooling fault
+        # (doctor never launched) used to exit 0 and land here, auto-closing a
+        # legitimate open drift PR while half the probe was broken.
+        #
+        # Also requires zero degraded anchors: an all-degraded run still yields
+        # verdict `ok` (the tool works), and closing the drift PR that documents
+        # the rot is precisely the wrong response to unrepaired drift.
+        if: steps.probe.outputs.verdict == 'ok' && steps.probe.outputs.degraded == '0'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TODAY: ${{ steps.stamp.outputs.date }}
@@ -177,7 +194,9 @@ jobs:
             done
 
       - name: Open selectors-drift PR
-        if: steps.probe.outcome == 'failure' && (github.event_name != 'workflow_dispatch' || inputs.open-pr-on-fail)
+        # `drift` only — an `incomplete` verdict must NOT be filed as a
+        # claude.ai redesign; it is a broken probe and gets its own step below.
+        if: steps.probe.outputs.verdict == 'drift' && (github.event_name != 'workflow_dispatch' || inputs.open-pr-on-fail)
         uses: peter-evans/create-pull-request@v8
         with:
           # Keep this checked into the repo so a human can compare what the
@@ -216,3 +235,31 @@ jobs:
             4. If the change is a real regression in the live UI: file upstream
                + bump the patch version when the workaround lands.
             5. Close this PR once the fix lands or once `chromeUrl` recovers.
+
+      # Third path: the probe could not fully run (doctor never launched, or
+      # reported a broken toolchain). This is NOT selector drift, so no drift PR
+      # is opened above — but it must not pass either. The probe step carries
+      # `continue-on-error: true`, so without this the job would end green with
+      # only an annotation to show for it, which is precisely how a half-broken
+      # probe stayed invisible. Runs last so the artifact + streak are saved first.
+      - name: Fail on an incomplete probe
+        if: steps.probe.outputs.verdict == 'incomplete'
+        run: |
+          echo "::error title=Health probe did not fully run::verdict=incomplete — the UI anchors may be green but the tooling half of the probe is broken. This is not selector drift; see the doctor block in artifact health-${{ github.run_id }}."
+          exit 1
+
+      # Backstop: the probe emitted no recognizable verdict at all. Every exit
+      # path inside ci-health routes through exitWith(), so this should be
+      # unreachable — but a hard kill (OOM, runner timeout, SIGKILL) terminates
+      # the process before any output is written, and `continue-on-error: true`
+      # means an unset verdict would otherwise leave every gate above false and
+      # the job green. Fails closed on anything that is not one of the three
+      # known verdicts.
+      - name: Fail when the probe emitted no verdict
+        if: >-
+          steps.probe.outputs.verdict != 'ok' &&
+          steps.probe.outputs.verdict != 'drift' &&
+          steps.probe.outputs.verdict != 'incomplete'
+        run: |
+          echo "::error title=Health probe emitted no verdict::verdict='${{ steps.probe.outputs.verdict }}' (step outcome: ${{ steps.probe.outcome }}). The probe died before publishing a result — treat as a broken probe, not a green run."
+          exit 1

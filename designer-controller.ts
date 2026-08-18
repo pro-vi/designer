@@ -1,10 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createBrowser, type Browser } from './browser.ts';
 import { sessionDir, saveIteration, type IterationRecord } from './artifact-store.ts';
 import { upsertSession, appendHistory, getSession, type StoredSession } from './session-store.ts';
-import { getSelectors, type Selectors } from './selectors.ts';
+import { getSelectors, orderedBranches, presenceSelector, type Selectors } from './selectors.ts';
 import { ensureCdpUp } from './cdp-ensure.ts';
 import { RunStateObserver } from './run-state.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
@@ -22,12 +23,109 @@ import {
   type InterstitialReport
 } from './interstitials.ts';
 import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
+import {
+  switcherStateExpr,
+  clickTriggerExpr,
+  readRowsExpr,
+  rowSelector,
+  stampRowExpr,
+  stampMenuDeleteExpr,
+  verifyConfirmDialogExpr,
+  dialogPresentExpr,
+  clearStampsExpr,
+  hitTestStatusExpr,
+  centerOfExpr,
+  scrimDismissPointExpr,
+  stampedSelector,
+  matchingRowIndexes,
+  foldSettleRead,
+  classifySettleRead,
+  shouldCloseSwitcher,
+  type SettleCounters,
+  displayLabelFor,
+  STAMP_MENU_DELETE,
+  STAMP_CONFIRM_DELETE,
+  STAMP_CONFIRM_CANCEL,
+  type SwitcherRow
+} from './files-switcher.ts';
 import { unzipSync } from 'fflate';
 
 export interface ChatTurn {
   role: 'assistant' | 'user' | 'unknown';
   text: string;
 }
+
+/**
+ * Why a delete refused.
+ *
+ * Every code means NOTHING WAS DELETED **except** `outcome-unknown`, which is
+ * returned for every unproven outcome once a confirm click has been dispatched.
+ *
+ * There is deliberately no post-dispatch code asserting the file survived. The
+ * only evidence for that would be the file list, which is the soft virtualized
+ * surface this repo treats as corroboration only — it lags the delete, so "the
+ * row is still there" cannot outrank "Delete was clicked and the dialog
+ * closed". After a dispatch the outcome is PROVEN gone or UNKNOWN. #F4, and the
+ * round-4 disconfirmation that showed the two-consecutive-reads bar was being
+ * cleared by repeated reads of a single stale popover mount.
+ */
+export type DeleteFileError =
+  | 'busy'
+  | 'wrong-project'
+  | 'switcher-unavailable'
+  | 'not-found'
+  | 'ambiguous'
+  | 'menu-unavailable'
+  | 'confirm-mismatch'
+  | 'dialog-stuck'
+  | 'snapshot-failed'
+  | 'project-changed'
+  | 'outcome-unknown';
+
+export type DeleteFileResult =
+  | {
+      ok: true;
+      /** Discriminant: false = the file is GONE. A dry run never deletes. */
+      dryRun: false;
+      file: string;
+      deletedLabel: string;
+      /** Switcher DISPLAY labels (no extensions) of what remains. */
+      remainingLabels: string[];
+      snapshotPath: string | null;
+      activeFileReset: boolean;
+      /** Non-fatal cleanup/bookkeeping problems AFTER a proven deletion. */
+      warnings?: string[];
+    }
+  | {
+      ok: true;
+      dryRun: true;
+      file: string;
+      /** The switcher LABEL that matched — extensions are not shown there. */
+      wouldDelete: string | null;
+      ambiguous: boolean;
+      rows: string[];
+      /**
+       * False always: a preview matches on the display label, and the label
+       * hides the extension. `index.html` and `index.css` share the label
+       * `index`, so a dry run cannot tell them apart. Only the confirm dialog
+       * names the full filename, and reaching it means opening a destructive
+       * dialog — which a preview must not do. The real delete verifies the name
+       * there and refuses with 'confirm-mismatch' if it differs.
+       */
+      filenameVerified: false;
+      note: string;
+    }
+  | {
+      ok: false;
+      error: DeleteFileError;
+      file: string;
+      detail?: string;
+      /** Switcher labels, for 'not-found' / 'ambiguous'. */
+      candidates?: string[];
+      /** What the confirm dialog actually named, for 'confirm-mismatch'. */
+      dialogFile?: string | null;
+      snapshotPath?: string | null;
+    };
 
 export interface SessionStatus {
   key: string;
@@ -36,11 +134,26 @@ export interface SessionStatus {
   inSession: boolean;
   onHome: boolean;
   availableFiles: string[];
+  /**
+   * How much `availableFiles` is worth. 'visible-only' = scraped from the page
+   * without navigating, so an empty array may mean "panel closed", not "no
+   * files"; 'other-project' = the shared tab is on a different project, so the
+   * list is deliberately empty; 'raced' = the tab moved between sampling the
+   * URL and scraping, so the read could not be attributed and was discarded;
+   * 'not-in-session' = no project open.
+   */
+  filesScope: 'visible-only' | 'other-project' | 'raced' | 'not-in-session';
   // True when the latest turn is Claude punting with the "Claude has some questions →"
   // teaser. The questions UI itself is ephemeral — it disappears on refresh and has no
   // stable DOM contract — so we don't try to scrape and answer them. Caller should
   // surface this to a human, or re-prompt with `decisive: true` to bypass.
-  awaitingClarification: boolean;
+  /**
+   * True/false when the read could be attributed to THIS key's project; `null`
+   * when it could not (no session, or the tab moved mid-read — see filesScope
+   * 'raced'). A plain `false` would read as "definitely not awaiting", which is
+   * the same unearned certainty this verb removes everywhere else.
+   */
+  awaitingClarification: boolean | null;
 }
 
 export type FailureMode = null | 'timeout' | 'unstable' | 'no_change' | 'stalled' | 'blocked';
@@ -126,6 +239,109 @@ const FLAT_LAYOUT_SUFFIX = '\n\nFile layout: keep all generated files at the pro
 const DECISIVE_SUFFIX =
   '\n\nIf you would otherwise stop to ask clarifying questions, do not. Choose the most defensible answer for each axis yourself and proceed. Note your assumption in a one-line `<!-- assumed: ... -->` comment at the top of the relevant file so I can override on the next turn.';
 
+/**
+ * In-process exclusion for every operation that navigates or otherwise mutates
+ * a design tab.
+ *
+ * THE RESOURCE IS THE SESSION'S ACTIVE TAB, so the lock is keyed by
+ * `browser.driverId` — the agent-browser session that owns it. Two earlier
+ * shapes were both wrong:
+ *  - per controller INSTANCE (#134 F3): in CDP mode agent-browser scopes its
+ *    daemon session by ENDPOINT (`designer-cdp-<port>`), so every key shares one
+ *    session and the lock serialized nothing.
+ *  - per (session + project root): `openGuarded` calls `browser.open()` on
+ *    whichever tab is ACTIVE — it does not select a tab first — and
+ *    `selectDesignTab` changes which tab that is. A navigation issued for
+ *    project B therefore moves the tab project A is mid-flight on, so scoping by
+ *    project let exactly the interleaving this exists to prevent through.
+ *
+ * Parallel `--key` work is genuinely serialized by this, and that is correct
+ * rather than a regression: with one active tab per session those operations
+ * were never safe concurrently, they merely failed silently instead of loudly.
+ *
+ * Re-entrant per OPERATION via AsyncLocalStorage, not per instance: deleteFile
+ * legitimately calls fetchFile -> openFile, which must not deadlock, while two
+ * genuinely concurrent calls — even on the same controller — still exclude each
+ * other because they run in different async contexts.
+ *
+ * Remaining gap, documented not closed: in-process only. Two designer PROCESSES
+ * against one Chrome is the cross-latch gap CLAUDE.md documents; that needs a
+ * lockfile.
+ */
+const DRIVER_LOCKS = new Map<string, string>();
+
+/**
+ * Acquire the tab lock, or report who holds it. Extracted so the acquire/release
+ * decision is unit-testable rather than only reachable through a live browser —
+ * the same standard applied to decodeConsent in this series.
+ *
+ * Synchronous by construction: check and set happen in one tick, so two async
+ * callers cannot both observe the lock free.
+ */
+export function tryAcquireDriverLock(locks: Map<string, string>, driver: string, label: string): string | null {
+  const held = locks.get(driver);
+  if (held) return held;
+  locks.set(driver, label);
+  DRIVER_EPOCHS.set(driver, (DRIVER_EPOCHS.get(driver) ?? 0) + 1);
+  return null;
+}
+
+/**
+ * Monotonic count of tab-driving operations started, PER DRIVER.
+ *
+ * Lock-free readers use it to detect that something drove *their* tab during a
+ * read. URL equality alone cannot: the tab can go A→B→A between two samples and
+ * compare equal while the reads either side came from different projects. Any
+ * in-process navigation goes through the lock, so a changed epoch is a reliable
+ * "your read may be mixed" signal.
+ *
+ * Keyed by driverId, not global. Under DESIGNER_CDP='' each key gets its own
+ * agent-browser session and therefore its own tab, so a process-wide counter
+ * made key B's activity invalidate key A's status read of a tab B could not
+ * touch — defeating the parallel isolation that mode exists to provide. The
+ * epoch must be as narrow as the resource it stands for, which is the same
+ * lesson the lock itself took three attempts to learn.
+ *
+ * Out-of-process actors do not bump it — the documented cross-process gap,
+ * where URL equality remains the belt.
+ */
+const DRIVER_EPOCHS = new Map<string, number>();
+export const driverEpoch = (driver: string): number => DRIVER_EPOCHS.get(driver) ?? 0;
+
+export function releaseDriverLock(locks: Map<string, string>, driver: string): void {
+  locks.delete(driver);
+}
+
+/** Lock keys held by the operation running in the current async context. */
+const LOCK_CTX = new AsyncLocalStorage<Set<string>>();
+
+/**
+ * Run `fn` holding the tab lock for `browser`, for callers that hold a Browser
+ * rather than a controller.
+ *
+ * `runHealth` is the reason this is public: the switcher anchor hovers, clicks,
+ * presses Escape and toggles the popover, and both `designer health` (cli.ts)
+ * and the daily CI probe hand it a raw browser — so the probe was driving the
+ * shared tab outside the lock and could close the popover in the middle of a
+ * delete's settle. The invariant cannot live at the controller boundary alone
+ * when the resource handle escapes it.
+ */
+export async function withTabLock<T>(browser: Browser, name: string, fn: () => Promise<T>): Promise<T> {
+  const resource = browser.driverId;
+  const inherited = LOCK_CTX.getStore();
+  if (inherited?.has(resource)) return fn();
+  const held = tryAcquireDriverLock(DRIVER_LOCKS, resource, name);
+  if (held) throw new Error(`designer is busy: ${held} is already driving the browser tab`);
+  const store = new Set(inherited ?? []);
+  store.add(resource);
+  try {
+    return await LOCK_CTX.run(store, fn);
+  } finally {
+    store.delete(resource);
+    releaseDriverLock(DRIVER_LOCKS, resource);
+  }
+}
+
 export class DesignerController {
   readonly key: string;
   readonly selectors: Selectors;
@@ -196,8 +412,59 @@ export class DesignerController {
     const stored = getSession(this.key);
     const url = await this.currentUrl();
     const inSession = /\/design\/p\/[a-f0-9-]+/i.test(url);
-    const availableFiles = inSession ? await this.listFiles().catch(() => []) : [];
-    const awaitingClarification = inSession ? await this.detectAwaitingClarification() : false;
+    // Read-only by construction. This used to call listFiles(), which navigates
+    // (openGuarded) and — once tab access became locked — threw 'busy' for the
+    // length of any generation, swallowed into an empty array. A status read
+    // that silently reports "no files" is worse than one that reports what is
+    // actually on screen, and designer_session status is documented as a pure
+    // read that is safe to call at any time. Review of e038462.
+    // Scope the read to THIS key's project. Dropping listFiles() also dropped
+    // the pin it carried ("Navigate to THIS key's project; being in any /p/
+    // session isn't enough"), so a status call could report whatever project the
+    // shared tab happened to be on as this key's inventory. We cannot navigate
+    // here — status must stay lock-free — so we report only when the tab is
+    // already on the right project, and say so when it is not.
+    const targetRoot = stored?.designUrl?.split('?')[0];
+    const onThisKeysProject = !!targetRoot && url.split('?')[0] === targetRoot;
+    // Sample, scrape, RE-SAMPLE. Status is deliberately lock-free, and the
+    // scrape is a separate agent-browser process, so another key's locked
+    // operation can navigate the shared tab in between — which would report
+    // that project's filenames under this key's currentUrl. Attribute the read
+    // or discard it; never label a racing read 'visible-only'. Codex review,
+    // PR #134.
+    let availableFiles: string[] = [];
+    let awaitingClarification: boolean | null = null;
+    let raced = false;
+    if (inSession && onThisKeysProject) {
+      const epochBefore = driverEpoch(this.browser.driverId);
+      // BOTH page reads are gated and attributed together. Fixing only the file
+      // scrape left its sibling reading another project's last chat turn and
+      // reporting it as this key's awaitingClarification — the same defect, one
+      // field over. Codex review, PR #134.
+      const scraped = await this._scrapeVisibleFiles();
+      const clarifying = await this.detectAwaitingClarification();
+      const rootAfter = (await this.currentUrl()).split('?')[0];
+      // Both guards: the URL must still match AND no tab-driving operation may
+      // have started meanwhile. Equality alone is defeated by A→B→A — the reads
+      // either side can come from different projects while the endpoints
+      // compare equal.
+      if (rootAfter === targetRoot && driverEpoch(this.browser.driverId) === epochBefore) {
+        availableFiles = scraped;
+        awaitingClarification = clarifying;
+      } else {
+        raced = true;
+      }
+    }
+    // The list is whatever the page is currently showing: it is empty both for a
+    // project with no files and for one whose file panel is closed. Callers that
+    // need an authoritative answer must use designer_list / handoff.
+    const filesScope: SessionStatus['filesScope'] = !inSession
+      ? 'not-in-session'
+      : !onThisKeysProject
+        ? 'other-project'
+        : raced
+          ? 'raced'
+          : 'visible-only';
     return {
       key: this.key,
       stored,
@@ -205,6 +472,7 @@ export class DesignerController {
       inSession,
       onHome: /\/design\/?$/.test(url) || url.endsWith('/design'),
       availableFiles,
+      filesScope,
       awaitingClarification
     };
   }
@@ -221,7 +489,7 @@ export class DesignerController {
     return /Claude has some questions/i.test(last.text);
   }
 
-  async session({
+  private async _sessionBody({
     action = 'status',
     name,
     fidelity = 'wireframe'
@@ -282,7 +550,7 @@ export class DesignerController {
   // list them rather than guess by active-first. We also bind from the VALIDATED
   // candidate URL, not a currentUrl() re-read after activateTab (which could race
   // to a different tab).
-  async adoptSession(name?: string): Promise<{ ok: true; url: string; uuid: string; adopted: true; name?: string }> {
+  private async _adoptSessionBody(name?: string): Promise<{ ok: true; url: string; uuid: string; adopted: true; name?: string }> {
     await ensureCdpUp();
 
     const candidates = await this.candidateTabs((u) => SESSION_URL_RE.test(u));
@@ -335,7 +603,7 @@ export class DesignerController {
   // tab-drift failure it exists to catch.) Returns the count of candidates
   // considered (for error messaging). No-ops (matched:false, candidates:0) when
   // no design tab is open, leaving the current binding untouched.
-  async selectDesignTab(): Promise<{ matched: boolean; candidates: number }> {
+  private async _selectDesignTabBody(): Promise<{ matched: boolean; candidates: number }> {
     const stored = getSession(this.key);
     const targetRoot = stored?.designUrl?.split('?')[0];
     const candidates = await this.candidateTabs((u) =>
@@ -346,8 +614,8 @@ export class DesignerController {
     for (const cand of candidates) {
       await this.browser.activateTab(cand.index).catch(() => null);
       const composerOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
-      const homeOk = this.selectors.login.signedInIndicator
-        ? await this.browser.isVisible(this.selectors.login.signedInIndicator).catch(() => false)
+      const homeOk = this._signedInMarker()
+        ? await this.browser.isVisible(this._signedInMarker()).catch(() => false)
         : false;
       if (composerOk || homeOk) return { matched: true, candidates: candidates.length };
     }
@@ -402,7 +670,7 @@ export class DesignerController {
   // still works: the probe/click/reload run over agent-browser, not CDP, so the
   // clear itself needs no CDP. Without this gate, the createSession pre-flight
   // would break `create` in the opt-out flow (PR #77 Codex P2).
-  async clearInterstitials({
+  private async _clearInterstitialsBody({
     maxPasses = 4,
     cloudflareWaitMs = 25_000,
     pollMs = 1500
@@ -495,7 +763,7 @@ export class DesignerController {
     return new Error(`Unresolved interstitial '${kind}' on claude.ai/design${suffix}.`);
   }
 
-  async ensureReady(): Promise<{ ok: true; url: string; inSession: boolean; interstitials?: InterstitialReport }> {
+  private async _ensureReadyBody(): Promise<{ ok: true; url: string; inSession: boolean; interstitials?: InterstitialReport }> {
     await ensureCdpUp();
 
     const picked = await this.selectMatchingTab();
@@ -546,8 +814,8 @@ export class DesignerController {
     const interstitials = await this.clearInterstitials();
     if (interstitials.blocked) throw this._interstitialError(interstitials.blocked, picked.candidates);
 
-    const homeOk = this.selectors.login.signedInIndicator
-      ? await this.browser.isVisible(this.selectors.login.signedInIndicator).catch(() => false)
+    const homeOk = this._signedInMarker()
+      ? await this.browser.isVisible(this._signedInMarker()).catch(() => false)
       : false;
     const sessionOk = await this.browser.isVisible(this.selectors.composer.promptTextarea).catch(() => false);
     if (!homeOk && !sessionOk) {
@@ -558,22 +826,25 @@ export class DesignerController {
     return { ok: true, url: await this.currentUrl(), inSession: await this.isInSession(), interstitials };
   }
 
-  async createSession(
+  private async _createSessionBody(
     name: string,
     fidelity: 'wireframe' | 'highfi' = 'wireframe',
     { timeoutMs = 20 * 60_000, stabilityMs = 4000 }: { timeoutMs?: number; stabilityMs?: number } = {}
   ): Promise<{ ok: true; url: string; name: string; fidelity: string }> {
-    // 2026-06 home (#61, re-drifted — re-captured live 2026-06-22): the home is
-    // composer-driven, but the composer is now a plain <textarea> (`home.creator`,
-    // placeholder rotates) with a separate `button[title="Create"]` submit
-    // (`home.createButton`) — NOT the in-session contenteditable / chat-send-button
-    // (those testids were stripped from the home). So `name` becomes the seed
-    // prompt. The redesign removed the wireframe/high-fi toggle, so `fidelity` is
-    // folded into the seed as a directive (and still stored) — otherwise highfi
-    // and wireframe creates would behave identically while the session claimed a
-    // fidelity that was never applied (#66 review). The creation-type cards
-    // (Slides / Prototype / Wireframe / Animation) set the Template pill but are
-    // off the seed path. Verified live against the redesigned home.
+    // 2026-07 home (re-drifted again — re-captured live 2026-07-24, Chrome 150):
+    // the home is composer-driven, but the composer is no longer a <textarea> at
+    // all — it is a ProseMirror contenteditable div (`home.creator` =
+    // [data-testid="home-composer-input"]; placeholder rotates, never key on it)
+    // with a separate submit (`home.createButton` =
+    // [data-testid="home-composer-send"], same element as button[title="Create"]).
+    // _submitPrompt's contenteditable branch drives it. It is still NOT the
+    // in-session chat-composer-input / chat-send-button — those testids exist only
+    // in-session. So `name` becomes the seed prompt. The redesign removed the
+    // wireframe/high-fi toggle, so `fidelity` is folded into the seed as a
+    // directive (and still stored) — otherwise highfi and wireframe creates would
+    // behave identically while the session claimed a fidelity that was never
+    // applied (#66 review). The creation-type cards (carousel-type-*) set the
+    // Template pill but are off the seed path. Verified live against the home.
     //
     // `name` is the composer seed, so it must be non-empty — a whitespace-only
     // name leaves the send button disabled and would otherwise spin the full
@@ -617,13 +888,14 @@ export class DesignerController {
       : null;
     try {
       observer?.beginRun();
-      // Reuse the composer fill+submit, pointed at the HOME composer (<textarea> +
-      // "Create"), not the in-session defaults. Note button[title="Create"] is
-      // always enabled, so the enable-wait is a no-op here — the synchronous fill
-      // above is what guarantees the seed text is present before the click.
+      // Reuse the composer fill+submit, pointed at the HOME composer
+      // (contenteditable + "Create"), not the in-session defaults. Note the home
+      // Create button is always enabled, so the enable-wait is a no-op here — the
+      // synchronous fill above is what guarantees the seed text is present before
+      // the click.
       await this._submitPrompt(seed, {
         textarea: this.selectors.home.creator,
-        sendButton: this.selectors.home.createButton
+        sendButton: orderedBranches(this.selectors.home.createButton, this.selectors.homeLegacy?.createButton)
       });
 
       let inSession = false;
@@ -647,7 +919,7 @@ export class DesignerController {
     return { ok: true, url, name, fidelity };
   }
 
-  async resumeSession(): Promise<{ ok: true; url: string }> {
+  private async _resumeSessionBody(): Promise<{ ok: true; url: string }> {
     const stored = getSession(this.key);
     if (!stored?.designUrl) throw new Error(`No designUrl stored for key=${this.key}. Create one first.`);
     await this.openGuarded(stored.designUrl);
@@ -660,9 +932,23 @@ export class DesignerController {
   // composer — the home create surface is a plain <textarea> + button[title="Create"]
   // (see createSession). The fill branch already handles both <textarea> (native
   // value setter) and contenteditable (synthetic paste), so only the selectors differ.
-  async _submitPrompt(prompt: string, sel?: { textarea?: string; sendButton?: string }): Promise<void> {
+  // Presence-only marker for "is this tab a signed-in claude.ai/design surface".
+  // Canonical + legacy joined is safe HERE because the caller only asks whether
+  // one is present, never which element to act on.
+  _signedInMarker(): string {
+    return presenceSelector(this.selectors.login.signedInIndicator, this.selectors.loginLegacy?.signedInIndicator);
+  }
+
+  async _submitPrompt(prompt: string, sel?: { textarea?: string; sendButton?: string | string[] }): Promise<void> {
     const promptTextarea = sel?.textarea ?? this.selectors.composer.promptTextarea;
-    const sendButton = sel?.sendButton ?? this.selectors.composer.sendButton;
+    const sendButton =
+      sel?.sendButton ?? orderedBranches(this.selectors.composer.sendButton, this.selectors.composerLegacy?.sendButton);
+    // Ordered branches, resolved in-page one at a time. A comma-joined list
+    // would hand back whichever matched first in DOCUMENT ORDER — so a stale or
+    // hidden duplicate earlier in the page could win over the canonical control
+    // and we would click the wrong button.
+    const sendButtons = Array.isArray(sendButton) ? sendButton.filter(Boolean) : [sendButton];
+    const sendButtonsJson = JSON.stringify(sendButtons);
     await this.browser.waitFor(promptTextarea);
     // The composer has shipped as both a React-controlled <textarea> and a
     // ProseMirror contenteditable <div> — branch on what's actually there.
@@ -706,16 +992,16 @@ export class DesignerController {
     // is enabled AND the input holds the text we just wrote. In-session, "enabled"
     // already implies content (send disables when empty); but the home "Create"
     // button is always enabled, so the content check is what prevents firing an
-    // empty/wrong-target submit there (home.creator is the generic `textarea` —
-    // a stray earlier textarea, or a fill that didn't register, would otherwise
-    // submit blank and spin the navigation poll into a misleading timeout).
+    // empty submit there — a fill that didn't register would otherwise submit
+    // blank and spin the navigation poll into a misleading timeout.
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 150));
       const ready = await this.browser.evalValue<boolean>(
         `(() => {
           const el = document.querySelector(${JSON.stringify(promptTextarea)});
           const hasText = !!el && (el instanceof HTMLTextAreaElement ? el.value : (el.textContent || '')).trim().length > 0;
-          const b = document.querySelector(${JSON.stringify(sendButton)});
+          let b = null;
+          for (const s of ${sendButtonsJson}) { b = document.querySelector(s); if (b) break; }
           const enabled = !!b && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
           return hasText && enabled;
         })()`
@@ -724,8 +1010,9 @@ export class DesignerController {
     }
     await this.browser.evalValue<boolean>(
       `(() => {
-        const b = document.querySelector(${JSON.stringify(sendButton)});
-        if (!b) throw new Error('send button not found');
+        let b = null;
+        for (const s of ${sendButtonsJson}) { b = document.querySelector(s); if (b) break; }
+        if (!b) throw new Error('send button not found (tried: ' + ${sendButtonsJson}.join(' | ') + ')');
         b.click();
         return true;
       })()`
@@ -843,7 +1130,7 @@ export class DesignerController {
     });
   }
 
-  async snapshotDesign({
+  private async _snapshotDesignBody({
     html: knownHtml,
     iframeSrc: knownSrc
   }: { html?: string | null; iframeSrc?: string } = {}): Promise<{
@@ -875,6 +1162,132 @@ export class DesignerController {
     return { html, screenshotPath: shotOk ? shotPath : null, url, iframeSrc };
   }
 
+  /**
+   * Serialize the verbs that DRIVE the tab (generation waits and destructive
+   * edits). CLAUDE.md has required single-flight per design tab since the
+   * observer landed, but until now that was prose only — nothing enforced it.
+   * Concurrency here is not theoretical: a delete landing inside iterate()'s
+   * pre/post listFiles window shows up as a bogus `removedFiles` entry
+   * attributed to the generation, and deleting the open file mid-run tears down
+   * the preview iframe the settle loop is reading.
+   *
+   * See DRIVER_LOCKS above for the lock identity and the known gaps.
+   */
+
+  // --- tab-driving entry points -------------------------------------------
+  // Every operation below navigates or otherwise mutates the session's ACTIVE
+  // TAB, so each one takes the tab lock (see DRIVER_LOCKS). They are re-entrant,
+  // so an outer verb may call any of them while holding the lock. Read-only
+  // verbs (currentUrl / getStatus / getChatTurns / getIframeSrc /
+  // fetchServedHtml / isInSession / isOnHome) deliberately do NOT lock.
+
+  async session(opts: Parameters<DesignerController['_sessionBody']>[0]): ReturnType<DesignerController['_sessionBody']> {
+    // 'status' is documented as a pure read that is safe to call at any time —
+    // including while a 20-minute generation holds the tab — so it must NOT take
+    // the lock (which rejects rather than queues). Every other action navigates.
+    if ((opts?.action ?? 'status') === 'status') return this._sessionBody(opts);
+    return this._withExclusive('session', () => this._sessionBody(opts));
+  }
+
+  async ensureReady(): ReturnType<DesignerController['_ensureReadyBody']> {
+    return this._withExclusive('ensureReady', () => this._ensureReadyBody());
+  }
+
+  async createSession(
+    ...args: Parameters<DesignerController['_createSessionBody']>
+  ): ReturnType<DesignerController['_createSessionBody']> {
+    return this._withExclusive('createSession', () => this._createSessionBody(...args));
+  }
+
+  async resumeSession(): ReturnType<DesignerController['_resumeSessionBody']> {
+    return this._withExclusive('resumeSession', () => this._resumeSessionBody());
+  }
+
+  async adoptSession(
+    ...args: Parameters<DesignerController['_adoptSessionBody']>
+  ): ReturnType<DesignerController['_adoptSessionBody']> {
+    return this._withExclusive('adoptSession', () => this._adoptSessionBody(...args));
+  }
+
+  async clearInterstitials(
+    ...args: Parameters<DesignerController['_clearInterstitialsBody']>
+  ): ReturnType<DesignerController['_clearInterstitialsBody']> {
+    return this._withExclusive('clearInterstitials', () => this._clearInterstitialsBody(...args));
+  }
+
+  async selectDesignTab(): ReturnType<DesignerController['_selectDesignTabBody']> {
+    return this._withExclusive('selectDesignTab', () => this._selectDesignTabBody());
+  }
+
+  async listProjects(): ReturnType<DesignerController['_listProjectsBody']> {
+    return this._withExclusive('listProjects', () => this._listProjectsBody());
+  }
+
+  async listFiles(): ReturnType<DesignerController['_listFilesBody']> {
+    return this._withExclusive('listFiles', () => this._listFilesBody());
+  }
+
+  async listFilesDetailed(): ReturnType<DesignerController['_listFilesDetailedBody']> {
+    return this._withExclusive('listFilesDetailed', () => this._listFilesDetailedBody());
+  }
+
+  async openFile(
+    ...args: Parameters<DesignerController['_openFileBody']>
+  ): ReturnType<DesignerController['_openFileBody']> {
+    return this._withExclusive('openFile', () => this._openFileBody(...args));
+  }
+
+  async fetchFile(
+    ...args: Parameters<DesignerController['_fetchFileBody']>
+  ): ReturnType<DesignerController['_fetchFileBody']> {
+    return this._withExclusive('fetchFile', () => this._fetchFileBody(...args));
+  }
+
+  async handoff(
+    ...args: Parameters<DesignerController['_handoffBody']>
+  ): ReturnType<DesignerController['_handoffBody']> {
+    return this._withExclusive('handoff', () => this._handoffBody(...args));
+  }
+
+  /**
+   * Switch to `filename` (optional) and snapshot it, as ONE locked operation.
+   *
+   * Callers used to do `openFile()` then `snapshotDesign()`, which took and
+   * released the lock twice: a concurrent verb could move the tab between them,
+   * so the snapshot was read off a different page while the response still named
+   * the requested file. Compound operations need one window, not two.
+   */
+  async snapshotFile(
+    filename?: string
+  ): Promise<{ swap: Awaited<ReturnType<DesignerController['_openFileBody']>> | null } & Awaited<ReturnType<DesignerController['_snapshotDesignBody']>>> {
+    return this._withExclusive('snapshotFile', async () => {
+      const swap = filename ? await this._openFileBody(filename) : null;
+      const snap = await this._snapshotDesignBody({});
+      return { swap, ...snap };
+    });
+  }
+  // --- end tab-driving entry points ----------------------------------------
+
+  /** Lock identity: the session whose ACTIVE TAB every navigation mutates. */
+  private _lockKey(): string {
+    return this.browser.driverId;
+  }
+
+  /** Who holds the tab, or null — null also when THIS operation already holds it. */
+  private _busyHolder(): string | null {
+    const resource = this._lockKey();
+    if (LOCK_CTX.getStore()?.has(resource)) return null;
+    return DRIVER_LOCKS.get(resource) ?? null;
+  }
+
+  // Re-entrant for the SAME operation: an outer verb that already holds the tab
+  // may call inner verbs freely (deleteFile -> fetchFile -> openFile). One
+  // implementation, shared with the standalone withTabLock above.
+  private async _withExclusive<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    return withTabLock(this.browser, `${name}[${this.key}]`, fn);
+  }
+
+
   async _ensureInSession(): Promise<void> {
     await this.ensureReady();
     if (await this.isInSession()) return;
@@ -890,6 +1303,13 @@ export class DesignerController {
   }
 
   async iterate(
+    prompt: string,
+    opts: { file?: string; timeoutMs?: number; stabilityMs?: number; decisive?: boolean } = {}
+  ): Promise<IterateResult> {
+    return this._withExclusive('iterate', () => this._iterateBody(prompt, opts));
+  }
+
+  private async _iterateBody(
     prompt: string,
     { file, timeoutMs, stabilityMs, decisive }: { file?: string; timeoutMs?: number; stabilityMs?: number; decisive?: boolean } = {}
   ): Promise<IterateResult> {
@@ -942,7 +1362,7 @@ export class DesignerController {
     const newFiles = postFiles.filter((f) => !preFiles.includes(f));
     const removedFiles = preFiles.filter((f) => !postFiles.includes(f));
 
-    const snap = await this.snapshotDesign({ html: done.html, iframeSrc: done.iframeSrc });
+    const snap = await this._snapshotDesignBody({ html: done.html, iframeSrc: done.iframeSrc });
     const htmlHash = snap.html ? hashHex(snap.html) : null;
     const activeFile = extractFileParam(snap.url);
 
@@ -980,24 +1400,95 @@ export class DesignerController {
     };
   }
 
-  async listProjects(): Promise<Array<{ name: string | null; sub: string | null; url: string | null }>> {
+  private async _listProjectsBody(): Promise<Array<{ name: string | null; sub: string | null; url: string | null }>> {
     await this.openGuarded(DESIGN_HOME);
     await this.browser.waitLoad('networkidle').catch(() => null);
-    await this.browser.waitFor(this.selectors.home.projectsList).catch(() => null);
+    // Presence-only wait, so canonical+legacy may be probed together — otherwise
+    // a degraded home (canonical list testid gone) burns the full timeout before
+    // proceeding, even though the scrape below would have worked.
+    await this.browser
+      .waitFor(presenceSelector(this.selectors.home.projectsList, this.selectors.homeLegacy?.projectsList))
+      .catch(() => null);
     const json = await this.browser.evalValue<Array<{ name: string | null; sub: string | null; url: string | null }>>(
       `(() => {
-        // 2026-06 redesign (#61): there's no project-card data-testid. Each
-        // project is an <a href="/design/p/<uuid>"> with the project name as its
-        // text; dedupe by uuid (a card can wrap more than one anchor).
-        const links = Array.from(document.querySelectorAll('a[href*="/design/p/"]'));
-        const seen = new Set();
-        const out = [];
-        for (const a of links) {
+        // 2026-07 redesign: projects moved from a flat list of text-bearing links
+        // to a <section data-testid="projects-list"> of <tr data-testid=
+        // "project-row">. The row's <a href="/design/p/<uuid>"> is now an EMPTY
+        // overlay link — reading its text (what the 2026-06 scrape did) yielded
+        // null for every project. The name lives in the row's first cell and is
+        // mirrored onto the anchor's aria-label.
+        const LINK_SEL = ${JSON.stringify(this.selectors.home.projectLink)};
+        const ROW_SEL = ${JSON.stringify(this.selectors.home.projectCard)};
+
+        // Parse the uuid from the PATHNAME, not a substring of the whole href:
+        // a settings/breadcrumb link, or any URL carrying a project link in a
+        // query param, would otherwise match and contribute its own text as a
+        // project name.
+        const idOf = (a) => {
+          const raw = a.getAttribute('href') || '';
+          let pathname = raw;
+          try { pathname = new URL(a.href || raw, document.baseURI).pathname; } catch (e) { /* keep raw */ }
+          // Optional trailing slash, but NOT arbitrary subroutes. The review
+          // proposed (?:\\/|$), which would also admit /design/p/<uuid>/settings —
+          // re-opening the decoy vector an earlier round closed, where a nav or
+          // breadcrumb link outside any row becomes a phantom project named
+          // after its own link text.
+          const m = pathname.match(/^\\/design\\/p\\/([0-9a-f-]{8,})\\/?$/i);
+          return m ? m[1] : null;
+        };
+
+        // Name candidates, tagged with WHERE they came from. Source is what
+        // decides, not string length: a control link ("Open", "Settings") is
+        // shorter than the real name, so a shortest-wins rule picks the button
+        // label on exactly the multi-link row this function exists to handle.
+        //
+        // Priority, most to least authoritative:
+        //   rowCell    — the row's name column; shared by every link in the row,
+        //                so multi-link rows converge on one answer
+        //   ariaLabel  — mirrors the name on the overlay link
+        //   anchorText — the legacy flat-list layout, where the name WAS the
+        //                link text; also the most likely to be a control label,
+        //                hence last.
+        const NAME_SOURCES = ['rowCell', 'ariaLabel', 'anchorText'];
+        const candidatesFrom = (a) => {
+          // closest() with a comma list returns the NEAREST ancestor matching
+          // EITHER branch — so a nested <tr> would beat the real project row.
+          // Try the specific row first, only then the generic tag.
+          const row = a.closest(ROW_SEL) || a.closest('tr');
+          const firstCell = row ? row.querySelector('td') : null;
+          return {
+            rowCell: firstCell ? (firstCell.textContent || '').trim() : '',
+            ariaLabel: (a.getAttribute('aria-label') || '').trim(),
+            anchorText: (a.textContent || '').trim()
+          };
+        };
+
+        // Collect ALL candidates per uuid before choosing. The previous version
+        // marked a uuid seen at first sight, so when a row carried more than one
+        // anchor (an icon/thumbnail link before the named overlay link) the
+        // nameless one won and the good one was skipped forever — emitting
+        // name:null for a project whose name was right there.
+        const byId = new Map();
+        for (const a of Array.from(document.querySelectorAll(LINK_SEL))) {
+          const id = idOf(a);
+          if (!id) continue;
           const href = a.href || a.getAttribute('href') || '';
-          const m = href.match(/\\/design\\/p\\/([a-f0-9-]+)/i);
-          if (!m || seen.has(m[1])) continue;
-          seen.add(m[1]);
-          out.push({ name: (a.textContent || '').trim() || null, sub: null, url: href });
+          const entry = byId.get(id) || { url: href, sources: {} };
+          if (!entry.url) entry.url = href;
+          const c = candidatesFrom(a);
+          // First non-empty value per source wins; later links only fill gaps,
+          // so one link's missing aria-label cannot erase another's.
+          for (const k of NAME_SOURCES) if (!entry.sources[k] && c[k]) entry.sources[k] = c[k];
+          byId.set(id, entry);
+        }
+
+        const out = [];
+        for (const [, entry] of byId) {
+          let name = null;
+          for (const k of NAME_SOURCES) {
+            if (entry.sources[k]) { name = entry.sources[k]; break; }
+          }
+          out.push({ name: name || null, sub: null, url: entry.url });
         }
         return out;
       })()`
@@ -1005,7 +1496,36 @@ export class DesignerController {
     return Array.isArray(json) ? json : [];
   }
 
-  async listFiles(): Promise<string[]> {
+  /**
+   * Filenames visible on the CURRENT page. Never navigates and never opens the
+   * panel, so it is safe to call while another operation holds the tab — it
+   * reports what is on screen, which may be empty if the file panel is closed.
+   * For an authoritative list use listFiles()/listFilesDetailed().
+   */
+  private async _scrapeVisibleFiles(): Promise<string[]> {
+    return (
+      (await this.browser
+        .evalValue<string[]>(
+          `(() => {
+            const seen = new Set();
+            const files = [];
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            let node;
+            while ((node = walker.nextNode())) {
+              const t = (node.textContent || '').trim();
+              if (!/^[A-Za-z0-9 _.()\\-]+\\.(html|js|css|jsx|tsx|ts|md|json|svg)$/i.test(t)) continue;
+              if (t.length > 80 || seen.has(t)) continue;
+              seen.add(t);
+              files.push(t);
+            }
+            return files;
+          })()`
+        )
+        .catch(() => [] as string[])) || []
+    );
+  }
+
+  private async _listFilesBody(): Promise<string[]> {
     const { files } = await this.listFilesDetailed();
     return files;
   }
@@ -1015,7 +1535,7 @@ export class DesignerController {
   // auth against (/files endpoint is 401, no aria-expanded on rows, clicks
   // don't expand programmatically). When folders are present, the caller
   // should fall back to designer_handoff for an authoritative list.
-  async listFilesDetailed(): Promise<{ files: string[]; folders: string[]; authoritative: boolean }> {
+  private async _listFilesDetailedBody(): Promise<{ files: string[]; folders: string[]; authoritative: boolean }> {
     // Navigate to THIS key's project if we're not already there. Being in
     // any /p/ session isn't enough — a different key's files would be
     // returned against the currently-visible project by mistake.
@@ -1088,7 +1608,7 @@ export class DesignerController {
     };
   }
 
-  async openFile(filename: string): Promise<{ ok: true; file: string; url: string } | { ok: false; error: string; file: string; url: string }> {
+  private async _openFileBody(filename: string): Promise<{ ok: true; file: string; url: string } | { ok: false; error: string; file: string; url: string }> {
     const stored = getSession(this.key);
     const baseUrl = stored?.designUrl || (await this.currentUrl()).split('?')[0] || '';
     if (!/\/design\/p\//.test(baseUrl)) throw new Error('No project open for this key.');
@@ -1157,11 +1677,600 @@ export class DesignerController {
     return { ok: false, error: 'iframe-swap-timeout', file: filename, url };
   }
 
-  async fetchFile(filename: string): Promise<{ ok: boolean; file: string; iframeSrc?: string; html: string; htmlBytes: number; error?: string }> {
+  private async _fetchFileBody(filename: string): Promise<{ ok: boolean; file: string; iframeSrc?: string; html: string; htmlBytes: number; error?: string }> {
     const swap = await this.openFile(filename);
     if (!swap.ok) return { ok: false, error: swap.error, file: filename, html: '', htmlBytes: 0 };
     const { html, src } = await this.fetchServedHtml();
     return { ok: true, file: filename, iframeSrc: src, html, htmlBytes: html.length };
+  }
+
+  /**
+   * Delete ONE named file from this key's project, or preview what would be
+   * deleted (`dryRun`). Drives the "Pages" switcher — the unified file surface
+   * present in both the plain-HTML and .dc.html canvas views.
+   *
+   * The product has no undo, so every step is written to fail CLOSED:
+   *
+   *  - ROOT-PIN. `_ensureInSession` returns early on ANY /design/p/ tab, so it
+   *    is not a pin. The project root is re-asserted before the confirm click
+   *    and on every settle poll ('wrong-project' / 'project-changed').
+   *  - REFUSE ON AMBIGUITY. Switcher rows carry no extension, so
+   *    "Canvas.dc.html" and "Canvas.html" render the same label. Two matches =>
+   *    'ambiguous' before anything is hovered — never a guess.
+   *  - VERIFY-AND-STAMP. The confirm dialog is the only surface naming the full
+   *    filename. One page expression parses its quoted name, compares with
+   *    `===`, and stamps the button to click, so the node that was verified is
+   *    the node that gets clicked (no verify-here / click-there gap).
+   *  - TRUSTED INPUT. Hover + clicks go through the facade (real CDP input);
+   *    synthetic element.click() silently no-ops on some of these menus.
+   * Full reasoning, and the alternatives that were refuted live:
+   * docs/adr/0001-destructive-ui-automation-safety.md
+   *
+   *  - POSITIVE SETTLE. Rows exist only while the popover is open, so "no rows"
+   *    is NOT proof of deletion. Success requires the row set to shrink by
+   *    exactly one; empty/unreadable reads are inconclusive and cap out as
+   *    'outcome-unknown' rather than a false ok.
+   */
+  async deleteFile(
+    fileName: string,
+    opts: { dryRun?: boolean; snapshot?: boolean } = {}
+  ): Promise<DeleteFileResult> {
+    const heldBy = this._busyHolder();
+    if (heldBy) {
+      return { ok: false, error: 'busy', file: fileName, detail: `${heldBy} is already driving this tab` };
+    }
+    return this._withExclusive('deleteFile', () => this._deleteFileBody(fileName, opts));
+  }
+
+  private async _deleteFileBody(
+    fileName: string,
+    { dryRun = false, snapshot = true }: { dryRun?: boolean; snapshot?: boolean } = {}
+  ): Promise<DeleteFileResult> {
+    const F = this.selectors.files;
+    const legacyDialog = this.selectors.filesLegacy?.confirmDialog;
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    await this._ensureInSession();
+
+    // --- ROOT-PIN ---
+    const stored = getSession(this.key);
+    const targetRoot = stored?.designUrl?.split('?')[0];
+    if (!targetRoot) throw new Error(`No designUrl stored for key=${this.key}. createSession or resumeSession first.`);
+    const pinToProject = async (): Promise<boolean> => {
+      if ((await this.currentUrl()).split('?')[0] === targetRoot) return true;
+      await this.openGuarded(stored!.designUrl!);
+      await this.browser.waitLoad('load').catch(() => null);
+      await sleep(1200);
+      return (await this.currentUrl()).split('?')[0] === targetRoot;
+    };
+    if (!(await pinToProject())) {
+      return { ok: false, error: 'wrong-project', file: fileName, detail: `tab is not on ${targetRoot}` };
+    }
+
+    // Capture the active file BEFORE mutating: the app may rewrite ?file= as a
+    // side effect of the delete, so a post-hoc read reports the wrong file.
+    // Mirror openFile's reader exactly (designer-controller openFile: plain
+    // searchParams.get). URLSearchParams already percent-decodes and already
+    // maps '+' to space; a second decodeURIComponent on top corrupts names
+    // containing a literal '%' and makes the two readers disagree.
+    const fileParamOf = (u: string): string | null => {
+      try {
+        return new URL(u).searchParams.get('file');
+      } catch {
+        return null;
+      }
+    };
+    const activeFileBefore = fileParamOf(await this.currentUrl());
+
+    const readRows = async (): Promise<{ rows: SwitcherRow[]; reused: boolean } | null> =>
+      await this.browser.evalValue<{ rows: SwitcherRow[]; reused: boolean }>(readRowsExpr(F)).catch(() => null);
+    // Trusted open/close. The trigger is clicked through the facade, never via
+    // an in-page synthetic click — see switcherStateExpr for why that matters
+    // (a synthetic open strands the row menu's scrim above the confirm dialog).
+    const switcherState = async (): Promise<string> =>
+      (await this.browser.evalValue<string>(switcherStateExpr(F)).catch(() => 'error')) || 'error';
+    // Reports whether the popover was actually RE-MOUNTED (we found it closed
+    // and opened it) as well as its state. Zero-row reads cannot carry the node
+    // stamp, so for the last-file case this is the only independence signal
+    // there is: without it, one mounted empty popover supplies two apparently
+    // fresh 'gone' observations.
+    const openSwitcherTracked = async (): Promise<{ state: string; remounted: boolean }> => {
+      let st = await switcherState();
+      if (st !== 'closed') return { state: st, remounted: false };
+      const st2 = await openFromClosed();
+      return { state: st2, remounted: true };
+    };
+    const openFromClosed = async (): Promise<string> => {
+      // Trusted click first — it leaves the cleanest overlay state.
+      await this.browser.click(F.switcherTrigger).catch(() => null);
+      await sleep(700);
+      let st = await switcherState();
+      if (st !== 'closed') return st;
+      // …but on some page states every trusted variant reports success and
+      // does nothing (live 2026-07-26). Fall back to the synthetic open; the
+      // scrim it can strand is handled before the confirm click.
+      await this.browser.evalValue(clickTriggerExpr(F)).catch(() => null);
+      await sleep(800);
+      return switcherState();
+    };
+    const openSwitcher = async (): Promise<string> => (await openSwitcherTracked()).state;
+    const closeSwitcher = async () => {
+      // 'open-empty' is open too. Treating it as already-closed left the last
+      // file's popover mounted across polls, which is exactly how two reads of
+      // one mount looked independent.
+      const st = await switcherState();
+      if (!shouldCloseSwitcher(st)) return;
+      await this.browser.click(F.switcherTrigger).catch(() => null);
+      await sleep(400);
+      if (shouldCloseSwitcher(await switcherState())) await this.browser.evalValue(clickTriggerExpr(F)).catch(() => null);
+    };
+    const clearStamps = async () => {
+      await this.browser.evalValue(clearStampsExpr()).catch(() => null);
+    };
+    // Click a stamped node once it is genuinely the topmost element at its own
+    // click point. Modal dialogs animate in behind a full-screen backdrop, and
+    // the facade REFUSES to click through a covering element (reporting it
+    // instead of hitting the wrong target) — so waiting for hit-testability is
+    // what makes this deterministic instead of a race against an animation.
+    /**
+     * Actuate a STAMPED node, then prove the intended state change happened.
+     *
+     * Click mechanism is deliberately layered, because on this app neither
+     * mechanism is reliable alone (all measured live 2026-07-26):
+     *   1. facade trusted click — real input, cleanest semantics, but on some
+     *      page states it reports success and does nothing at all;
+     *   2. …after dismissing the switcher popover's stranded `fixed inset-0`
+     *      scrim, which otherwise covers the confirm dialog so NOTHING (facade,
+     *      coordinate, or raw CDP) can reach it;
+     *   3. synthetic `el.click()` on the stamped node — React delegates from the
+     *      document root, so this lands even when trusted input no-ops.
+     *
+     * Safety does not rest on the mechanism. Clicking the WRONG element is
+     * prevented by verify-and-stamp (the node clicked is the node just
+     * verified); a click that lands NOWHERE is caught by `verify` here and, for
+     * the delete itself, by the positive cardinality settle — which is why a
+     * no-op can never be reported as success.
+     */
+    const actuate = async (
+      stamp: string,
+      { verify, revalidate, budgetMs = 3500 }: { verify: () => Promise<boolean>; revalidate?: () => Promise<boolean>; budgetMs?: number }
+    ): Promise<{ fail: string | null; dispatched: boolean }> => {
+      const sel = stampedSelector(stamp);
+      // Set the instant a click is ISSUED, never after it is observed to work.
+      // "The dialog was not seen closing" is not "nothing was dispatched": the
+      // click may have landed and committed while the observation failed, which
+      // is the whole reason the caller needs to know. Review of #134 fixes.
+      let dispatched = false;
+      const trusted = async (): Promise<void> => {
+        const hit = (await this.browser.evalValue<string>(hitTestStatusExpr(sel)).catch(() => 'error')) || 'error';
+        if (hit === 'hittable') {
+          // Revalidate here too. The window is short — the caller's root guard
+          // fires immediately before — but "checked before EVERY dispatch" has
+          // to be true of every dispatch, including the fast one, or the claim
+          // is prose. One extra eval on a destructive path is cheap.
+          if (revalidate && !(await revalidate())) return;
+          dispatched = true;
+          await this.browser.click(sel).catch(() => null);
+          return;
+        }
+        if (!hit.startsWith('covered:')) return;
+        const pt = await this.browser
+          .evalValue<{ x: number; y: number } | null>(scrimDismissPointExpr(F, legacyDialog))
+          .catch(() => null);
+        if (!pt) return;
+        // This click is aimed at the scrim, but it IS a real dispatch into a
+        // page holding a live confirm dialog — if the scrim unmounts between the
+        // point being chosen and the click landing, it can reach the dialog.
+        // Treating it as non-dispatch is how 'dialog-stuck' could be claimed
+        // after a click. Review of e038462.
+        dispatched = true;
+        await this.browser.clickAt(pt.x, pt.y).catch(() => null);
+        await sleep(600);
+        if (revalidate && !(await revalidate())) return;
+        if ((await this.browser.evalValue<string>(hitTestStatusExpr(sel)).catch(() => 'error')) === 'hittable') {
+          dispatched = true;
+          await this.browser.click(sel).catch(() => null);
+        }
+      };
+
+      await trusted();
+      const deadline = Date.now() + budgetMs;
+      while (Date.now() < deadline) {
+        if (await verify()) return { fail: null, dispatched };
+        await sleep(300);
+      }
+      // Trusted input did not take. Re-confirm we are still acting on the right
+      // thing, then dispatch synthetically to the same stamped node.
+      if (revalidate && !(await revalidate())) return { fail: 'revalidate-failed-before-synthetic', dispatched };
+      // The synthetic click can commit too — mark dispatched BEFORE issuing it.
+      dispatched = true;
+      const res = await this.browser
+        .evalValue<string>(
+          `(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`
+        )
+        .catch(() => 'error');
+      if (res !== 'clicked') return { fail: `synthetic click ${res}`, dispatched };
+      const deadline2 = Date.now() + budgetMs;
+      while (Date.now() < deadline2) {
+        if (await verify()) return { fail: null, dispatched };
+        await sleep(300);
+      }
+      return { fail: 'no state change after trusted and synthetic click', dispatched };
+    };
+
+    // --- RESOLVE (identical path for dry-run and delete, so a preview can
+    // never disagree with the action it is previewing) ---
+    const resolve = async (): Promise<
+      { ok: true; rows: SwitcherRow[]; matches: number[] } | { ok: false; error: 'switcher-unavailable' }
+    > => {
+      const opened = await openSwitcher();
+      // 'open-empty' is a successful read of a project with no files — it must
+      // resolve to 'not-found', not to "the switcher is broken". Rejecting it
+      // made a dry run on an emptied project report switcher-unavailable, and
+      // that is the state the docs tell callers to inspect after an uncertain
+      // delete.
+      if (opened !== 'open' && opened !== 'open-empty') {
+        return { ok: false, error: 'switcher-unavailable' };
+      }
+      const read = await readRows();
+      if (!read) return { ok: false, error: 'switcher-unavailable' };
+      return { ok: true, rows: read.rows, matches: matchingRowIndexes(read.rows, fileName) };
+    };
+
+    // A confirm dialog left open by an earlier interrupted run blocks every
+    // click on the page (its scrim covers even the switcher trigger). Clear it
+    // before doing anything else.
+    if (await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => false)) {
+      await this.browser.press('Escape').catch(() => null);
+      await sleep(500);
+      if (await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => false)) {
+        return { ok: false, error: 'dialog-stuck', file: fileName, detail: 'a modal dialog was already open and would not dismiss' };
+      }
+    }
+
+    let resolved = await resolve();
+    if (!resolved.ok) return { ok: false, error: 'switcher-unavailable', file: fileName };
+    if (resolved.matches.length === 0) {
+      await closeSwitcher();
+      return { ok: false, error: 'not-found', file: fileName, candidates: resolved.rows.map((r) => r.label) };
+    }
+    if (resolved.matches.length > 1) {
+      await closeSwitcher();
+      return {
+        ok: false,
+        error: 'ambiguous',
+        file: fileName,
+        detail: 'two or more files share this display label; the switcher hides extensions',
+        candidates: resolved.matches.map((i) => resolved.ok ? resolved.rows[i]!.label : '')
+      };
+    }
+
+    if (dryRun) {
+      const rows = resolved.rows.map((r) => r.label);
+      await closeSwitcher();
+      return {
+        ok: true,
+        dryRun: true,
+        file: fileName,
+        wouldDelete: rows[resolved.matches[0]!] ?? null,
+        ambiguous: false,
+        rows,
+        filenameVerified: false,
+        note: `matched on the switcher label ${JSON.stringify(rows[resolved.matches[0]!] ?? '')}, which hides the extension — a different file sharing that label would also match here. The delete itself verifies the full name against the confirm dialog and refuses with 'confirm-mismatch' if it differs.`
+      };
+    }
+
+    // --- SNAPSHOT (blocking precondition; there is no undo) ---
+    let snapshotPath: string | null = null;
+    if (snapshot) {
+      await closeSwitcher();
+      const fetched = await this.fetchFile(fileName).catch(() => null);
+      if (!fetched?.ok || !fetched.htmlBytes) {
+        return {
+          ok: false,
+          error: 'snapshot-failed',
+          file: fileName,
+          detail: fetched?.error || 'served HTML was empty; re-run with snapshot:false to delete anyway'
+        };
+      }
+      const dir = sessionDir(this.key);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      snapshotPath = path.join(dir, `deleted-${stamp}-${fileName.replace(/[^\w.-]+/g, '_')}`);
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(snapshotPath, fetched.html);
+      } catch (e) {
+        // The snapshot is a precondition, so a write failure refuses the delete
+        // through the declared union rather than throwing past it. #F8.
+        return {
+          ok: false,
+          error: 'snapshot-failed',
+          file: fileName,
+          detail: `could not write the backup to ${snapshotPath}: ${(e as Error).message}`
+        };
+      }
+      // fetchFile navigates (openFile) — re-pin and re-resolve before acting.
+      if (!(await pinToProject())) return { ok: false, error: 'wrong-project', file: fileName, snapshotPath };
+      resolved = await resolve();
+      if (!resolved.ok) return { ok: false, error: 'switcher-unavailable', file: fileName, snapshotPath };
+      if (resolved.matches.length !== 1) {
+        await closeSwitcher();
+        return {
+          ok: false,
+          error: resolved.matches.length === 0 ? 'not-found' : 'ambiguous',
+          file: fileName,
+          snapshotPath,
+          candidates: resolved.rows.map((r) => r.label)
+        };
+      }
+    }
+
+    const preCount = resolved.rows.length;
+    const preLabelCount = resolved.matches.length; // == 1 here
+    const rowIndex = resolved.matches[0]!;
+
+    try {
+      // --- REVEAL + OPEN MENU (trusted input only) ---
+      // Stamp the row first: the popover interleaves rows with other elements,
+      // so an index-based CSS selector does not address them (e2e 2026-07-26).
+      const rowStamp = await this.browser.evalValue<string>(stampRowExpr(F, rowIndex)).catch(() => 'error');
+      if (rowStamp !== 'stamped') {
+        return { ok: false, error: 'switcher-unavailable', file: fileName, detail: `could not address row ${rowIndex} (${rowStamp})`, snapshotPath };
+      }
+      const rowSel = rowSelector();
+      await this.browser.hover(rowSel).catch(() => null);
+      await sleep(400);
+      const moreSel = `${rowSel} ${F.rowMoreActions}`;
+      if (!(await this.browser.isVisible(moreSel).catch(() => false))) {
+        await this.browser.hover(rowSel).catch(() => null); // one retry: pointer state can be lost between spawns
+        await sleep(500);
+      }
+      if (!(await this.browser.isVisible(moreSel).catch(() => false))) {
+        return { ok: false, error: 'menu-unavailable', file: fileName, detail: 'row actions did not reveal on hover', snapshotPath };
+      }
+      // Open the row menu, proving it opened rather than assuming it did.
+      const menuStamped = async (): Promise<boolean> =>
+        (await this.browser.evalValue<string>(stampMenuDeleteExpr()).catch(() => 'error')) === 'stamped';
+      await this.browser.click(moreSel).catch(() => null);
+      await sleep(600);
+      if (!(await menuStamped())) {
+        const res = await this.browser
+          .evalValue<string>(`(() => { const e = document.querySelector(${JSON.stringify(moreSel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`)
+          .catch(() => 'error');
+        await sleep(800);
+        if (res !== 'clicked' || !(await menuStamped())) {
+          await this.browser.press('Escape').catch(() => null);
+          return { ok: false, error: 'menu-unavailable', file: fileName, detail: 'row menu did not open, or did not offer exactly one Delete', snapshotPath };
+        }
+      }
+      const menuClick = await actuate(STAMP_MENU_DELETE, {
+        verify: async () => await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => false)
+      });
+      const menuClickFail = menuClick.fail;
+      if (menuClickFail) {
+        await this.browser.press('Escape').catch(() => null);
+        return { ok: false, error: 'menu-unavailable', file: fileName, detail: `Delete menu item did not raise the confirm dialog (${menuClickFail})`, snapshotPath };
+      }
+      await sleep(400);
+
+      // --- VERIFY-AND-STAMP THE DIALOG ---
+      // Dismiss whatever modal is up and PROVE it went away. Returning
+      // 'confirm-mismatch' asserts nothing was deleted; that claim is only
+      // honest if the dialog is actually gone.
+      const dismissAndProve = async (): Promise<boolean> => {
+        await this.browser.press('Escape').catch(() => null);
+        await sleep(500);
+        if (!(await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true))) return true;
+        await this.browser.press('Escape').catch(() => null);
+        await sleep(500);
+        return !(await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true));
+      };
+
+      const verdict = await this.browser
+        .evalValue<{ found: boolean; dialogFile: string | null; matched: boolean; stamped: string | null }>(
+          verifyConfirmDialogExpr(F, legacyDialog, fileName)
+        )
+        .catch(() => null);
+      if (!verdict?.found || verdict.stamped === null) {
+        // The buttons could not be identified (e.g. the product renamed them),
+        // so there is nothing safe to click — dismiss and prove it.
+        // A null verdict means the READ failed, not that the page is clean —
+        // a modal may well be up. Only "the expression ran and saw no dialog"
+        // justifies assuming there is nothing to dismiss. #F7.
+        const dismissed = verdict === null || verdict.found ? await dismissAndProve() : true;
+        return {
+          ok: false,
+          error: dismissed ? 'confirm-mismatch' : 'dialog-stuck',
+          file: fileName,
+          dialogFile: verdict?.dialogFile ?? null,
+          detail: verdict === null
+            ? 'could not read the confirm dialog'
+            : !verdict.found
+            ? 'confirm dialog did not appear'
+            : dismissed
+              ? 'confirm dialog buttons could not be identified; dialog dismissed, nothing deleted'
+              : 'confirm dialog buttons could not be identified AND the dialog would not dismiss — check the tab by hand',
+          snapshotPath
+        };
+      }
+      if (!verdict.matched) {
+        // The dialog names a DIFFERENT file — cancel and prove the dialog closed.
+        await actuate(STAMP_CONFIRM_CANCEL, {
+          verify: async () => !(await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true))
+        });
+        await sleep(400);
+        let stillOpen = await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true);
+        if (stillOpen) stillOpen = !(await dismissAndProve());
+        return {
+          ok: false,
+          error: stillOpen ? 'dialog-stuck' : 'confirm-mismatch',
+          file: fileName,
+          dialogFile: verdict.dialogFile,
+          detail: stillOpen
+            ? 'dialog named the wrong file AND would not dismiss — nothing was clicked beyond Cancel; check the tab by hand'
+            : `dialog named ${JSON.stringify(verdict.dialogFile)}, not ${JSON.stringify(fileName)}; nothing deleted`,
+          snapshotPath
+        };
+      }
+
+      // Last guard before the irreversible click.
+      if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
+        await this.browser.press('Escape').catch(() => null);
+        return { ok: false, error: 'project-changed', file: fileName, detail: 'tab left the bound project mid-flow', snapshotPath };
+      }
+      const confirmClick = await actuate(STAMP_CONFIRM_DELETE, {
+        // The dialog closing is the proof the click landed; the settle below is
+        // what proves the FILE actually went away.
+        verify: async () => !(await this.browser.evalValue<boolean>(dialogPresentExpr(F, legacyDialog)).catch(() => true)),
+        // Re-checked immediately before EVERY dispatch, trusted or synthetic.
+        // The pre-click root guard above is not enough on its own: actuate()
+        // can wait seconds before the synthetic fallback, and the tab is shared
+        // across keys, so both the project AND the filename echo have to still
+        // be right at the moment of the click. #F1.
+        revalidate: async () => {
+          if ((await this.currentUrl()).split('?')[0] !== targetRoot) return false;
+          const again = await this.browser
+            .evalValue<{ matched: boolean }>(verifyConfirmDialogExpr(F, legacyDialog, fileName))
+            .catch(() => null);
+          return again?.matched === true;
+        }
+      });
+      // ---------------------------------------------------------------------
+      // COMMIT BOUNDARY — drawn at the first DISPATCH, not at actuate()'s
+      // return. A click that was issued may have committed even though the
+      // dialog was never observed closing, so from here nothing may claim
+      // "nothing was deleted". #F4, and the review of that fix.
+      // ---------------------------------------------------------------------
+      const unknown = (detail: string): DeleteFileResult => ({
+        ok: false,
+        error: 'outcome-unknown',
+        file: fileName,
+        detail: `${detail} — ${
+          confirmClick.dispatched
+            ? 'a confirm click was dispatched, so the file MAY be deleted'
+            : 'the dialog closed without an observed dispatch, so this run cannot account for the outcome'
+        }; re-run with dryRun to see the current list`,
+        snapshotPath
+      });
+
+      if (confirmClick.fail) {
+        await this.browser.press('Escape').catch(() => null);
+        // Only a confirm that was NEVER dispatched leaves a clean guarantee.
+        if (!confirmClick.dispatched) {
+          return { ok: false, error: 'dialog-stuck', file: fileName, detail: `confirm button never became clickable (${confirmClick.fail})`, snapshotPath };
+        }
+        return unknown(`the confirm dialog did not close after the click (${confirmClick.fail})`);
+      }
+
+      // --- POSITIVE SETTLE ---
+      // Each poll must be a fresh OBSERVATION, not a fresh timestamp. The opener
+      // early-returns when the popover is already open, so without closing it
+      // first every later poll re-read the same mounted DOM subtree — measured
+      // as ~1 real observation per 15 of the "two consecutive reads" the verdict
+      // was built on. Close, reopen, then read.
+      const deadline = Date.now() + 15_000;
+      let counters: SettleCounters = { consecutive: 0, presentStreak: 0 };
+      let lastGoodRows: SwitcherRow[] | null = null;
+      while (Date.now() < deadline) {
+        await sleep(600);
+        if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
+          return unknown('the tab navigated away from the project during the settle');
+        }
+        await closeSwitcher();
+        const { state, remounted } = await openSwitcherTracked();
+        const open = state === 'open' || state === 'open-empty';
+        const observed = open ? await readRows() : null;
+        if ((await this.currentUrl()).split('?')[0] !== targetRoot) {
+          return unknown('the tab navigated away while the file list was being read');
+        }
+        const read = classifySettleRead(
+          observed?.rows ?? null,
+          fileName,
+          preCount,
+          preLabelCount,
+          open,
+          observed?.reused ?? false,
+          remounted
+        );
+        counters = foldSettleRead(counters, read);
+        if (read.kind === 'gone') lastGoodRows = observed?.rows ?? [];
+        if (counters.consecutive >= 2) break;
+      }
+
+      // The loop can also exit by DEADLINE. Falling through from there reports
+      // ok:true with no evidence at all — present, reused, unreadable and
+      // malformed reads alike. This guard was lost when the settle block was
+      // rewritten (the replaced span ended at the section marker below, and the
+      // guard sat between the loop and it), and nothing caught it: the e2e's
+      // happy path always breaks out on consecutive >= 2, so the deadline exit
+      // is never taken there.
+      if (counters.consecutive < 2 || !lastGoodRows) {
+        return unknown('the file list never settled into two consistent, independent reads');
+      }
+
+      // --- POST-SUCCESS ---
+      let activeFileReset = false;
+      const warnings: string[] = [];
+      // The snapshot step calls fetchFile → openFile, which navigates the tab to
+      // ?file=<fileName>. So the pre-flight sample is not enough: re-read the
+      // tab's file param as it stands now, or a snapshot-first delete leaves the
+      // stored session resuming onto a file that no longer exists.
+      const activeFileNow = fileParamOf(await this.currentUrl());
+      const tabOnDeleted = activeFileBefore === fileName || activeFileNow === fileName;
+      // The STORED url can name the deleted file even when the tab never did:
+      // createSession persists the raw post-generation URL, which carries
+      // `?file=<name>`, and resumeSession opens it verbatim. Deleting that file
+      // while the tab happens to show a different one left designUrl pointing at
+      // a corpse — every later resume reopened it. Codex review, PR #134.
+      const storedNamesDeleted = fileParamOf(stored?.designUrl ?? '') === fileName;
+      if (tabOnDeleted || storedNamesDeleted) {
+        // Only navigate when the TAB is the problem; a stale stored URL just
+        // needs rewriting, and moving the tab for it would be gratuitous.
+        let arrived = true;
+        if (tabOnDeleted) {
+          await this.openGuarded(targetRoot).catch(() => null);
+          await this.browser.waitLoad('load').catch(() => null);
+          // Prove we actually arrived before claiming the reset or rewriting
+          // stored state — swallowing the navigation error and reporting
+          // activeFileReset:true left the tab on a deleted file's URL. #F6.
+          arrived = (await this.currentUrl()).split('?')[0] === targetRoot;
+        }
+        if (arrived) {
+          // targetRoot is `string` (narrowed by the !targetRoot throw above) and
+          // is by construction stored.designUrl minus its query — no casts.
+          const strip = (u?: string | null): string | undefined => (u ? u.split('?')[0] : undefined);
+          try {
+            upsertSession(this.key, { designUrl: targetRoot, lastUrl: strip(stored?.lastUrl) });
+            activeFileReset = true;
+          } catch (e) {
+            warnings.push(`stored session not updated (${(e as Error).message}); it still points at the deleted file`);
+          }
+        } else {
+          warnings.push('the tab is still on the deleted file URL — navigate to the project root by hand');
+        }
+
+      }
+      // The deletion is already committed; a failed history write must not turn
+      // a completed non-idempotent operation into a reported failure. #F5.
+      try {
+        appendHistory(this.key, { kind: 'file-delete', file: fileName, at: new Date().toISOString() });
+      } catch (e) {
+        warnings.push(`history not recorded (${(e as Error).message})`);
+      }
+      return {
+        ok: true,
+        dryRun: false,
+        file: fileName,
+        deletedLabel: displayLabelFor(fileName),
+        remainingLabels: (lastGoodRows ?? []).map((r) => r.label),
+        snapshotPath,
+        activeFileReset,
+        ...(warnings.length ? { warnings } : {})
+      };
+    } finally {
+      await clearStamps();
+      await closeSwitcher();
+    }
   }
 
   async getChatTurns(): Promise<ChatTurn[]> {
@@ -1189,6 +2298,13 @@ export class DesignerController {
   }
 
   async ask(
+    prompt: string,
+    opts: { file?: string; timeoutMs?: number; stabilityMs?: number; pollMs?: number } = {}
+  ): Promise<AskResult> {
+    return this._withExclusive('ask', () => this._askBody(prompt, opts));
+  }
+
+  private async _askBody(
     prompt: string,
     { file, timeoutMs = 5 * 60_000, stabilityMs = 2500, pollMs = 1000 }: { file?: string; timeoutMs?: number; stabilityMs?: number; pollMs?: number } = {}
   ): Promise<AskResult> {
@@ -1456,7 +2572,7 @@ export class DesignerController {
     return [...collected.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t);
   }
 
-  async handoff({ openFile }: { openFile?: string } = {}): Promise<HandoffResult> {
+  private async _handoffBody({ openFile }: { openFile?: string } = {}): Promise<HandoffResult> {
     await this._ensureInSession();
     if (openFile) await this.openFile(openFile);
 
@@ -1547,7 +2663,12 @@ export class DesignerController {
     );
   }
 
+  /** Closes the browser session — the most destructive tab mutation there is. */
   async close(): Promise<void> {
+    return this._withExclusive('close', () => this._closeBody());
+  }
+
+  private async _closeBody(): Promise<void> {
     await this.browser.close().catch(() => null);
   }
 }

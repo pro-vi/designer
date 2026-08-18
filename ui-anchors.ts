@@ -4,7 +4,20 @@ import { isPreviewIframeSrc, previewIframeVariant, isBootstrapShellHtml } from '
 import { isCdpEnabled } from './cdp-env.ts';
 import { OopifHtmlReader } from './oopif-reader.ts';
 import { OPEN_FILES_PANEL_EXPR } from './file-panel.ts';
-import { getSelectors } from './selectors.ts';
+import {
+  switcherStateExpr,
+  clickTriggerExpr,
+  readRowsExpr,
+  rowSelector,
+  stampRowExpr,
+  stampMenuDeleteExpr,
+  clearStampsExpr,
+  dialogPresentExpr,
+  MENU_ITEM_DELETE,
+  MENU_ITEM_DOWNLOAD,
+  type SwitcherRow
+} from './files-switcher.ts';
+import { getSelectors, orderedBranches, presenceSelector } from './selectors.ts';
 
 // Every UI anchor this MCP depends on to work. Grouped by the surface state
 // they live on. A regression in Claude Design's UI will trip one or more of
@@ -16,13 +29,47 @@ import { getSelectors } from './selectors.ts';
 // leave a stale health probe behind (the login.signedIn class of bug).
 const SEL = getSelectors();
 
-// Build a "button text starts with <literal>" matcher from a selectors.json
-// text value (the creation-card sentinels), escaping regex specials.
-const startsWithRegExp = (text: string): RegExp => new RegExp('^' + text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-
 export type AnchorCategory = 'home' | 'session' | 'share' | 'pattern';
 export type AnchorState = 'home' | 'session' | 'any';
-export type ProbeStatus = 'ok' | 'fail' | 'skip';
+// `degraded` = the canonical selector is GONE but a superseded legacy branch
+// still matches. The tool keeps working, so this is not a `fail` (it must not
+// open drift PRs or go red), but it is emphatically not `ok` either — before
+// this existed the legacy branch was packed into the same comma-OR selector and
+// simply kept the anchor green, hiding the canonical rot from the daily probe.
+export type ProbeStatus = 'ok' | 'degraded' | 'fail' | 'skip';
+
+/**
+ * Typed predicates over ProbeStatus, exported so every consumer classifies the
+ * same way. Written as exhaustive switches: adding a status value makes these a
+ * COMPILE error instead of a silent misclassification somewhere downstream.
+ *
+ * Widening the union to include `degraded` without making its consumers total is
+ * how two separate decision points went wrong — a verdict that ignored it, and a
+ * re-probe that reverted a working patch because the anchor was not literally
+ * 'ok'.
+ */
+export function isFailing(s: ProbeStatus): boolean {
+  switch (s) {
+    case 'fail':
+      return true;
+    case 'ok':
+    case 'degraded':
+    case 'skip':
+      return false;
+  }
+}
+
+/** True when the anchor is working — including via a superseded selector. */
+export function isWorking(s: ProbeStatus): boolean {
+  switch (s) {
+    case 'ok':
+    case 'degraded':
+      return true;
+    case 'fail':
+    case 'skip':
+      return false;
+  }
+}
 export type ProbePhase = 'home' | 'session';
 
 export interface ProbeResult {
@@ -51,6 +98,32 @@ async function hasSelector(browser: Browser, sel: string): Promise<boolean> {
   return !!(await browser
     .evalValue<boolean>(`!!document.querySelector(${JSON.stringify(sel)})`)
     .catch(() => false));
+}
+
+/**
+ * Probe a canonical selector, falling back to a superseded one ONLY to
+ * distinguish "still works via the old shape" from "gone entirely".
+ *
+ * Ordered on purpose: packing both into one `querySelector('A, B')` would return
+ * whichever comes first in document order — not the canonical match — and would
+ * report plain `ok` either way, which is exactly how legacy branches masked
+ * canonical rot from the daily probe.
+ */
+async function checkWithLegacy(
+  browser: Browser,
+  canonical: string,
+  legacy: string | null | undefined,
+  label: string
+): Promise<{ ok: boolean; status?: ProbeStatus; detail?: string }> {
+  if (await hasSelector(browser, canonical)) return { ok: true };
+  if (legacy && (await hasSelector(browser, legacy))) {
+    return {
+      ok: true,
+      status: 'degraded',
+      detail: `canonical ${label} selector (${canonical}) is GONE; still matching the superseded branch (${legacy}). Re-capture the canonical selector — the tool works today but this is unrepaired drift.`
+    };
+  }
+  return { ok: false, detail: `neither canonical (${canonical}) nor legacy (${legacy ?? 'none'}) matched` };
 }
 
 // True on a `.dc.html` DESIGN-CANVAS session (a Figma-like editor — dc-tool-*,
@@ -89,9 +162,111 @@ async function getPreviewIframeSrc(browser: Browser): Promise<string> {
   );
 }
 
+/**
+ * Hover the first switcher row, open its action menu, and check the menu the
+ * way PRODUCTION checks it — then stop. Never clicks Delete: the canary is
+ * single-file, so deleting its page would destroy the surface every other
+ * session.* anchor needs.
+ */
+async function probeRowMenu(
+  b: Browser,
+  entryCount: number
+): Promise<{ ok: boolean; status?: ProbeStatus; detail?: string }> {
+  // Row actions are hover-revealed and need TRUSTED input; a synthetic
+  // mouseover would not reveal them.
+  const stampedRow = await b.evalValue<string>(stampRowExpr(SEL.files, 0)).catch(() => 'error');
+  if (stampedRow !== 'stamped') return { ok: false, detail: `could not address the first switcher row (${stampedRow})` };
+  const rowSel = rowSelector();
+  await b.hover(rowSel).catch(() => null);
+  await sleep(400);
+  const moreSel = `${rowSel} ${SEL.files.rowMoreActions}`;
+  if (!(await b.isVisible(moreSel).catch(() => false))) {
+    await b.hover(rowSel).catch(() => null);
+    await sleep(500);
+  }
+  if (!(await b.isVisible(moreSel).catch(() => false))) {
+    return { ok: false, detail: `row actions did not reveal on hover (${SEL.files.rowMoreActions} not visible)` };
+  }
+
+  // Open the menu the way PRODUCTION opens it: trusted click, then a synthetic
+  // fallback. deleteFile has had that fallback all along; this probe had only
+  // the trusted half, so when trusted clicks stopped actuating these controls
+  // the probe failed daily (#138-#143) while deletion kept working — a probe
+  // STRICTER than production, which is the PR #77 split running the other way.
+  // The synthetic click is safe here for the same reason clickTriggerExpr is:
+  // opening a menu is not destructive. Delete is still never clicked.
+  const readItems = async (): Promise<string[]> =>
+    (await b
+      .evalValue<string[]>(
+        `(() => Array.from(document.querySelectorAll('[role="menu"] [role="menuitem"], [role="menu"] button'))
+           .map((e) => (e.textContent || '').trim()).filter(Boolean))()`
+      )
+      .catch(() => [] as string[])) || [];
+
+  await b.click(moreSel).catch(() => null);
+  await sleep(600);
+  let items = await readItems();
+  let openedSynthetically = false;
+  if (items.length === 0) {
+    const res = await b
+      .evalValue<string>(
+        `(() => { const e = document.querySelector(${JSON.stringify(moreSel)}); if (!e) return 'absent'; e.click(); return 'clicked'; })()`
+      )
+      .catch(() => 'error');
+    await sleep(800);
+    if (res === 'clicked') {
+      items = await readItems();
+      openedSynthetically = items.length > 0;
+    }
+  }
+  if (items.length === 0) {
+    return { ok: false, detail: 'row "More actions" opened no role=menu items (trusted click and synthetic fallback both)' };
+  }
+  if (!items.includes(MENU_ITEM_DOWNLOAD)) {
+    return { ok: false, detail: `row menu missing "${MENU_ITEM_DOWNLOAD}" (items: ${items.join(', ')})` };
+  }
+
+  // Accept EXACTLY what production accepts. `items.includes('Delete')` is looser
+  // than the delete flow's rule (exactly one exact-text match inside an open
+  // menu), so a duplicate or stale item would keep this anchor green while every
+  // deletion refused with 'menu-unavailable'. Run the real resolver — it only
+  // stamps an attribute, it never clicks. #F9.
+  const menuResolves = await b.evalValue<string>(stampMenuDeleteExpr()).catch(() => 'error');
+  const opener = openedSynthetically ? '; opened via the synthetic fallback (trusted click no-opped)' : '';
+  if (menuResolves === 'stamped') {
+    return { ok: true, detail: `${entryCount} row(s); menu offers ${items.join(', ')}${opener}` };
+  }
+  if (items.includes(MENU_ITEM_DELETE)) {
+    return {
+      ok: false,
+      detail: `menu shows "${MENU_ITEM_DELETE}" but production's resolver refuses it (${menuResolves}) — deletion would fail with menu-unavailable`
+    };
+  }
+  // A one-page project plausibly cannot delete its last page. The canary is
+  // single-file by policy, so treat that as degraded rather than a daily
+  // false-fail.
+  if (entryCount === 1) {
+    return {
+      ok: true,
+      status: 'degraded',
+      detail: `single-page project — no "${MENU_ITEM_DELETE}" item offered (items: ${items.join(', ')})${opener}`
+    };
+  }
+  return { ok: false, detail: `row menu missing "${MENU_ITEM_DELETE}" (items: ${items.join(', ')})` };
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+// Ordered canonical-then-legacy branches for the composer send button, embedded
+// into the in-page snippets below. Splitting composer.sendButton into
+// canonical + composerLegacy made the canonical selector alone insufficient here:
+// ui-anchors itself records that data-testid="chat-send-button" was dropped in
+// the 2026-06 build, so a raw canonical lookup finds nothing on the live UI.
+// Resolved in order rather than comma-joined, so a stale duplicate earlier in
+// the document cannot win the click.
+const SEND_BRANCHES_JSON = JSON.stringify(orderedBranches(SEL.composer.sendButton, SEL.composerLegacy?.sendButton));
 
 async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; detail?: string }> {
   const prompt =
@@ -132,7 +307,8 @@ async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; det
     const disabled = await browser
       .evalValue<boolean>(
         `(() => {
-          const b = document.querySelector(${JSON.stringify(SEL.composer.sendButton)});
+          let b = null;
+          for (const s of ${SEND_BRANCHES_JSON}) { b = document.querySelector(s); if (b) break; }
           return !b || b.disabled || b.getAttribute('aria-disabled') === 'true';
         })()`
       )
@@ -144,7 +320,8 @@ async function submitTurnRpcCanary(browser: Browser): Promise<{ ok: boolean; det
   const clicked = await browser
     .evalValue<boolean>(
       `(() => {
-        const b = document.querySelector(${JSON.stringify(SEL.composer.sendButton)});
+        let b = null;
+        for (const s of ${SEND_BRANCHES_JSON}) { b = document.querySelector(s); if (b) break; }
         if (!b || b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
         b.click();
         return true;
@@ -221,8 +398,20 @@ export const UI_ANCHORS: AnchorDef[] = [
       // this signed-in check (the #16/#32 false-positive this anchor guards). Its
       // absence means the login wall is served at the /design URL — fail loudly.
       if (/claude\.ai\/design/.test(url)) {
-        const signedIn = await hasSelector(b, SEL.login.signedInIndicator ?? '');
-        if (signedIn) return { ok: true };
+        if (await hasSelector(b, SEL.login.signedInIndicator ?? '')) return { ok: true };
+        // Legacy arm: `button[title="Create"]` used to be packed into the same
+        // comma-OR as the composer testids. It is weaker evidence of auth than a
+        // composer (an action button could plausibly render on an unauthenticated
+        // shell), so it no longer counts as a clean pass — but it still beats
+        // sending the user to re-login. Keep it, mark it degraded.
+        const legacyMarker = SEL.loginLegacy?.signedInIndicator;
+        if (legacyMarker && (await hasSelector(b, legacyMarker))) {
+          return {
+            ok: true,
+            status: 'degraded',
+            detail: `signed-in marker matched only the superseded branch (${legacyMarker}); canonical composer testids absent. This branch is WEAK evidence of authentication (an action button could plausibly render on an unauthenticated shell), so treat sign-in as unconfirmed: re-capture login.signedInIndicator first, and only if the composer is genuinely absent while signed in does \`designer setup\` apply.`
+          };
+        }
         // The signed-in marker is absent. Before reporting "signed out" (which
         // sends the user to re-login), check for an unambiguous signed-in-home
         // landmark the login wall never renders — a project link or the home
@@ -256,59 +445,82 @@ export const UI_ANCHORS: AnchorDef[] = [
   },
 
   // --- home page ---
-  // 2026-06 home (#61), re-captured live 2026-06-22: still composer-driven, but
-  // the composer is now a plain <textarea> (placeholder rotates — don't key on it)
-  // and the submit is button[title="Create"]. The home no longer carries
-  // chat-composer-input / chat-send-button — those testids were stripped from the
-  // home and exist only in-session. Creation = type intent in the textarea + click
-  // Create. The old home.nameInput anchor stays dropped (no equivalent);
-  // home.wireframeButton/highFiButton track the creation-type cards (now labelled
-  // "Wireframe"/"Prototype" — the earlier "Product …" labels never matched) so they
-  // still detect drift of the creation UI. Captured live from Chrome 149.
+  // 2026-07 home, re-captured live 2026-07-24 from Chrome 150 (signed-in profile)
+  // after nine consecutive daily drift PRs (#118–#126). Still composer-driven, but
+  // every home anchor is now keyed on a data-testid — the two that regressed were
+  // the two keyed on a tag name and a visible label:
+  //   * home.creator was the bare tag `textarea`; the home now renders ZERO
+  //     textareas (the composer is a ProseMirror contenteditable div).
+  //   * home.highFiButton matched the label "Prototype", which was renamed to
+  //     "Mobile app design" — the third rename of that card's label, against zero
+  //     moves of its `carousel-type-prototype` testid.
+  // So the creation-type cards are selector anchors now, not text matchers. The
+  // old home.nameInput anchor stays dropped (no equivalent). The cards remain off
+  // the create path (they only set the Template pill) — drift sentinels only.
+  //
+  // 2026-08-01: the `carousel-type-*` testids were then removed outright (five
+  // consecutive drift PRs, #138-#143 — the home now renders zero
+  // [data-testid*=carousel] nodes). Re-keyed onto the one per-card identifier the
+  // renames do not touch: the thumbnail asset slug, `img.om-grid-thumb[src*=
+  // "/grid-thumbs/<kind>."]`. That slug reuses the dead testids' own vocabulary,
+  // so `prototype` still names the card whose visible label is now "Mobile app
+  // design". The dead testids move to homeLegacy, which makes a rollback read
+  // `degraded` instead of `fail`. See `_cards` in selectors.json for the capture.
   {
     id: 'home.creator',
     category: 'home',
-    description: 'creation composer (textarea)',
+    description: 'creation composer (contenteditable [data-testid="home-composer-input"])',
     requires: 'home',
     check: async (b) => ({ ok: await hasSelector(b, SEL.home.creator) })
   },
   {
     id: 'home.wireframeButton',
     category: 'home',
-    description: 'Wireframe creation-type card',
+    description: 'Wireframe creation-type card (thumbnail slug /grid-thumbs/wireframe.)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, startsWithRegExp(SEL.home.wireframeButtonText)) })
+    check: async (b) =>
+      checkWithLegacy(b, SEL.home.wireframeButton, SEL.homeLegacy?.wireframeButton, 'home.wireframeButton')
   },
   {
     id: 'home.highFiButton',
     category: 'home',
-    // Card labelled just "Prototype" (the 2026-06-19 auto-heal PR #75/#76
-    // "Product prototype" rename never matched live). Off the create path — a
-    // drift sentinel only.
-    description: 'Prototype creation-type card',
+    description: 'Prototype creation-type card (thumbnail slug /grid-thumbs/prototype.)',
     requires: 'home',
-    check: async (b) => ({ ok: await hasButtonMatching(b, startsWithRegExp(SEL.home.highFiButtonText)) })
+    check: async (b) =>
+      checkWithLegacy(b, SEL.home.highFiButton, SEL.homeLegacy?.highFiButton, 'home.highFiButton')
   },
   {
     id: 'home.createButton',
     category: 'home',
-    description: '"Create" submit button (button[title="Create"])',
+    description: 'creation submit button ([data-testid="home-composer-send"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.createButton) })
+    check: async (b) => checkWithLegacy(b, SEL.home.createButton, SEL.homeLegacy?.createButton, 'home.createButton')
   },
   {
     id: 'home.projectsList',
     category: 'home',
-    description: 'project list (>=1 /design/p/ link)',
+    description: 'project list ([data-testid="projects-list"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectsList) })
+    check: async (b) => checkWithLegacy(b, SEL.home.projectsList, SEL.homeLegacy?.projectsList, 'home.projectsList')
+  },
+  {
+    id: 'home.projectLink',
+    category: 'home',
+    // The selector `listProjects()` actually scrapes. It had NO anchor: the
+    // probe read green off projectsList/projectCard while `designer list` could
+    // return []. `home.projectCard` carries the link only as a LEGACY branch,
+    // which checkWithLegacy never evaluates while the canonical row matches — so
+    // it could not stand in for this.
+    description: 'per-project link (a[href*="/design/p/"]) — the listProjects scrape target',
+    requires: 'home',
+    check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectLink) })
   },
   {
     id: 'home.projectCard',
     category: 'home',
-    description: 'project card (a[href*="/design/p/"])',
+    description: 'project row ([data-testid="project-row"])',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectCard) })
+    check: async (b) => checkWithLegacy(b, SEL.home.projectCard, SEL.homeLegacy?.projectCard, 'home.projectCard')
   },
 
   // --- inside a session (after /design/p/{uuid}) ---
@@ -372,8 +584,11 @@ export const UI_ANCHORS: AnchorDef[] = [
     description: 'send button',
     requires: 'session',
     // The 2026-06 build dropped data-testid="chat-send-button"; the button is
-    // now only identifiable by its title="Send (Enter)". Match either.
-    check: async (b) => ({ ok: await hasSelector(b, SEL.composer.sendButton) })
+    // now only identifiable by its title="Send (Enter)". These were packed into
+    // ONE comma-OR selector, so this anchor reported a clean `ok` while matching
+    // only the superseded branch — the exact masking `degraded` exists to
+    // surface, sitting live in the repo that introduced it.
+    check: async (b) => checkWithLegacy(b, SEL.composer.sendButton, SEL.composerLegacy?.sendButton, 'composer.sendButton')
   },
   {
     id: 'session.htmlViewerIframe',
@@ -724,6 +939,155 @@ export const UI_ANCHORS: AnchorDef[] = [
         }
       }
       return { ok: true, detail: `${files.length} file(s) detected` };
+    }
+  },
+
+  {
+    id: 'session.filesSwitcher',
+    category: 'session',
+    description: 'Pages switcher rows + per-row action menu (the deleteFile path) still resolve',
+    requires: 'session',
+    // Walks every selector `deleteFile` actuates, and STOPS at the open menu —
+    // it never clicks Delete. The daily canary is deliberately single-file
+    // (daily-health.yml), so a probe that actually deleted would destroy the
+    // surface every other session.* anchor needs.
+    //
+    // Uses the same expressions production runs (files-switcher.ts) for the
+    // file-panel.ts reason: a probe with its own copy of the DOM steps can stay
+    // green while production silently no-ops (PR #77).
+    check: async (b) => {
+      // This anchor runs only in the SESSION phase, i.e. on a project page —
+      // where the trigger is a production-required selector. Skipping on its
+      // absence let the exact drift this probe exists to catch stay green.
+      // Only a page that is not a project surface at all is inconclusive.
+      if (!(await hasSelector(b, SEL.files.switcherTrigger))) {
+        const onProject = /\/design\/p\/[a-f0-9-]+/i.test(await b.url().catch(() => ''));
+        if (!onProject) {
+          return { ok: true, status: 'skip', detail: 'not on a project page — no switcher surface to probe' };
+        }
+        return {
+          ok: false,
+          detail: `files-switcher trigger (${SEL.files.switcherTrigger}) is absent on a project page — deleteFile and designer_files_delete cannot run`
+        };
+      }
+
+      let entryCount = -1;
+      // Set during cleanup when the probe CHANGED the canary. It overrides the
+      // provisional verdict, so a probe that damaged the surface it protects can
+      // never report green — hovering a row reveals Duplicate and Rename right
+      // beside More actions, and a stray hit makes the single-file canary
+      // multi-file, which flakes session.fileListScrape from then on. #F11.
+      let mutated: string | null = null;
+      let verdict: { ok: boolean; status?: ProbeStatus; detail?: string };
+
+      try {
+        if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'closed') {
+          await b.click(SEL.files.switcherTrigger).catch(() => null);
+          await sleep(700);
+          // Trusted click silently no-ops on some page states; fall back.
+          if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'closed') {
+            await b.evalValue(clickTriggerExpr(SEL.files)).catch(() => null);
+          }
+        }
+        await sleep(700);
+        const opened = (await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) || 'error';
+        if (opened !== 'open') {
+          verdict = { ok: false, detail: `switcher trigger present but would not open (${opened})` };
+        } else {
+          const read = await b
+            .evalValue<{ rows: SwitcherRow[]; reused: boolean }>(readRowsExpr(SEL.files))
+            .catch(() => null);
+          const rows = read?.rows ?? [];
+          entryCount = rows.length;
+          if (rows.length === 0) {
+            verdict = { ok: true, status: 'skip', detail: 'switcher opened but listed 0 rows — inconclusive' };
+          } else {
+            verdict = await probeRowMenu(b, entryCount);
+          }
+        }
+      } catch (e) {
+        verdict = { ok: false, detail: `switcher probe threw: ${(e as Error).message}` };
+      } finally {
+        // Cardinality check FIRST, while the popover is still open. Rows only
+        // exist while it is open, so a count taken after Escape is 0 for a
+        // perfectly healthy canary — comparing two counts measured under
+        // different page conditions is exactly the bug this check reports.
+        if (entryCount >= 0) {
+          const stillOpen = (await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'open';
+          const now = stillOpen
+            ? await b
+                .evalValue<number>(`document.querySelectorAll(${JSON.stringify(SEL.files.switcherRow)}).length`)
+                .catch(() => -1)
+            : -1;
+          // -1 = not comparable (popover already closed, or read failed).
+          // Absence of evidence is not evidence of mutation.
+          if (now >= 0 && now !== entryCount) {
+            mutated = `probe changed the project's file count (${entryCount} → ${now}) — the canary may need repair`;
+          }
+        }
+        // Clear our own stamps before leaving; the probe must not persist a
+        // mutation on someone else's page.
+        await b.evalValue(clearStampsExpr()).catch(() => null);
+        await b.press('Escape').catch(() => null);
+        await sleep(250);
+        if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'open') {
+          await b.click(SEL.files.switcherTrigger).catch(() => null);
+          await sleep(300);
+          if ((await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) === 'open') {
+            await b.evalValue(clickTriggerExpr(SEL.files)).catch(() => null);
+          }
+        }
+        await sleep(250);
+      }
+
+      if (mutated) return { ok: false, detail: `${mutated}${verdict.detail ? ` (probe result: ${verdict.detail})` : ''}` };
+      return verdict;
+    }
+  },
+
+  {
+    id: 'session.filesSwitcherRestored',
+    category: 'session',
+    description: 'no delete dialog or open switcher left behind by the switcher probe',
+    requires: 'session',
+    // Runs right after session.filesSwitcher and proves it cleaned up. Also the
+    // consumer that anchors files.confirmDialog / filesLegacy.confirmDialog —
+    // asserting the selector resolves to NOTHING is the only non-destructive way
+    // to probe a dialog that can only be raised by a real deletion.
+    check: async (b) => {
+      // A failed read is NOT "clean" — mapping it to false would let this
+      // anchor, whose whole job is proving cleanup, assert a page state it
+      // never actually read (the PR #77 shape).
+      const dialogSel = presenceSelector(SEL.files.confirmDialog, SEL.filesLegacy?.confirmDialog);
+      const dialogOpen = await b
+        .evalValue<boolean>(dialogPresentExpr(SEL.files, SEL.filesLegacy?.confirmDialog))
+        .catch(() => null);
+      if (dialogOpen === null) {
+        return { ok: true, status: 'skip', detail: 'could not read page state after the switcher probe — inconclusive' };
+      }
+      if (dialogOpen) {
+        return { ok: false, detail: `a confirm dialog is open (${dialogSel}) — the switcher probe left the page mid-flow` };
+      }
+      const rows = await b
+        .evalValue<number>(`document.querySelectorAll(${JSON.stringify(SEL.files.switcherRow)}).length`)
+        .catch(() => null);
+      if (rows === null) {
+        return { ok: true, status: 'skip', detail: 'could not read switcher state after the probe — inconclusive' };
+      }
+      const stamps = await b
+        .evalValue<number>(`document.querySelectorAll('[data-designer-target]').length`)
+        .catch(() => null);
+      if (stamps !== null && stamps > 0) {
+        return { ok: false, detail: `${stamps} designer stamp attribute(s) left on the page after the switcher probe` };
+      }
+      // A popover left open is a restoration FAILURE, not degraded: `degraded`
+      // means "works via a superseded selector", and isWorking() treats it as
+      // green. An open popover poisons every anchor that runs after this one,
+      // which is exactly what this probe exists to catch. #F10.
+      if (rows > 0) {
+        return { ok: false, detail: `switcher popover still open (${rows} rows) after probe cleanup — later session anchors will read a dirty page` };
+      }
+      return { ok: true, detail: 'no dialog, switcher closed' };
     }
   }
 ];

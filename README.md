@@ -86,7 +86,7 @@ Every verb has `--help`. `--key <k>` isolates parallel sessions (state at `~/.de
 
 ## MCP
 
-Six tools, registered at user scope by `designer setup`:
+Seven tools, registered at user scope by `designer setup`:
 
 | Tool | Purpose |
 |---|---|
@@ -95,7 +95,18 @@ Six tools, registered at user scope by `designer setup`:
 | `designer_ask` | Q&A with the assistant, no file changes. |
 | `designer_list` | `projects` or `files` (flat-only — see quirks). |
 | `designer_snapshot` | Capture current file. Paths + hash by default; `includeHtml: true` inlines. |
+| `designer_files_delete` | Delete one file from the open project — clearing superseded variants. **Dry-run by default** (`confirm: true` to act); snapshots the file first and aborts if that fails. Refuses on ambiguous names or a confirm dialog naming a different file; distinguishes refusals (nothing deleted) from post-click uncertainty. |
 | `designer_handoff` | Fetch + extract the project export zip → `project/` + `decision-record.md`. Auto-repairs em-dash filename bugs. |
+
+## Why the destructive path looks the way it does
+
+`designer_files_delete` is deliberately more machinery than "click the button":
+verify-and-stamp binding, a tab lock, and outcome assertion. Five review rounds
+against the live product produced that shape, and the reasoning — including the
+approaches that were tried and refuted — is in
+[`docs/adr/0001-destructive-ui-automation-safety.md`](docs/adr/0001-destructive-ui-automation-safety.md).
+Read it before simplifying any of it, or before adding a sibling verb
+(rename / duplicate / project-delete) on the same surface.
 
 ## The loop
 

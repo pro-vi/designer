@@ -59,7 +59,7 @@ jobs:
 
     steps:
       - name: Checkout at triggering SHA
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # Run against the exact commit daily-health probed. If main has
           # advanced since, the probe artifact reflects the old code and
@@ -89,9 +89,13 @@ jobs:
             --color FFB4A2 \
             --description ">=5 anchors regressed at once — needs human triage" \
             2>/dev/null || true
+          gh label create auto-heal-blind \
+            --color D00000 \
+            --description "Anchors are failing but none are auto-patchable — auto-heal cannot fix these" \
+            2>/dev/null || true
 
       - name: Setup node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
@@ -126,10 +130,12 @@ jobs:
           # (installed by the official Claude Code GitHub App, see #20).
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Re-probe needs the same canary the original run probed. Keep this
-          # mirror of daily-health.yml's value in sync if you swap canaries
-          # — both workflows reference the same project URL by convention.
-          DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/72e73856-7b63-4aed-b95a-caca5e3c0e05
+          # Re-probe needs the same canary the original run probed — verifying a
+          # patch against a different project proves nothing. This mirrors
+          # daily-health.yml's value, and `npm run preflight` now ASSERTS the two
+          # agree: they had drifted to two different (both deleted) projects
+          # while the comment claimed they were kept in sync by convention.
+          DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/9a2066ca-e9e4-4972-a294-560092e6a216
           # Pipe the triage output through env (not `${{ }}` substitution into
           # the shell command body) so an anchor-id with unexpected characters
           # cannot inject. auto-heal.ts also re-validates the id via
@@ -143,10 +149,22 @@ jobs:
         with:
           branch: health/auto-heal-${{ steps.heal.outputs.anchor-id }}-${{ steps.heal.outputs.date }}
           base: main
+          # Both patch targets. The selector lives in ui-anchors.ts only for
+          # anchors with an inline literal; every anchor that reads SEL.* is
+          # repaired in selectors.json instead (patcher V2, #129 item 0.3).
+          #
+          # Listing both is safe for a narrower reason than "the other one gets
+          # reverted" — it does not. Every revertPatch() call site is on a
+          # failure path, and this step runs only when patched == 'true'. The
+          # real guarantee is that heal() WRITES exactly one of the two, so the
+          # other is untouched and create-pull-request has nothing to commit for
+          # it. If a future change ever dirties both, this list would commit
+          # both under a message naming one anchor.
           add-paths: |
             ui-anchors.ts
+            selectors.json
           commit-message: |
-            chore(ui-anchors): auto-heal ${{ steps.heal.outputs.anchor-id }}
+            chore(selectors): auto-heal ${{ steps.heal.outputs.anchor-id }} in ${{ steps.heal.outputs.patched-file }}
 
             Replaces selector for ${{ steps.heal.outputs.anchor-id }} from
             `${{ steps.heal.outputs.old-selector }}` to `${{ steps.heal.outputs.new-selector }}`.
@@ -158,10 +176,14 @@ jobs:
             ## Auto-heal proposal
 
             - **Anchor**: `${{ steps.heal.outputs.anchor-id }}`
+            - **Patched**: `${{ steps.heal.outputs.patched-file }}`${{ steps.heal.outputs.selectors-key != '' && format(' at `{0}`', steps.heal.outputs.selectors-key) || '' }}
             - **Before**: `${{ steps.heal.outputs.old-selector }}`
             - **After**: `${{ steps.heal.outputs.new-selector }}`
             - **Confidence**: ${{ steps.heal.outputs.confidence }}
-            - **Local re-probe**: green after patch
+            - **Local re-probe**: patched anchor `ok` (not merely non-failing), and no anchor that was working beforehand regressed or went inconclusive
+            ${{ steps.heal.outputs.same-key-anchors != '' && format('- **Other anchors reading this key**: {0} — these are what the non-regression check could actually catch', steps.heal.outputs.same-key-anchors) || '- **Other anchors reading this key**: none. No other anchor reads this key, so the non-regression check could only have caught *second-order* breakage (an anchor that uses the element rather than just asserting it is present). Treat the reader list below as the primary review signal, not the re-probe.' }}
+            ${{ steps.heal.outputs.key-consumers != '' && format('- **This key is also read by**: {0} — best-effort textual scan, it under-reports keys reached through a passed-down object', steps.heal.outputs.key-consumers) || '' }}
+            ${{ steps.heal.outputs.superseded-selector != '' && format('- **Superseded value NOT demoted**: `{0}` was replaced and is now gone. selectors.json''s contract is that a superseded canonical selector moves into `{1}` so a rolled-back page reports `degraded` instead of `fail`. auto-heal will not write two keys in one unverified patch — **please demote it by hand before merging.**', steps.heal.outputs.superseded-selector, steps.heal.outputs.legacy-key) || '' }}
             - **Originating drift PR**: ${{ steps.heal.outputs.drift-pr-number != '' && format('#{0}', steps.heal.outputs.drift-pr-number) || '(none found)' }}
             - **Triggered by run**: [daily-health #${{ github.event.workflow_run.id }}](${{ github.event.workflow_run.html_url }})
 
@@ -173,5 +195,56 @@ jobs:
 
             **Human review required.** This PR is NOT auto-merged. Verify the
             new selector matches the intended element before merging — auto-
-            heal validates that the *anchor probes green*, not that the
-            selector targets the *right* DOM node.
+            heal validates that the *anchor probes green* and that nothing else
+            broke, not that the selector targets the *right* DOM node. A
+            presence check is satisfied by the wrong element too.
+
+            **Read a `selectors.json` patch with more care than a `ui-anchors.ts`
+            one.** That file is the contract `createSession`, `listProjects`,
+            `deleteFile` and the sign-in verifier all resolve against, so this
+            change alters the tool's behaviour, not just what the daily probe
+            looks for.
+
+            **Do not read the non-regression check as verification.** It can only
+            see what some *other* anchor asserts. Measured against today's
+            registry, the 10 patchable anchors map to 10 distinct keys — no key
+            is read by two anchors — so for most patches its first-order coverage
+            is zero and its only reach is second-order (an anchor that *uses* the
+            element rather than asserting its presence). The reader list above is
+            the signal that actually tells you what this change moves.
+
+      # Unconditional restore. Every revertPatch() call site lives inside the
+      # heal process, so a SIGKILL from the 20-minute job ceiling — plausible:
+      # the re-probe alone allows 5 min, the Anthropic call ~3 min, plus npm ci
+      # and snapshot capture — skips all of them and leaves a patched
+      # selectors.json on the SHARED self-hosted runner. actions/checkout cleans
+      # on the next run, so the exposure window is up to 24h, during which any
+      # human on that machine has designer verbs resolving against an unreviewed
+      # selector. Runs after the PR step, which has already committed what it
+      # needed.
+      - name: Restore working tree
+        if: always()
+        run: |
+          git -C "$GITHUB_WORKSPACE" checkout -- ui-anchors.ts selectors.json || true
+          if ! git -C "$GITHUB_WORKSPACE" diff --quiet HEAD -- ui-anchors.ts selectors.json; then
+            echo "::error title=auto-heal left the working tree dirty::ui-anchors.ts or selectors.json still differs from HEAD on the runner after cleanup."
+            exit 1
+          fi
+
+      # Structural blindness is not a best-effort miss — it is a standing defect
+      # in auto-heal itself: anchors are failing and the patcher cannot express a
+      # fix for ANY of them, so no future run will resolve it either. The triage
+      # step emits an ::error annotation, but annotations do not change a step's
+      # outcome, so without this gate the workflow still concluded success in
+      # exactly the scenario this PR exists to stop reporting as green.
+      #
+      # Runs last so the label + drift-PR comment posted during triage land first.
+      - name: Fail when auto-heal is structurally blind
+        # Gated on the dedicated `blind` output, not on `reason`: a wholesale
+        # regression that is ALSO unpatchable emits reason=wholesale-redesign,
+        # and keying on reason would miss exactly the worst case — many anchors
+        # down and auto-heal powerless to touch any of them.
+        if: steps.triage.outputs.blind == 'true'
+        run: |
+          echo "::error title=auto-heal cannot fix the failing anchors::${{ steps.triage.outputs.blind-anchors }} — these have failed for 2+ runs and none are auto-patchable. This will not resolve on its own; repair the selector by hand or extend the patcher."
+          exit 1

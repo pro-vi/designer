@@ -41,19 +41,50 @@ export function defaultChromeBin(): string {
   return '/usr/bin/google-chrome';
 }
 
+// Process NAMES a real Chrome/Chromium main process carries on Linux, as an
+// anchored `pgrep -x` alternation. Two constraints shaped this list (#114):
+//
+//  - Linux truncates a process name to 15 chars, so `chromium-browser` is only
+//    ever visible as `chromium-browse`. Matching the untruncated spelling finds
+//    nothing.
+//  - The names must stay near-miss free, because `setup.ts` treats a match as
+//    "a non-debug Chrome is running", polls five minutes, then hard-fails. The
+//    excluded neighbours are `chromedriver`, `chrome-sandbox`, and
+//    `chrome_crashpad` (itself the truncation of `chrome_crashpad_handler`,
+//    which can outlive a Chrome quit).
+//
+// Verified on debian:stable-slim + procps against processes carrying each name.
+export const LINUX_CHROME_PROCESS_NAMES = 'chrome|chromium|chromium-browse|google-chrome';
+
+// The probe argv behind isChromeRunning(), separated so the per-OS decision is
+// testable without spawning anything. Takes the platform explicitly so one test
+// process can assert all three branches.
+export function chromeRunningProbe(platform: NodeJS.Platform = process.platform): {
+  cmd: string;
+  args: string[];
+} {
+  if (platform === 'win32') {
+    return { cmd: 'tasklist', args: ['/FI', 'IMAGENAME eq chrome.exe', '/NH', '/FO', 'CSV'] };
+  }
+  if (platform === 'darwin') {
+    // Full-path match: specific enough that no near-miss collides.
+    return { cmd: 'pgrep', args: ['-f', 'Google Chrome.app/Contents/MacOS/Google Chrome'] };
+  }
+  // `-x` anchors against the process NAME. The previous `-f chrome` matched the
+  // whole command line, which both over-matched (any argv naming a chrome* file
+  // blocked setup for five minutes) and under-matched (`chromium` does not
+  // contain the substring `chrome`, so a real Chromium was never detected).
+  return { cmd: 'pgrep', args: ['-x', LINUX_CHROME_PROCESS_NAMES] };
+}
+
 // Cross-platform "is a non-debug Chrome currently running?" check.
 export function isChromeRunning(): boolean {
+  const { cmd, args } = chromeRunningProbe();
+  const r = nodeSpawnSync(cmd, args, { stdio: 'pipe' });
   if (IS_WIN) {
-    const r = nodeSpawnSync('tasklist', ['/FI', 'IMAGENAME eq chrome.exe', '/NH', '/FO', 'CSV'], { stdio: 'pipe' });
     if (r.status !== 0) return false;
-    const out = r.stdout?.toString() || '';
-    return out.toLowerCase().includes('chrome.exe');
+    return (r.stdout?.toString() || '').toLowerCase().includes('chrome.exe');
   }
-  if (IS_MAC) {
-    const r = nodeSpawnSync('pgrep', ['-f', 'Google Chrome.app/Contents/MacOS/Google Chrome'], { stdio: 'pipe' });
-    return r.status === 0 && (r.stdout?.toString().trim().length ?? 0) > 0;
-  }
-  const r = nodeSpawnSync('pgrep', ['-f', 'chrome'], { stdio: 'pipe' });
   return r.status === 0 && (r.stdout?.toString().trim().length ?? 0) > 0;
 }
 

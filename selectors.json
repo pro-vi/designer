@@ -1,28 +1,54 @@
 {
   "_notes": "Captured 2026-04-17 from Chrome 147 via CDP. Override at ~/.designer/selectors.override.json. Prefer data-testid over class names — Claude's styled-components classes (sc-xxx) are regenerated on every build.",
-  "_drift": "2026-06 (issue #61) re-drifted, re-captured live 2026-06-22 from Chrome 149 (signed-in profile): the home is still composer-driven but the composer is now a plain <textarea> (placeholder ROTATES — 'Describe an app', 'Make a pitch deck', … — so never key a selector on placeholder text) with a separate submit button[title=\"Create\"]. The home no longer carries chat-composer-input / chat-send-button — those testids were stripped from the home surface and now exist only in-session. There is no project-name input or wireframe/high-fi toggle — you type an intent in the textarea and click Create. Creation-type cards are now labelled 'Prototype'/'Slides'/'Document'/'Wireframe'/'Animation' (the earlier 'Product prototype'/'Product wireframe' from auto-heal PR #75/#76 never matched reality); clicking one sets the Template pill but is off the create path, so wireframeButtonText/highFiButtonText are health-anchor drift sentinels only. Projects render as <a href=/design/p/<uuid>> with the name as text (no project-card/projects-list testid). `designer adopt` remains available to bind an already-open tab to a key.",
+  "_drift": "2026-07 re-drifted, re-captured live 2026-07-24 from Chrome 150 (signed-in profile). The home is STILL composer-driven, but every home selector that was keyed on a tag name or a visible label has moved onto a data-testid — so this capture keys on testids only. Changes vs the 2026-06 capture: (1) the composer is no longer a <textarea> at all — the home now renders ZERO textareas; it is a ProseMirror contenteditable <div data-testid=\"home-composer-input\">. _submitPrompt's contenteditable branch (synthetic paste) drives it. (2) The submit button gained data-testid=\"home-composer-send\"; it is the SAME element as button[title=\"Create\"], which is retained as a LEGACY branch in `homeLegacy` (see `_branches` — a comma-OR is not an ordered fallback). It is always enabled, so content — not enabled-ness — is the submit gate. (3) The creation-type cards moved to data-testid=\"carousel-type-<kind>\" and their LABELS churn independently ('Product prototype' → 'Prototype' → 'Mobile app design' across three captures) — key on the testid, never the label. The testids survived every rename. [SUPERSEDED 2026-08-01 — see _cards.] (4) Projects moved from a flat link list to a <section data-testid=\"projects-list\"> of <tr data-testid=\"project-row\">; the row's <a href=/design/p/<uuid>> is now an EMPTY overlay link — the name lives in the first <td> and on the anchor's aria-label, so listProjects must not read anchor text. Placeholder text still ROTATES ('Draft a one-page project brief', …) — never key a selector on it. `designer adopt` remains available to bind an already-open tab to a key.",
   "_urls": {
     "home": "https://claude.ai/design",
     "session": "https://claude.ai/design/p/{uuid}"
   },
+  "_cards": "Creation-type cards, re-captured live 2026-08-01 (Chrome 150) after home.wireframeButton + home.highFiButton failed five consecutive daily probes (PRs #138-#143). The `carousel-type-<kind>` testids are GONE — the home renders zero [data-testid*=carousel] nodes. The cards are now `<button class=\"om-grid-tile\" aria-label=\"<label>\">` inside `<div class=\"om-grid\">`, and the ONLY per-card identifier that is not a churning human label is the thumbnail's asset path: `<img class=\"om-grid-thumb\" src=\"/design/grid-thumbs/<kind>.<n>.jpg\">`. That <kind> slug is the same vocabulary the dead testids used, and it is stable across exactly the renames that broke the label anchors — the card labelled 'Mobile app design' today serves `prototype.0.jpg`, and it was 'Product prototype' then 'Prototype' in earlier captures. So the canonical selector keys on the slug via :has() (Chrome 105+; the probe's Chrome is 150) and the dead testids are retained as legacy branches so a rollback reports `degraded`, not `fail`. Never key these on aria-label or visible text: 13 tiles ship today (software, prototype, slides, document, resume, animation, object3d, research, email, pairing, diagram, flier, wireframe) and their labels have churned three times against zero slug changes. The cards remain OFF the create path — createSession folds fidelity into the seed prompt — so these two anchors are drift sentinels only, not a broken verb.",
+  "_branches": "A comma-separated CSS list is NOT an ordered fallback. `document.querySelector('A, B')` returns the first element in DOCUMENT ORDER matching either branch — not A's match preferred over B's. Packing a legacy branch into a canonical selector therefore (1) can silently return the WRONG element at runtime, and (2) keeps a presence-only health anchor green after the canonical selector has rotted, which defeats the daily probe. So canonical selectors below are single-branch, and superseded forms live in `homeLegacy` / `loginLegacy`. Health checks canonical first and reports `degraded` (not `ok`) when only the legacy branch matches; runtime resolvers try them in explicit order.",
   "login": {
-    "signedInIndicator": "[data-testid=\"chat-composer-input\"], button[title=\"Create\"]"
+    "signedInIndicator": "[data-testid=\"chat-composer-input\"], [data-testid=\"home-composer-input\"]"
+  },
+  "loginLegacy": {
+    "signedInIndicator": "button[title=\"Create\"]"
   },
   "home": {
-    "creator": "textarea",
-    "nameInput": "textarea",
-    "wireframeButtonText": "Wireframe",
-    "highFiButtonText": "Prototype",
+    "creator": "[data-testid=\"home-composer-input\"]",
+    "nameInput": "[data-testid=\"home-composer-input\"]",
+    "wireframeButton": "button.om-grid-tile:has(img[src*=\"/grid-thumbs/wireframe.\"])",
+    "highFiButton": "button.om-grid-tile:has(img[src*=\"/grid-thumbs/prototype.\"])",
+    "createButton": "[data-testid=\"home-composer-send\"]",
+    "projectsList": "[data-testid=\"projects-list\"]",
+    "projectCard": "[data-testid=\"project-row\"]",
+    "projectLink": "a[href*=\"/design/p/\"]"
+  },
+  "homeLegacy": {
     "createButton": "button[title=\"Create\"]",
     "projectsList": "a[href*=\"/design/p/\"]",
-    "projectCard": "a[href*=\"/design/p/\"]"
+    "projectCard": "a[href*=\"/design/p/\"]",
+    "wireframeButton": "[data-testid=\"carousel-type-wireframe\"]",
+    "highFiButton": "[data-testid=\"carousel-type-prototype\"]"
   },
   "composer": {
     "promptTextarea": "[data-testid=\"chat-composer-input\"]",
-    "sendButton": "[data-testid=\"chat-send-button\"], button[title^=\"Send (\"]",
+    "sendButton": "[data-testid=\"chat-send-button\"]",
     "stopButton": null,
     "attachButton": "button[aria-label=\"Attach file\"]",
     "modelButton": "[data-testid=\"model-selector-button\"]"
+  },
+  "composerLegacy": {
+    "sendButton": "button[title^=\"Send (\"]"
+  },
+  "files": {
+    "_note": "The 'Pages' files switcher — the UNIFIED file surface, present in BOTH the plain-HTML view and the .dc.html canvas editor (unlike the legacy 'Design Files' flat panel, plain-HTML only). Captured live 2026-07-26 via CDP probe + destructive rehearsal on a throwaway project. Rows exist only while the popover is open; per-row action buttons are hover-revealed and need TRUSTED input (synthetic el.click() silently no-ops on some of these menus). Menu items and confirm-dialog buttons carry no testids — they are located by text inside verify-and-stamp page expressions (files-switcher.ts), never by positional CSS.",
+    "switcherTrigger": "[data-testid=\"files-switcher-trigger\"]",
+    "switcherRow": "[data-testid=\"files-switcher-row\"]",
+    "rowMoreActions": "button[aria-label=\"More actions\"]",
+    "confirmDialog": "[role=\"dialog\"]"
+  },
+  "filesLegacy": {
+    "confirmDialog": "[role=\"alertdialog\"]"
   },
   "preview": {
     "iframeOrContainer": "[data-testid=\"html-viewer-iframe\"]",

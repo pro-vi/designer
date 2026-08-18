@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.3.25](https://github.com/pro-vi/designer/compare/v0.3.24...v0.3.25) (2026-08-03)
+
+
+### Features
+
+* **auto-heal:** patcher V2 — repair selectors.json, gated and authenticated ([#146](https://github.com/pro-vi/designer/issues/146)) ([2bfee83](https://github.com/pro-vi/designer/commit/2bfee83b7bbdb41c255f8c75b3c135c33bc3835e))
+
+
+### Bug Fixes
+
+* **health:** repair live selector drift, revive the dead canary, and assert the probe environment ([#144](https://github.com/pro-vi/designer/issues/144)) ([04de0f3](https://github.com/pro-vi/designer/commit/04de0f3c77eeb22ad44bc985bbe90e2682103174))
+
+## [0.3.24](https://github.com/pro-vi/designer/compare/v0.3.23...v0.3.24) (2026-07-28)
+
+
+### Features
+
+* **files:** agent-driven file deletion via designer_files_delete ([#134](https://github.com/pro-vi/designer/issues/134)) ([e41d927](https://github.com/pro-vi/designer/commit/e41d927b4d937ae6461a9d7dfdebf0d3d341a446))
+
+## [0.3.23](https://github.com/pro-vi/designer/compare/v0.3.22...v0.3.23) (2026-07-26)
+
+
+### Bug Fixes
+
+* **health:** make the probe, healer, and scrape assert outcomes not activity ([#131](https://github.com/pro-vi/designer/issues/131)) ([2371459](https://github.com/pro-vi/designer/commit/2371459db513437c2202f5771142b95f9e5b7367))
+
+## [0.3.22](https://github.com/pro-vi/designer/compare/v0.3.21...v0.3.22) (2026-07-25)
+
+
+### Bug Fixes
+
+* **selectors:** re-capture drifted home anchors onto data-testids ([#127](https://github.com/pro-vi/designer/issues/127)) ([ac30dfe](https://github.com/pro-vi/designer/commit/ac30dfedf1f040c5499ea19279a9983cd39d0cf7))
+
+## [0.3.21](https://github.com/pro-vi/designer/compare/v0.3.20...v0.3.21) (2026-07-14)
+
+
+### Bug Fixes
+
+* **cli:** stop false-positive lockfile staleness warning in doctor ([ad9d244](https://github.com/pro-vi/designer/commit/ad9d244187db27a71f3e18c97d7cfa21d871a929))
+
+## [0.3.20](https://github.com/pro-vi/designer/compare/v0.3.19...v0.3.20) (2026-07-10)
+
+
+### Miscellaneous Chores
+
+* release @pro-vi/designer 0.3.20 ([c55fe0d](https://github.com/pro-vi/designer/commit/c55fe0de941c624434eb519d7800bf02a4962e37))
+
 ## [0.3.19](https://github.com/pro-vi/designer/compare/v0.3.18...v0.3.19) (2026-06-30)
 
 

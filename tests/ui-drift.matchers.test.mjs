@@ -124,3 +124,71 @@ test('login.signedIn: explicit /login URL => signed out without probing the DOM'
   assert.equal(r.ok, false);
   assert.equal(touched, false, 'URL login wall is decided without a DOM probe');
 });
+
+// 2026-07 home drift (PRs #118-#126: nine consecutive daily drift reports).
+// Both regressions were anchors keyed on something cosmetic rather than on a
+// data-testid, so these lock in the testid contract:
+//   * home.creator was the bare tag `textarea`; the home now renders none.
+//   * home.highFiButton matched the visible label "Prototype", renamed to
+//     "Mobile app design" — the third rename of that card, while its
+//     `carousel-type-prototype` testid never moved once.
+// The stub decides from the evaluated expression, so asserting the probe fires
+// on the testid (and NOT on the tag/label) is exactly the regression guard.
+
+test('home.creator probes the composer testid, not a bare <textarea> tag', async () => {
+  const onTestid = stubBrowser((expr) => /home-composer-input/.test(expr));
+  assert.equal((await anchor('home.creator').check(onTestid, 'https://claude.ai/design')).ok, true);
+
+  // A page with textareas but no home-composer-input must NOT satisfy the anchor:
+  // that is the 2026-06 selector, and matching it would mask the drift.
+  const onTagOnly = stubBrowser((expr) => /'textarea'|"textarea"/.test(expr));
+  assert.equal((await anchor('home.creator').check(onTagOnly, 'https://claude.ai/design')).ok, false);
+});
+
+// 2026-08-01: the carousel testids were removed outright, so the cards are keyed
+// on the thumbnail asset slug (/grid-thumbs/<kind>.) — the only per-card name the
+// product has never renamed. These lock in that contract the same way.
+test('home creation-type cards probe the thumbnail slug, so a label rename cannot break them', async () => {
+  for (const [id, slug] of [
+    ['home.highFiButton', 'grid-thumbs/prototype\\.'],
+    ['home.wireframeButton', 'grid-thumbs/wireframe\\.']
+  ]) {
+    const onSlug = stubBrowser((expr) => new RegExp(slug).test(expr));
+    const r = await anchor(id).check(onSlug, 'https://claude.ai/design');
+    assert.equal(r.ok, true, `${id} matches ${slug}`);
+    assert.notEqual(r.status, 'degraded', `${id} on the canonical slug is plain ok, not degraded`);
+
+    // Labels churn independently of the slug — "Mobile app design" is the third
+    // label on the card the slug still calls `prototype`. A probe that only sees
+    // visible text must fail, or the anchor is label-keyed again.
+    const onLabelOnly = stubBrowser((expr) => /Prototype|Wireframe|Mobile app design/.test(expr));
+    assert.equal((await anchor(id).check(onLabelOnly, 'https://claude.ai/design')).ok, false, `${id} is not label-keyed`);
+  }
+});
+
+test('a carousel-testid rollback reports degraded, not ok and not fail', async () => {
+  // The dead testids are retained as legacy branches purely so this case is
+  // distinguishable: the tool would still work, but the canonical contract is
+  // broken and must not read green.
+  for (const [id, testid] of [
+    ['home.highFiButton', 'carousel-type-prototype'],
+    ['home.wireframeButton', 'carousel-type-wireframe']
+  ]) {
+    const onLegacyOnly = stubBrowser((expr) => new RegExp(testid).test(expr));
+    const r = await anchor(id).check(onLegacyOnly, 'https://claude.ai/design');
+    assert.equal(r.ok, true, `${id} still resolves via the legacy testid`);
+    assert.equal(r.status, 'degraded', `${id} on the legacy branch alone must be degraded`);
+  }
+});
+
+test('creation-type cards fail when neither the slug nor the legacy testid is present', async () => {
+  for (const id of ['home.highFiButton', 'home.wireframeButton']) {
+    const onNothing = stubBrowser(() => false);
+    assert.equal((await anchor(id).check(onNothing, 'https://claude.ai/design')).ok, false, `${id} fails when gone`);
+  }
+});
+
+test('home.createButton tolerates both the testid and the legacy title="Create" form', async () => {
+  const onTestid = stubBrowser((expr) => /home-composer-send/.test(expr));
+  assert.equal((await anchor('home.createButton').check(onTestid, 'https://claude.ai/design')).ok, true);
+});

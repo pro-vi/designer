@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { REPO_ROOT } from './repo-root.ts';
 import { defaultChromeBin, isChromeRunning, xspawnSync, WHICH, IS_WIN, IS_MAC, QUIT_CHROME_HINT } from './cross-platform.ts';
 import { createBrowser, type Browser } from './browser.ts';
-import { getSelectors } from './selectors.ts';
+import { getSelectors, presenceSelector } from './selectors.ts';
 
 const SKILL_SRC = path.join(REPO_ROOT, 'skills', 'designer-loop', 'SKILL.md');
 const SKILL_DEST_DIR = path.join(os.homedir(), '.claude', 'skills', 'designer-loop');
@@ -47,7 +47,10 @@ async function verifySignedIn(browser: Browser): Promise<boolean> {
   // from the single source so a home redesign updates it in one place: the prior
   // inline copy (`project-creator`/`chat-composer-input`) went stale when the home
   // dropped those testids, so setup false-negated sign-in on the redesigned home.
-  const sel = getSelectors().login.signedInIndicator;
+  // Presence-only test, so canonical + legacy may be probed as one list — we
+  // only care THAT a marker is present, never which element comes back.
+  const s = getSelectors();
+  const sel = presenceSelector(s.login.signedInIndicator, s.loginLegacy?.signedInIndicator);
   if (!sel) return false;
   const js = `!!document.querySelector(${JSON.stringify(sel)})`;
   return browser.evalValue<boolean>(js).catch(() => false);

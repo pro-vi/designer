@@ -11,5 +11,11 @@
     "rewriteRelativeImportExtensions": true
   },
   "include": ["*.ts", "scripts/*.ts"],
-  "exclude": ["node_modules", "dist", "artifacts", "logs"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "artifacts",
+    "logs",
+    "scripts/e2e-*.ts"
+  ]
 }

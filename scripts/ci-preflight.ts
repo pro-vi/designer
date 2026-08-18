@@ -78,14 +78,92 @@ function report(ok: boolean, name: string, detail: string): void {
 }
 
 // 3. Canary project URL is set and well-formed (the session/share anchors need it).
+const canaryUrl = process.env.DESIGNER_PROBE_PROJECT_URL ?? '';
 {
-  const url = process.env.DESIGNER_PROBE_PROJECT_URL ?? '';
-  const ok = /^https:\/\/claude\.ai\/design\/p\/[a-f0-9-]+/i.test(url);
-  report(ok, 'canary project URL', ok ? url : `"${url}" (expected https://claude.ai/design/p/<uuid>)`);
+  const ok = /^https:\/\/claude\.ai\/design\/p\/[a-f0-9-]+/i.test(canaryUrl);
+  report(ok, 'canary project URL', ok ? canaryUrl : `"${canaryUrl}" (expected https://claude.ai/design/p/<uuid>)`);
   if (!ok) {
     failures.push(
-      `DESIGNER_PROBE_PROJECT_URL is unset or malformed ("${url}") — the session.* / share.* anchors can't be exercised. ` +
+      `DESIGNER_PROBE_PROJECT_URL is unset or malformed ("${canaryUrl}") — the session.* / share.* anchors can't be exercised. ` +
         `Set it to a stable single-file canary project.`
+    );
+  }
+}
+
+// 4. The canary project still EXISTS.
+//
+// Shape was the only thing checked here until 2026-08-02, and shape survives
+// deletion: a deleted project keeps answering on its own /design/p/<uuid> URL,
+// serving a "Project not found" body. Both canaries had in fact been deleted
+// while the preflight passed — so the session anchors were being read as UI
+// drift when the real cause was that the page under them was gone. A dead
+// canary is an ENVIRONMENT failure, which is precisely what this file exists
+// to separate from claude.ai drift.
+//
+// Checked through the live CDP Chrome rather than a bare fetch: claude.ai/design
+// is a signed-in SPA, so an unauthenticated request cannot distinguish
+// "deleted" from "not logged in".
+if (canaryUrl && !failures.length) {
+  const { createBrowser } = await import('../browser.ts');
+  const NOT_FOUND_RE = /project not found|may have been deleted|you might not have access/i;
+  let ok = false;
+  let detail = canaryUrl;
+  try {
+    const browser = createBrowser({ session: 'designer-default', timeoutMs: 20_000 });
+    await browser.open(canaryUrl);
+    // The composer is the session-phase readiness marker every session anchor
+    // needs; waiting on it also gives the SPA time to render the not-found body.
+    await browser.waitFor('[data-testid="chat-composer-input"]').catch(() => undefined);
+    const probe = await browser
+      .evalValue<{ text: string; composer: boolean }>(
+        `(() => ({ text: (document.body ? document.body.innerText : '').slice(0, 400),
+                   composer: !!document.querySelector('[data-testid="chat-composer-input"]') }))()`
+      )
+      .catch(() => null);
+    if (!probe) {
+      detail = `${canaryUrl} — could not read the page`;
+    } else if (NOT_FOUND_RE.test(probe.text)) {
+      detail = `${canaryUrl} — claude.ai says the project is gone`;
+    } else if (!probe.composer) {
+      detail = `${canaryUrl} — loaded, but no chat composer rendered`;
+    } else {
+      ok = true;
+      detail = `${canaryUrl} — loads, composer present`;
+    }
+  } catch (e) {
+    detail = `${canaryUrl} — ${(e as Error).message}`;
+  }
+  report(ok, 'canary project exists', detail);
+  if (!ok) {
+    failures.push(
+      `The canary project did not load a usable session (${detail}). Every session.* / share.* anchor would fail ` +
+        `for that reason alone — do NOT read those failures as UI drift. Create a fresh single-file project and ` +
+        `update DESIGNER_PROBE_PROJECT_URL in BOTH .github/workflows/daily-health.yml and auto-heal.yml.`
+    );
+  }
+}
+
+// 5. Both workflows name the SAME canary.
+//
+// auto-heal re-probes to decide whether its patch worked, and that verification
+// is only meaningful against the page the original probe measured. The two
+// values were kept in sync "by convention" and had silently diverged — pointing
+// at two different (both deleted) projects. Convention is not a check.
+{
+  const read = (wf: string): string | null => {
+    const p = path.join(repoRoot, '.github', 'workflows', wf);
+    if (!fs.existsSync(p)) return null;
+    const m = fs.readFileSync(p, 'utf8').match(/DESIGNER_PROBE_PROJECT_URL:\s*(\S+)/);
+    return m?.[1] ?? null;
+  };
+  const daily = read('daily-health.yml');
+  const heal = read('auto-heal.yml');
+  const ok = daily != null && heal != null && daily === heal;
+  report(ok, 'canary URL agrees across workflows', ok ? `both = ${daily}` : `daily-health=${daily ?? 'missing'} auto-heal=${heal ?? 'missing'}`);
+  if (!ok) {
+    failures.push(
+      `daily-health.yml and auto-heal.yml name different canary projects (${daily ?? 'missing'} vs ${heal ?? 'missing'}). ` +
+        `auto-heal verifies its patch by re-probing, so a mismatch verifies against the wrong page.`
     );
   }
 }

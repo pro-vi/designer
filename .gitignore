@@ -4,6 +4,9 @@ artifacts/*
 # daily-health probe evidence is small + worth keeping in git so a human
 # reviewer of a selectors-drift PR can see what the probe saw.
 !artifacts/health/
+# … but not the streak counter — ephemeral run state, persisted via the
+# actions/cache step in daily-health.yml, not evidence of anything.
+artifacts/health/streak.json
 logs/*.log
 .DS_Store
 

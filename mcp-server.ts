@@ -29,7 +29,7 @@ server.registerTool(
   'designer_session',
   {
     description:
-      "Enter, inspect, or transition a claude.ai/design session. Default action='status' is a pure read — safe to call anytime to orient without side effects. Returns stored state + currentUrl + inSession + availableFiles so you can avoid a follow-up list call. Use this as the first tool in any agent loop.\n\nActions:\n- status (default): read-only, no mutations\n- ensure_ready: navigate to /design if not already there\n- resume: navigate into the stored designUrl for this key (fails if nothing stored)\n- create: new project (requires name)\n- adopt: bind the already-open /design/p/<uuid> tab to this key (name optional). Use this when create can't drive the redesigned creation-cards home — open the project by hand, then adopt it.\n- clear: dismiss interstitial overlays (the 495k-token 'Continue here' banner, a transient 'Something went wrong' page, or a Cloudflare bot-check). Verbs run this automatically via ensure_ready; call it explicitly to recover a stuck session.",
+      "Enter, inspect, or transition a claude.ai/design session. Default action='status' is a pure read — safe to call anytime to orient without side effects. Returns stored state + currentUrl + inSession + availableFiles so you can avoid a follow-up list call. `filesScope` says what availableFiles is worth: 'visible-only' (scraped without navigating — an empty array can mean the file panel is closed, not that the project is empty), 'other-project' (the browser tab is on a different project, so the list is deliberately empty), 'raced' (the browser tab moved while the page was being read, so BOTH availableFiles and awaitingClarification were discarded — awaitingClarification is null in that case; retry), or 'not-in-session'. Use designer_list or designer_handoff when you need an authoritative list. Use this as the first tool in any agent loop.\n\nActions:\n- status (default): read-only, no mutations\n- ensure_ready: navigate to /design if not already there\n- resume: navigate into the stored designUrl for this key (fails if nothing stored)\n- create: new project (requires name)\n- adopt: bind the already-open /design/p/<uuid> tab to this key (name optional). Use this when create can't drive the redesigned creation-cards home — open the project by hand, then adopt it.\n- clear: dismiss interstitial overlays (the 495k-token 'Continue here' banner, a transient 'Something went wrong' page, or a Cloudflare bot-check). Verbs run this automatically via ensure_ready; call it explicitly to recover a stuck session.",
     inputSchema: {
       key: z.string().optional().describe('Stable key for this loop (e.g., feature name). Defaults to "default".'),
       action: z.enum(['status', 'ensure_ready', 'resume', 'create', 'adopt', 'clear']).optional().describe('Default: status'),
@@ -116,6 +116,35 @@ server.registerTool(
 );
 
 server.registerTool(
+  'designer_files_delete',
+  {
+    description:
+      "Delete ONE file from the open project — for clearing out superseded variants (v1/v2/scratch pages) once a direction is chosen. DEFAULTS TO A DRY RUN: call with confirm=false (or omit it) to see exactly what would be deleted, then repeat with confirm=true to actually delete. There is NO undo in claude.ai/design, so by default the file's HTML is snapshotted into the session dir first and the delete is ABORTED if that snapshot fails (pass snapshot=false to override). `filename` must be the full name including extension (e.g. 'landing-v2.html'). NOTE on the dry run: it matches on the switcher's display LABEL, which hides extensions, so it reports `filenameVerified: false` — `index.html` and `index.css` both match the label `index`. Only the real delete checks the full name (against the confirm dialog) and refuses with 'confirm-mismatch' if it differs; the preview deliberately does not open that dialog. the tool refuses with error='ambiguous' when two files share a display label, and with error='confirm-mismatch' when the product's confirm dialog names a different file than you asked for — in both cases nothing is deleted. On success, `remainingLabels` are the switcher's DISPLAY labels (extensions stripped), not filenames. Error codes split on whether a confirm click was ever dispatched. GUARANTEED NOTHING DELETED (no click was issued): 'not-found', 'ambiguous', 'confirm-mismatch', 'menu-unavailable', 'snapshot-failed', 'wrong-project', 'project-changed', 'busy', 'switcher-unavailable', 'dialog-stuck'. Once a click IS dispatched there is exactly one failure code, 'outcome-unknown': the file MAY be deleted and this tool will not guess — the file list lags the delete, so it cannot prove the file survived. Re-run with confirm=false to see the real list before retrying, because a retry may hit an already-deleted file. A successful delete may also carry `warnings` — non-fatal cleanup problems (e.g. the stored session could not be updated) that need a human's attention even though the file is gone. Deleting a file is destructive and not idempotent: re-running after success returns error='not-found'.",
+    inputSchema: {
+      key: z.string().optional(),
+      filename: z.string(),
+      confirm: z.boolean().optional(),
+      snapshot: z.boolean().optional()
+    },
+    annotations: {
+      title: 'Delete a design file',
+      destructiveHint: true,
+      idempotentHint: false,
+      readOnlyHint: false,
+      openWorldHint: true
+    }
+  },
+  async ({ key, filename, confirm, snapshot }) => {
+    const c = getController(key);
+    // One code path for preview and action — a dry run that resolved against a
+    // different surface than the delete could report "nothing to delete" and
+    // then delete something.
+    if (confirm !== true) return textResult(await c.deleteFile(filename, { dryRun: true }));
+    return textResult(await c.deleteFile(filename, { snapshot: snapshot !== false }));
+  }
+);
+
+server.registerTool(
   'designer_snapshot',
   {
     description:
@@ -129,11 +158,11 @@ server.registerTool(
   },
   async ({ key, filename, includeHtml = false, screenshot = true }) => {
     const c = getController(key);
-    if (filename) {
-      const swap = await c.openFile(filename);
-      if (!swap.ok) return textResult({ ok: false, error: swap.error, file: filename });
-    }
-    const snap = await c.snapshotDesign({});
+    // One locked operation: switching files and reading the result must not
+    // straddle two lock windows, or a concurrent verb can move the tab between
+    // them and the snapshot describes a different page than `file` claims.
+    const snap = await c.snapshotFile(filename);
+    if (snap.swap && !snap.swap.ok) return textResult({ ok: false, error: snap.swap.error, file: filename });
     let htmlPath: string | null = null;
     if (snap.html) {
       htmlPath = path.join(sessionDir(c.key), `snap-${Date.now()}.html`);
