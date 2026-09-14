@@ -466,6 +466,13 @@ export const UI_ANCHORS: AnchorDef[] = [
   // so `prototype` still names the card whose visible label is now "Mobile app
   // design". The dead testids move to homeLegacy, which makes a rollback read
   // `degraded` instead of `fail`. See `_cards` in selectors.json for the capture.
+  //
+  // 2026-09-14: the /grid-thumbs/ imgs are gone too (first probe back from the
+  // 44-day runner outage, PR #158) — every tile renders an inline SVG with no
+  // per-kind class, testid, or background. The aria-label is the last per-card
+  // identifier standing, so the canonical selectors key on it despite the label
+  // churn documented above; the slug selectors move to homeLegacy as the
+  // rollback branch. The prototype card's label is the known-fragile one.
   {
     id: 'home.creator',
     category: 'home',
@@ -476,7 +483,7 @@ export const UI_ANCHORS: AnchorDef[] = [
   {
     id: 'home.wireframeButton',
     category: 'home',
-    description: 'Wireframe creation-type card (thumbnail slug /grid-thumbs/wireframe.)',
+    description: 'Wireframe creation-type card (aria-label; tiles are inline SVGs since 2026-09)',
     requires: 'home',
     check: async (b) =>
       checkWithLegacy(b, SEL.home.wireframeButton, SEL.homeLegacy?.wireframeButton, 'home.wireframeButton')
@@ -484,7 +491,7 @@ export const UI_ANCHORS: AnchorDef[] = [
   {
     id: 'home.highFiButton',
     category: 'home',
-    description: 'Prototype creation-type card (thumbnail slug /grid-thumbs/prototype.)',
+    description: 'Prototype creation-type card (aria-label "Mobile app design"; 3 prior renames)',
     requires: 'home',
     check: async (b) =>
       checkWithLegacy(b, SEL.home.highFiButton, SEL.homeLegacy?.highFiButton, 'home.highFiButton')

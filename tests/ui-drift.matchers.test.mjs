@@ -145,43 +145,50 @@ test('home.creator probes the composer testid, not a bare <textarea> tag', async
   assert.equal((await anchor('home.creator').check(onTagOnly, 'https://claude.ai/design')).ok, false);
 });
 
-// 2026-08-01: the carousel testids were removed outright, so the cards are keyed
-// on the thumbnail asset slug (/grid-thumbs/<kind>.) — the only per-card name the
-// product has never renamed. These lock in that contract the same way.
-test('home creation-type cards probe the thumbnail slug, so a label rename cannot break them', async () => {
+// 2026-08-01: the carousel testids were removed outright, so the cards were keyed
+// on the thumbnail asset slug (/grid-thumbs/<kind>.).
+//
+// 2026-09-14: the imgs were removed too — every tile is an inline SVG with no
+// per-kind class, testid, or background, so the aria-label is the last per-card
+// identifier and the canonical selectors are label-keyed (case-insensitive).
+// The slug selectors are retained in homeLegacy as the rollback branch, so a
+// rollback to the 2026-08 home reads `degraded`, not `fail`. The prototype
+// card's label ("Mobile app design", third name) is the known-fragile one —
+// the NEXT rename lands here as a hard fail and a re-capture.
+test('home creation-type cards probe the aria-label — the last per-card identifier', async () => {
+  for (const [id, label] of [
+    ['home.highFiButton', 'Mobile app design'],
+    ['home.wireframeButton', 'Wireframe']
+  ]) {
+    const onLabel = stubBrowser((expr) => expr.includes(label));
+    const r = await anchor(id).check(onLabel, 'https://claude.ai/design');
+    assert.equal(r.ok, true, `${id} matches aria-label "${label}"`);
+    assert.notEqual(r.status, 'degraded', `${id} on the canonical label is plain ok, not degraded`);
+
+    // A page serving only the 2026-08 slug thumbnails (no labels) must not read
+    // ok — the canonical contract has moved onto the label.
+    const onSlugOnly = stubBrowser((expr) => /grid-thumbs\/(prototype|wireframe)\./.test(expr));
+    const r2 = await anchor(id).check(onSlugOnly, 'https://claude.ai/design');
+    assert.equal(r2.status, 'degraded', `${id} on the legacy slug alone reads degraded`);
+  }
+});
+
+test('a /grid-thumbs slug rollback reports degraded, not ok and not fail', async () => {
+  // The dead slug selectors are retained as legacy branches purely so this case
+  // is distinguishable: the tool would still work, but the canonical contract
+  // is broken and must not read green.
   for (const [id, slug] of [
     ['home.highFiButton', 'grid-thumbs/prototype\\.'],
     ['home.wireframeButton', 'grid-thumbs/wireframe\\.']
   ]) {
-    const onSlug = stubBrowser((expr) => new RegExp(slug).test(expr));
-    const r = await anchor(id).check(onSlug, 'https://claude.ai/design');
-    assert.equal(r.ok, true, `${id} matches ${slug}`);
-    assert.notEqual(r.status, 'degraded', `${id} on the canonical slug is plain ok, not degraded`);
-
-    // Labels churn independently of the slug — "Mobile app design" is the third
-    // label on the card the slug still calls `prototype`. A probe that only sees
-    // visible text must fail, or the anchor is label-keyed again.
-    const onLabelOnly = stubBrowser((expr) => /Prototype|Wireframe|Mobile app design/.test(expr));
-    assert.equal((await anchor(id).check(onLabelOnly, 'https://claude.ai/design')).ok, false, `${id} is not label-keyed`);
-  }
-});
-
-test('a carousel-testid rollback reports degraded, not ok and not fail', async () => {
-  // The dead testids are retained as legacy branches purely so this case is
-  // distinguishable: the tool would still work, but the canonical contract is
-  // broken and must not read green.
-  for (const [id, testid] of [
-    ['home.highFiButton', 'carousel-type-prototype'],
-    ['home.wireframeButton', 'carousel-type-wireframe']
-  ]) {
-    const onLegacyOnly = stubBrowser((expr) => new RegExp(testid).test(expr));
+    const onLegacyOnly = stubBrowser((expr) => new RegExp(slug).test(expr));
     const r = await anchor(id).check(onLegacyOnly, 'https://claude.ai/design');
-    assert.equal(r.ok, true, `${id} still resolves via the legacy testid`);
+    assert.equal(r.ok, true, `${id} still resolves via the legacy slug selector`);
     assert.equal(r.status, 'degraded', `${id} on the legacy branch alone must be degraded`);
   }
 });
 
-test('creation-type cards fail when neither the slug nor the legacy testid is present', async () => {
+test('creation-type cards fail when neither the aria-label nor the legacy slug is present', async () => {
   for (const id of ['home.highFiButton', 'home.wireframeButton']) {
     const onNothing = stubBrowser(() => false);
     assert.equal((await anchor(id).check(onNothing, 'https://claude.ai/design')).ok, false, `${id} fails when gone`);

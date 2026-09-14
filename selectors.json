@@ -5,7 +5,7 @@
     "home": "https://claude.ai/design",
     "session": "https://claude.ai/design/p/{uuid}"
   },
-  "_cards": "Creation-type cards, re-captured live 2026-08-01 (Chrome 150) after home.wireframeButton + home.highFiButton failed five consecutive daily probes (PRs #138-#143). The `carousel-type-<kind>` testids are GONE — the home renders zero [data-testid*=carousel] nodes. The cards are now `<button class=\"om-grid-tile\" aria-label=\"<label>\">` inside `<div class=\"om-grid\">`, and the ONLY per-card identifier that is not a churning human label is the thumbnail's asset path: `<img class=\"om-grid-thumb\" src=\"/design/grid-thumbs/<kind>.<n>.jpg\">`. That <kind> slug is the same vocabulary the dead testids used, and it is stable across exactly the renames that broke the label anchors — the card labelled 'Mobile app design' today serves `prototype.0.jpg`, and it was 'Product prototype' then 'Prototype' in earlier captures. So the canonical selector keys on the slug via :has() (Chrome 105+; the probe's Chrome is 150) and the dead testids are retained as legacy branches so a rollback reports `degraded`, not `fail`. Never key these on aria-label or visible text: 13 tiles ship today (software, prototype, slides, document, resume, animation, object3d, research, email, pairing, diagram, flier, wireframe) and their labels have churned three times against zero slug changes. The cards remain OFF the create path — createSession folds fidelity into the seed prompt — so these two anchors are drift sentinels only, not a broken verb.",
+  "_cards": "2026-09-14 re-captured live (Chrome 148, signed-in mini profile) after home.wireframeButton + home.highFiButton failed the first probe back from the 44-day runner outage (PR #158). The /grid-thumbs/ thumbnail <img>s are GONE \\u2014 every tile now renders an inline <svg> (om-grid-well > om-grid-paper-card > om-grid-paper-fill > svg), with no per-kind class, no data-testid, no background-image, and identical structure across all 14 tiles. The aria-label is the ONLY remaining per-card identifier, so the canonical selectors key on it (case-insensitive): 'Wireframe' (label stable across every capture since 2026-04) and 'Mobile app design' (the prototype card \\u2014 renamed 3x: 'Product prototype' \\u2192 'Prototype' \\u2192 'Mobile app design', so THIS anchor is the one most likely to drift next; a rename now reads fail, not degraded, unless the label lands in homeLegacy). The 2026-08 slug selectors move to homeLegacy as the rollback branch. Previous capture note: Creation-type cards, re-captured live 2026-08-01 (Chrome 150) after home.wireframeButton + home.highFiButton failed five consecutive daily probes (PRs #138-#143). The `carousel-type-<kind>` testids are GONE — the home renders zero [data-testid*=carousel] nodes. The cards are now `<button class=\"om-grid-tile\" aria-label=\"<label>\">` inside `<div class=\"om-grid\">`, and the ONLY per-card identifier that is not a churning human label is the thumbnail's asset path: `<img class=\"om-grid-thumb\" src=\"/design/grid-thumbs/<kind>.<n>.jpg\">`. That <kind> slug is the same vocabulary the dead testids used, and it is stable across exactly the renames that broke the label anchors — the card labelled 'Mobile app design' today serves `prototype.0.jpg`, and it was 'Product prototype' then 'Prototype' in earlier captures. So the canonical selector keys on the slug via :has() (Chrome 105+; the probe's Chrome is 150) and the dead testids are retained as legacy branches so a rollback reports `degraded`, not `fail`. Never key these on aria-label or visible text: 13 tiles ship today (software, prototype, slides, document, resume, animation, object3d, research, email, pairing, diagram, flier, wireframe) and their labels have churned three times against zero slug changes. The cards remain OFF the create path — createSession folds fidelity into the seed prompt — so these two anchors are drift sentinels only, not a broken verb.",
   "_branches": "A comma-separated CSS list is NOT an ordered fallback. `document.querySelector('A, B')` returns the first element in DOCUMENT ORDER matching either branch — not A's match preferred over B's. Packing a legacy branch into a canonical selector therefore (1) can silently return the WRONG element at runtime, and (2) keeps a presence-only health anchor green after the canonical selector has rotted, which defeats the daily probe. So canonical selectors below are single-branch, and superseded forms live in `homeLegacy` / `loginLegacy`. Health checks canonical first and reports `degraded` (not `ok`) when only the legacy branch matches; runtime resolvers try them in explicit order.",
   "login": {
     "signedInIndicator": "[data-testid=\"chat-composer-input\"], [data-testid=\"home-composer-input\"]"
@@ -16,8 +16,8 @@
   "home": {
     "creator": "[data-testid=\"home-composer-input\"]",
     "nameInput": "[data-testid=\"home-composer-input\"]",
-    "wireframeButton": "button.om-grid-tile:has(img[src*=\"/grid-thumbs/wireframe.\"])",
-    "highFiButton": "button.om-grid-tile:has(img[src*=\"/grid-thumbs/prototype.\"])",
+    "wireframeButton": "button.om-grid-tile[aria-label=\"Wireframe\" i]",
+    "highFiButton": "button.om-grid-tile[aria-label=\"Mobile app design\" i]",
     "createButton": "[data-testid=\"home-composer-send\"]",
     "projectsList": "[data-testid=\"projects-list\"]",
     "projectCard": "[data-testid=\"project-row\"]",
@@ -27,8 +27,8 @@
     "createButton": "button[title=\"Create\"]",
     "projectsList": "a[href*=\"/design/p/\"]",
     "projectCard": "a[href*=\"/design/p/\"]",
-    "wireframeButton": "[data-testid=\"carousel-type-wireframe\"]",
-    "highFiButton": "[data-testid=\"carousel-type-prototype\"]"
+    "wireframeButton": "button.om-grid-tile:has(img[src*=\"/grid-thumbs/wireframe.\"])",
+    "highFiButton": "button.om-grid-tile:has(img[src*=\"/grid-thumbs/prototype.\"])"
   },
   "composer": {
     "promptTextarea": "[data-testid=\"chat-composer-input\"]",
