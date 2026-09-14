@@ -135,7 +135,7 @@ jobs:
           # daily-health.yml's value, and `npm run preflight` now ASSERTS the two
           # agree: they had drifted to two different (both deleted) projects
           # while the comment claimed they were kept in sync by convention.
-          DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/9a2066ca-e9e4-4972-a294-560092e6a216
+          DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/d75a2de3-5bc9-44d5-9e75-dd9b7d2a8884
           # Pipe the triage output through env (not `${{ }}` substitution into
           # the shell command body) so an anchor-id with unexpected characters
           # cannot inject. auto-heal.ts also re-validates the id via

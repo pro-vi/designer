@@ -55,9 +55,10 @@ jobs:
     # To swap: create a fresh one-file project, open its file, replace the URL
     # HERE AND in auto-heal.yml (preflight asserts the two match), then
     # `gh workflow run daily-health.yml` to verify green before the next cron.
-    # Current canary created 2026-08-02, single page (index.html).
+    # Current canary created 2026-09-14 (third canary; the 2026-08-02 one was
+    # deleted on claude.ai and served "Project not found"), single page (index.html).
     env:
-      DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/9a2066ca-e9e4-4972-a294-560092e6a216
+      DESIGNER_PROBE_PROJECT_URL: https://claude.ai/design/p/d75a2de3-5bc9-44d5-9e75-dd9b7d2a8884
 
     steps:
       - name: Checkout
