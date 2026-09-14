@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.27](https://github.com/pro-vi/designer/compare/v0.3.26...v0.3.27) (2026-09-14)
+
+
+### Bug Fixes
+
+* **drift:** home template tiles are inline SVGs now — key on aria-label ([3bfa062](https://github.com/pro-vi/designer/commit/3bfa062800ac5d9dcfd931e7cdd77d8f5e743202))
+
 ## [0.3.26](https://github.com/pro-vi/designer/compare/v0.3.25...v0.3.26) (2026-08-18)
 
 
