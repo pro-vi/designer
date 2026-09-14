@@ -19,6 +19,16 @@ updates:
     groups:
       patch-and-minor:
         update-types: [patch, minor]
+    # TypeScript 7 (the native compiler) removed the classic JS compiler API —
+    # the root export now resolves to lib/version.cjs and the only remaining
+    # API lives under `typescript/unstable/*`, unstable by contract.
+    # scripts/anchor-patcher.ts (auto-heal's AST mutator) is the repo's sole
+    # consumer of that API; everything else typechecks clean under tsgo.
+    # Stay on 6.0.3 (terminal JS-API release) until a stable v7 API module
+    # ships. See PR #116.
+    ignore:
+      - dependency-name: typescript
+        versions: ['>=7']
     commit-message:
       # release-please ignores `chore(deps):` for version bumps but they show
       # up in the `Other Changes` block of the changelog — exactly right.
