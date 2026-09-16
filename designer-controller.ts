@@ -1316,7 +1316,7 @@ export class DesignerController {
     await this._ensureInSession();
     if (file) await this.openFile(file);
 
-    const preFiles = await this.listFiles().catch((): string[] => []);
+    const preFilesDetail = await this.listFilesDetailed().catch(() => ({ files: [] as string[], folders: [] as string[], authoritative: false }));
     const preChatCount = (await this.getChatTurns()).length;
 
     const waitBudgetMs = timeoutMs ?? 20 * 60_000;
@@ -1351,7 +1351,9 @@ export class DesignerController {
       observer = null;
     }
 
-    const postFiles = await this.listFiles().catch((): string[] => []);
+    const postFilesDetail = await this
+      .listFilesDetailed()
+      .catch(() => ({ files: [] as string[], folders: [] as string[], authoritative: false }));
     const postTurns = await this.getChatTurns();
     const lastTurn = postTurns[postTurns.length - 1];
     const chatReply =
@@ -1359,8 +1361,23 @@ export class DesignerController {
         ? lastTurn.text.replace(/^Claude(?:\n+)?/, '').trim()
         : null;
 
-    const newFiles = postFiles.filter((f) => !preFiles.includes(f));
-    const removedFiles = preFiles.filter((f) => !postFiles.includes(f));
+    // The file diff is only truth when both listings saw the Design Files
+    // panel actually render. 2026-09-16: claude.ai stopped serving the flat
+    // panel on the session surface for one profile (session.fileListScrape
+    // drift); listFilesDetailed then returns [] with authoritative:false, and
+    // diffing that against a panel-era preFiles would record every file as
+    // removed. When either side is untrusted, withhold the diff both ways —
+    // unknown reports as none, never as wholesale removal.
+    const preFiles = preFilesDetail.files;
+    const postFiles = postFilesDetail.files;
+    const fileDiffTrusted = preFilesDetail.authoritative && postFilesDetail.authoritative;
+    if (!fileDiffTrusted) {
+      console.warn(
+        `[designer] file listing not authoritative (Design Files panel absent or foldered) — newFiles/removedFiles withheld for this turn`
+      );
+    }
+    const newFiles = fileDiffTrusted ? postFiles.filter((f) => !preFiles.includes(f)) : [];
+    const removedFiles = fileDiffTrusted ? preFiles.filter((f) => !postFiles.includes(f)) : [];
 
     const snap = await this._snapshotDesignBody({ html: done.html, iframeSrc: done.iframeSrc });
     const htmlHash = snap.html ? hashHex(snap.html) : null;
@@ -1409,6 +1426,23 @@ export class DesignerController {
     await this.browser
       .waitFor(presenceSelector(this.selectors.home.projectsList, this.selectors.homeLegacy?.projectsList))
       .catch(() => null);
+    // The container paints with the app shell; the ROWS hydrate client-side up
+    // to ~2s later (reproduced 2026-09-16: a 500ms sampler saw composer + empty
+    // grid, full rows only ~2s in). Scraping at container-ready therefore races
+    // an empty grid and listProjects returns [] while projects exist — the exact
+    // silent-empty-list failure home.projectLink was added to guard. Poll for
+    // any row/link before scraping; a home with genuinely zero projects pays
+    // this bound once and falls through.
+    const LIST_ROWS_SETTLE_MS = 5_000;
+    const LIST_ROWS_POLL_MS = 250;
+    const rowSelector = presenceSelector(this.selectors.home.projectCard, this.selectors.homeLegacy?.projectCard);
+    for (let waited = 0; waited < LIST_ROWS_SETTLE_MS; waited += LIST_ROWS_POLL_MS) {
+      const hasRow = await this.browser
+        .evalValue<boolean>(`!!document.querySelector(${JSON.stringify(rowSelector)})`)
+        .catch(() => false);
+      if (hasRow) break;
+      await new Promise((r) => setTimeout(r, LIST_ROWS_POLL_MS));
+    }
     const json = await this.browser.evalValue<Array<{ name: string | null; sub: string | null; url: string | null }>>(
       `(() => {
         // 2026-07 redesign: projects moved from a flat list of text-bearing links
@@ -1601,10 +1635,17 @@ export class DesignerController {
     // Empty rail under a visible "Design Files" label means we scraped the
     // wrong tab or the panel didn't open — don't tell callers it's truth.
     const emptyButLabelVisible = files.length === 0 && result.designFilesLabelVisible === true;
+    // The label being ABSENT entirely must be just as un-truth-worthy: since
+    // 2026-09-16 claude.ai serves some sessions without the flat panel at all
+    // (files live only behind the unified switcher), and an empty scrape of a
+    // panel-less page previously read authoritative:true — `designer files`
+    // confidently reported zero files and iterate()'s pre/post diff saw
+    // wholesale removal. Truth requires the panel to have rendered.
+    const panelRendered = result.designFilesLabelVisible === true;
     return {
       files,
       folders,
-      authoritative: !emptyButLabelVisible && folders.length === 0
+      authoritative: panelRendered && !emptyButLabelVisible && folders.length === 0
     };
   }
 
