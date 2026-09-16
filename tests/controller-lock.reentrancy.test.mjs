@@ -63,6 +63,7 @@ const MUTATION_OK = {
   _submitPrompt: 'private; only reached from iterate/ask bodies, which hold the lock',
   sendPrompt: 'thin private-ish wrapper over _submitPrompt, same callers',
   _clickButtonByText: 'private helper; only reached from locked bodies',
+  _readSwitcherFileRows: 'private helper; only reached from _listFilesDetailedBody, which holds the listFilesDetailed lock',
   _waitForInterstitialClear: 'private; reached from clearInterstitials body',
   // NOTE: no entry here may mean "this method takes the lock" — that must be
   // ASSERTED, not exempted. Removing the lock from snapshotFile/iterate/ask/

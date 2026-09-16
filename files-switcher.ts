@@ -73,6 +73,13 @@ export const MENU_NEW_BLANK_PAGE = 'New blank page';
 export interface SwitcherRow {
   label: string;
   editedText: string | null;
+  /**
+   * Full filename WITH extension, from the row's `data-name` attribute
+   * (live 2026-09-16 on plain-HTML sessions: data-name="index.html" while the
+   * visible label reads "index"). null on a build that exposes no data-name —
+   * callers must not mix label-shaped and name-shaped strings into one list.
+   */
+  name: string | null;
 }
 
 /**
@@ -136,9 +143,12 @@ export function switcherStateExpr(f: Selectors['files']): string {
 }
 
 /**
- * Read the rows as `{label, editedText}`. Row text is "<label>\n<Edited X ago>"
- * — the label carries NO extension, which is why the confirm dialog (the only
- * surface naming the full filename) is the deletion authority, not this list.
+ * Read the rows as `{label, editedText, name}`. Row text is "<label>\n<Edited X
+ * ago>" — the label carries NO extension. Since 2026-09-16 the row also exposes
+ * `data-name` (the full filename, e.g. "index.html") on the plain-HTML surface,
+ * which is what the listFiles switcher fallback keys on; the confirm dialog
+ * remains the deletion authority regardless — its echo is the product
+ * confirming the exact target, not just a source of the name.
  */
 export function readRowsExpr(f: Selectors['files']): string {
   return `(() => {
@@ -155,10 +165,11 @@ export function readRowsExpr(f: Selectors['files']): string {
     const rows = nodes.map((r) => {
       const raw = (r.innerText || '').trim();
       const lines = raw.split('\\n').map((s) => s.trim()).filter(Boolean);
-      if (lines.length > 1) return { label: lines[0], editedText: lines[1] };
       // Single-line fallback: strip a trailing "Edited … ago" off the blob.
-      const m = raw.match(/^(.*?)\\s*(Edited\\s.+\\sago)$/i);
-      return m ? { label: m[1].trim(), editedText: m[2] } : { label: raw, editedText: null };
+      const m = lines.length > 1 ? null : raw.match(/^(.*?)\\s*(Edited\\s.+\\sago)$/i);
+      const label = lines.length > 1 ? lines[0] : (m ? m[1].trim() : raw);
+      const editedText = lines.length > 1 ? lines[1] : (m ? m[2] : null);
+      return { label, editedText, name: r.getAttribute('data-name') };
     });
     return { rows, reused };
   })()`;

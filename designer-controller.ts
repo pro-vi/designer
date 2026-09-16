@@ -1569,6 +1569,49 @@ export class DesignerController {
   // auth against (/files endpoint is 401, no aria-expanded on rows, clicks
   // don't expand programmatically). When folders are present, the caller
   // should fall back to designer_handoff for an authoritative list.
+  /**
+   * Read the file rows off the unified Pages switcher: open the popover
+   * (trusted click first, synthetic fallback — the same escalation the delete
+   * flow and the session.filesSwitcher anchor use), read rows via readRowsExpr
+   * (mount-stamped, so a re-read of the same mount is detectable), close it
+   * again. Returns null when the popover could not be opened at all.
+   *
+   * This is the listing path for the post-2026-09-16 session surface, where the
+   * flat "Design Files" panel no longer renders and the switcher is the only
+   * file list. Read-only by construction: no row is hovered, stamped-for-click,
+   * or menued — those belong to the destructive flows.
+   */
+  private async _readSwitcherFileRows(): Promise<{ rows: SwitcherRow[]; reused: boolean } | null> {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const F = this.selectors.files;
+    const state = async (): Promise<string> =>
+      (await this.browser.evalValue<string>(switcherStateExpr(F)).catch(() => 'error')) || 'error';
+    let st = await state();
+    if (st === 'closed') {
+      // Trusted click first — it leaves the cleanest overlay state (a synthetic
+      // open can strand the row menu's scrim; see switcherStateExpr).
+      await this.browser.click(F.switcherTrigger).catch(() => null);
+      await sleep(700);
+      st = await state();
+      if (st === 'closed') {
+        await this.browser.evalValue(clickTriggerExpr(F)).catch(() => null);
+        await sleep(800);
+        st = await state();
+      }
+    }
+    if (st !== 'open' && st !== 'open-empty') return null;
+    const read = await this.browser
+      .evalValue<{ rows: SwitcherRow[]; reused: boolean }>(readRowsExpr(F))
+      .catch(() => null);
+    // Leave the page as found.
+    if (shouldCloseSwitcher(await state())) {
+      await this.browser.click(F.switcherTrigger).catch(() => null);
+      await sleep(400);
+      if (shouldCloseSwitcher(await state())) await this.browser.evalValue(clickTriggerExpr(F)).catch(() => null);
+    }
+    return read;
+  }
+
   private async _listFilesDetailedBody(): Promise<{ files: string[]; folders: string[]; authoritative: boolean }> {
     // Navigate to THIS key's project if we're not already there. Being in
     // any /p/ session isn't enough — a different key's files would be
@@ -1642,6 +1685,22 @@ export class DesignerController {
     // confidently reported zero files and iterate()'s pre/post diff saw
     // wholesale removal. Truth requires the panel to have rendered.
     const panelRendered = result.designFilesLabelVisible === true;
+    if (!panelRendered) {
+      // Post-2026-09-16 surface: no flat panel renders — the unified switcher
+      // is the only file list. Its rows expose the full filename via data-name
+      // (verified live on 1- and 2-file plain-HTML projects); the visible label
+      // carries no extension, so rows WITHOUT data-name must not degrade into a
+      // label-shaped list — iterate()'s before/after diff would read the shape
+      // change as a remove+add of every file. All-or-nothing on real names.
+      // Folders: the switcher has no folder rows to find, so folders report []
+      // with that blind spot documented (issue #160) rather than guessed at.
+      const read = await this._readSwitcherFileRows();
+      const rows = read?.rows ?? [];
+      if (rows.length > 0 && rows.every((r) => typeof r.name === 'string' && r.name !== '')) {
+        return { files: rows.map((r) => r.name as string), folders: [], authoritative: true };
+      }
+      return { files: [], folders: [], authoritative: false };
+    }
     return {
       files,
       folders,

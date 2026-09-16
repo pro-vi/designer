@@ -23,9 +23,16 @@ function makeEl(text = '', attrs = {}) {
 }
 
 /** A stub page: one popover container holding `labels` rows. */
-function makeDom({ labels = [], triggerAttrs = null, buttons = [] } = {}) {
+function makeDom({ labels = [], names = null, triggerAttrs = null, buttons = [] } = {}) {
   const container = makeEl();
-  const rows = labels.map((l) => { const r = makeEl(`${l}\nEdited now`); r.parentElement = container; return r; });
+  const rows = labels.map((l, i) => {
+    // `names` mirrors the live 2026-09-16 surface: rows carry the full filename
+    // (index.html) in data-name while the visible label stays extension-less.
+    const attrs = names ? (names[i] === null || names[i] === undefined ? {} : { 'data-name': names[i] }) : {};
+    const r = makeEl(`${l}\nEdited now`, attrs);
+    r.parentElement = container;
+    return r;
+  });
   container.children = rows;
   const trigger = triggerAttrs === null ? null : makeEl('', triggerAttrs);
   const buttonEls = buttons.map((b) => makeEl(b));
@@ -116,4 +123,26 @@ test('switcherStateExpr says unknown — never closed — when nothing can tell'
 test('switcherStateExpr reports open when rows are present', () => {
   const d = makeDom({ labels: ['index'], triggerAttrs: {} });
   assert.equal(evalExpr(switcherStateExpr(SEL.files), d.document), 'open');
+});
+
+test('readRowsExpr surfaces data-name as the real filename, null when absent', () => {
+  // Since 2026-09-16 the switcher is the only file surface on plain-HTML
+  // sessions; listFiles keys on data-name ("index.html"), never on the
+  // extension-less label. The expression must carry it through — and report
+  // null (not a label) when a build exposes no data-name, so the controller's
+  // all-or-nothing rule can refuse label-shaped lists.
+  const withNames = makeDom({ labels: ['about', 'index'], names: ['about.html', 'index.html'] });
+  const out = evalExpr(readRowsExpr(SEL.files), withNames.document);
+  assert.deepEqual(out.rows.map((r) => r.name), ['about.html', 'index.html']);
+  assert.deepEqual(out.rows.map((r) => r.label), ['about', 'index'], 'label stays extension-less');
+
+  const mixed = makeDom({ labels: ['about', 'index'], names: [null, 'index.html'] });
+  const out2 = evalExpr(readRowsExpr(SEL.files), mixed.document);
+  assert.equal(out2.rows[0].name, null, 'a row without data-name reports null');
+  assert.equal(out2.rows[1].name, 'index.html');
+});
+
+test('readRowsExpr keeps label/editedText parsing intact alongside name', () => {
+  const out = evalExpr(readRowsExpr(SEL.files), makeDom({ labels: ['solo'] }).document);
+  assert.deepEqual(out.rows, [{ label: 'solo', editedText: 'Edited now', name: null }]);
 });

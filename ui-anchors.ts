@@ -8,6 +8,7 @@ import {
   switcherStateExpr,
   clickTriggerExpr,
   readRowsExpr,
+  shouldCloseSwitcher,
   rowSelector,
   stampRowExpr,
   stampMenuDeleteExpr,
@@ -123,6 +124,43 @@ async function hasSelectorSettled(browser: Browser, sel: string): Promise<boolea
     await new Promise((r) => setTimeout(r, SETTLE_GAP_MS));
   }
   return false;
+}
+
+/**
+ * Anchor-side twin of DesignerController._readSwitcherFileRows: open the Pages
+ * switcher popover (trusted click first, synthetic fallback — the escalation
+ * the delete flow, the filesSwitcher anchor and the controller all use), read
+ * rows via readRowsExpr, close it again so the page is left as found. Returns
+ * the rows' data-name filenames; empty when the popover wouldn't open or its
+ * rows expose no data-name — all-or-nothing on real names, same rule as
+ * production (label-shaped strings must never masquerade as filenames).
+ */
+async function readSwitcherFileNames(b: Browser): Promise<string[]> {
+  const state = async (): Promise<string> =>
+    (await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) || 'error';
+  let st = await state();
+  if (st === 'closed') {
+    await b.click(SEL.files.switcherTrigger).catch(() => null);
+    await sleep(700);
+    st = await state();
+    if (st === 'closed') {
+      await b.evalValue(clickTriggerExpr(SEL.files)).catch(() => null);
+      await sleep(800);
+      st = await state();
+    }
+  }
+  if (st !== 'open' && st !== 'open-empty') return [];
+  const read = await b
+    .evalValue<{ rows: SwitcherRow[]; reused: boolean }>(readRowsExpr(SEL.files))
+    .catch(() => null);
+  if (shouldCloseSwitcher(await state())) {
+    await b.click(SEL.files.switcherTrigger).catch(() => null);
+    await sleep(400);
+    if (shouldCloseSwitcher(await state())) await b.evalValue(clickTriggerExpr(SEL.files)).catch(() => null);
+  }
+  const rows = read?.rows ?? [];
+  if (rows.length === 0 || !rows.every((r) => typeof r.name === 'string' && r.name !== '')) return [];
+  return rows.map((r) => r.name as string);
 }
 
 /**
@@ -934,11 +972,38 @@ export const UI_ANCHORS: AnchorDef[] = [
       // a regression.
       await openFilesPanel();
       let files: string[] = [];
+      let panelLabelSeen = false;
       for (let attempt = 0; attempt < 6; attempt++) {
         await sleep(attempt === 0 ? 300 : 700);
         const result = await scrape();
         files = Array.isArray(result.files) ? result.files : [];
         if (files.length > 0) break;
+        // Same signal production reads (designFilesLabelVisible): does the flat
+        // panel surface exist on this page at all? Checked on the LAST attempt
+        // only — the label renders with the shell, so by then its absence is
+        // the surface being gone, not a late paint.
+        if (attempt === 5) {
+          panelLabelSeen = await b
+            .evalValue<boolean>(
+              `Array.from(document.querySelectorAll('span')).some((s) => s.children.length === 0 && (s.textContent || '').trim() === 'Design Files')`
+            )
+            .catch(() => false);
+        }
+      }
+      // Production fallback, mirrored: since 2026-09-16 the flat panel no
+      // longer renders on plain-HTML sessions — listFilesDetailed reads the
+      // unified switcher's rows (data-name carries the full filename) instead.
+      // This anchor must exercise the same composite or it would keep filing
+      // drift for a surface production no longer uses (the probe-green /
+      // production-broken divergence file-panel.ts's header warns about).
+      if (files.length === 0 && !panelLabelSeen) {
+        const switcherFiles = await readSwitcherFileNames(b);
+        if (switcherFiles.length > 0) {
+          return {
+            ok: true,
+            detail: `flat panel absent — filenames read via switcher rows (data-name): ${switcherFiles.slice(0, 3).join(', ')}${switcherFiles.length > 3 ? ' …' : ''}`
+          };
+        }
       }
       if (files.length === 0) {
         // With no file open the file-list panel may legitimately be absent — don't
