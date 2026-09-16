@@ -60,12 +60,18 @@ jobs:
           # ambiguous because a group can contain multiple updates. We trust
           # the group name we configured (patch-and-minor) to mean "only patch
           # + minor updates are in here" and auto-merge on title match.
+          # Dependabot has used two grouped-title shapes: older
+          # "…packages in the patch-and-minor group" (packages named) and the
+          # 2026-09 shape "bump the patch-and-minor group across 1 directory
+          # with N updates" (no "in the" — this drift left #156/#157 unmerged
+          # with the automerge reporting success). Match the group name itself
+          # so both shapes gate through.
           MERGE=false
           REASON=""
           if [ "$UPDATE_TYPE" = "version-update:semver-patch" ] || [ "$UPDATE_TYPE" = "version-update:semver-minor" ]; then
             MERGE=true
             REASON="$UPDATE_TYPE"
-          elif echo "$TITLE" | grep -qE "in the patch-and-minor group"; then
+          elif echo "$TITLE" | grep -qE "patch-and-minor group"; then
             MERGE=true
             REASON="grouped:patch-and-minor"
           elif echo "$HEAD_REF" | grep -q '^dependabot/github_actions/'; then
