@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.29](https://github.com/pro-vi/designer/compare/v0.3.28...v0.3.29) (2026-09-16)
+
+
+### Features
+
+* **files:** list files via the switcher when the flat panel is gone ([2bd8301](https://github.com/pro-vi/designer/commit/2bd830151430505bc1dc640d9d39966d820aa519))
+
 ## [0.3.28](https://github.com/pro-vi/designer/compare/v0.3.27...v0.3.28) (2026-09-16)
 
 
