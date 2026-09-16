@@ -151,7 +151,20 @@ export function scrubDeep<T>(value: T): T {
  */
 export type ProbeVerdict = 'ok' | 'drift' | 'incomplete';
 
-export function probeVerdict(input: { anchorFail: boolean; doctorSpawnError: string | null; doctorExitCode: number }): ProbeVerdict {
+export function probeVerdict(input: {
+  anchorFail: boolean;
+  doctorSpawnError: string | null;
+  doctorExitCode: number;
+  /** Home navigation landed off the design surface (isDesignSurfaceUrl said no). */
+  homeLandedOffSurface?: boolean;
+}): ProbeVerdict {
+  // Off-surface outranks drift: anchor fails recorded against a page that is
+  // not the design app (the signed-out claude.com marketing redirect, a login
+  // wall elsewhere) describe the wrong page, so they are not drift evidence —
+  // routing them as drift opens a bogus selectors-drift PR (the 2026-09-16
+  // claude.com/product/design case). An auth/session fault is an environment
+  // problem: `incomplete`, the no-drift-PR path.
+  if (input.homeLandedOffSurface) return 'incomplete';
   // Anchor drift wins: it is the signal the drift PR exists to carry, and it is
   // actionable even when the toolchain is also unhappy.
   if (input.anchorFail) return 'drift';
@@ -252,6 +265,28 @@ export function navMatch(target: string, landedOn: string): boolean {
   if (a && b) return a === b;
   const pathOnly = (u: string): string => u.replace(/[?#].*$/, '').replace(/\/+$/, '');
   return pathOnly(target) === pathOnly(landedOn);
+}
+
+/**
+ * Is this URL a claude design surface (the app itself — home or a project
+ * session, on either domain the product has lived on)? Everything the probe
+ * knows how to judge lives under /design; a home navigation that lands
+ * anywhere else never reached the thing being probed.
+ *
+ * claude.ai serves a signed-out visitor of /design a redirect into the
+ * claude.com marketing site (observed 2026-09-16:
+ * https://claude.ai/design → https://claude.com/product/design — "Turn Ideas
+ * into Design", Login nav, no app shell). On that page every claude.ai-keyed
+ * anchor fails against the wrong DOM and login.signedIn — the anchor built to
+ * catch the login wall — silently skips itself, because its URL arms only
+ * engage on claude.ai/design or claude.ai/login. Without routing on this
+ * predicate, that run files a bogus selectors-drift PR and books home.*
+ * fail-streaks toward auto-heal's N=2 gate. claude.com/design (the app, if the
+ * domain migration ever moves signed-in traffic) must count as ON-surface, so
+ * the regex accepts both domains and only rejects non-/design landings.
+ */
+export function isDesignSurfaceUrl(url: string): boolean {
+  return /^https:\/\/claude\.(ai|com)\/design([/?#]|$)/.test(url);
 }
 
 function scrubNav(
@@ -510,6 +545,18 @@ async function main(): Promise<void> {
     homeNav = { target: HOME_URL, landedOn: '', error: (e as Error).message };
     console.log(`[ci-health] home navigation failed — ${(e as Error).message}; home anchors will fail loudly`);
   }
+  // Off-surface landing (signed out → claude.com marketing redirect, or any
+  // other bounce away from /design): the anchor fails below describe the wrong
+  // page. Flag it here so the verdict routes to `incomplete` (no drift PR) and
+  // updateStreak is skipped (see both call sites below). An empty landedOn
+  // (navigation threw) is left alone — anchors already fail loudly for that.
+  const homeLandedOffSurface = !!homeNav.landedOn && !isDesignSurfaceUrl(homeNav.landedOn);
+  if (homeLandedOffSurface) {
+    console.log(
+      `::error title=Home navigation never reached the design app::landed on ${homeNav.landedOn} — signed out or redirected off the design surface. NOT selector drift: revive the profile session (designer setup) on the host running the probe, then re-run.`
+    );
+    console.log('[ci-health] home landed off the design surface — anchor fails below are NOT drift evidence');
+  }
   // Same reason as the CLI path: the switcher anchor drives the tab, so the
   // probe takes the tab lock rather than racing anything else in this process.
   const homeResults = await withTabLock(browser, 'health[ci:home]', () => runHealth(browser, { phase: 'home' }));
@@ -614,7 +661,13 @@ async function main(): Promise<void> {
   // probe in the same UTC day, and we don't want that verification run to
   // double-increment fail-streaks or reset a streak the daily-health run
   // already booked.
-  if (!isReprobe) {
+  if (homeLandedOffSurface) {
+    // A session-lapse day must not count as anchor-fail evidence: auto-heal's
+    // N=2 gate reads these streaks, and two signed-out days would otherwise
+    // propose anchor patches for a marketing page's DOM. Leave prior values
+    // untouched — "no evidence" neither increments nor resets.
+    console.log('[ci-health] home landed off the design surface — skipping updateStreak (fails describe the wrong page)');
+  } else if (!isReprobe) {
     updateStreak(outDir, results);
   } else {
     console.log('[ci-health] re-probe mode — skipping updateStreak + writing to .reprobe.json');
@@ -657,7 +710,8 @@ async function main(): Promise<void> {
   const verdict = probeVerdict({
     anchorFail: fail,
     doctorSpawnError: doctor.spawnError,
-    doctorExitCode: doctor.exitCode
+    doctorExitCode: doctor.exitCode,
+    homeLandedOffSurface
   });
   // The workflow gates on this, not on the raw step outcome — `outcome` only has
   // success/failure, which cannot separate "UI drifted" from "probe broke".

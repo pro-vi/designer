@@ -101,6 +101,31 @@ async function hasSelector(browser: Browser, sel: string): Promise<boolean> {
 }
 
 /**
+ * hasSelector, but patient: poll for the selector to APPEAR before declaring
+ * absence. The projects grid hydrates AFTER the app shell — composer and the
+ * projects-list container paint with the first render, rows/links arrive
+ * client-side up to ~2s later — so an anchor keyed on grid content races it if
+ * it evaluates the instant the home readiness selector passes. Reproduced
+ * 2026-09-16 on a fast host: the whole 27-anchor home phase ran 0.6s after
+ * composer-ready, projectLink read 0 links, projectCard caught links
+ * mid-arrival with rows still at 0, and the run filed itself as selector drift
+ * while a 500ms direct-CDP sampler showed the full grid landing ~2s later.
+ * Slower CI hosts had masked the race for weeks (each anchor roundtrip
+ * outlasted hydration there). A present selector still short-circuits on the
+ * first probe, so the healthy path pays nothing.
+ */
+const SETTLE_TRIES = 10; // × 500ms = 5s bound — comfortably over the observed ~2s hydration
+const SETTLE_GAP_MS = 500;
+
+async function hasSelectorSettled(browser: Browser, sel: string): Promise<boolean> {
+  for (let i = 0; i < SETTLE_TRIES; i++) {
+    if (await hasSelector(browser, sel)) return true;
+    await new Promise((r) => setTimeout(r, SETTLE_GAP_MS));
+  }
+  return false;
+}
+
+/**
  * Probe a canonical selector, falling back to a superseded one ONLY to
  * distinguish "still works via the old shape" from "gone entirely".
  *
@@ -113,10 +138,11 @@ async function checkWithLegacy(
   browser: Browser,
   canonical: string,
   legacy: string | null | undefined,
-  label: string
+  label: string,
+  probe: (sel: string) => Promise<boolean> = (sel) => hasSelector(browser, sel)
 ): Promise<{ ok: boolean; status?: ProbeStatus; detail?: string }> {
-  if (await hasSelector(browser, canonical)) return { ok: true };
-  if (legacy && (await hasSelector(browser, legacy))) {
+  if (await probe(canonical)) return { ok: true };
+  if (legacy && (await probe(legacy))) {
     return {
       ok: true,
       status: 'degraded',
@@ -520,14 +546,20 @@ export const UI_ANCHORS: AnchorDef[] = [
     // it could not stand in for this.
     description: 'per-project link (a[href*="/design/p/"]) — the listProjects scrape target',
     requires: 'home',
-    check: async (b) => ({ ok: await hasSelector(b, SEL.home.projectLink) })
+    // Settled probe: the links are grid content and hydrate after the app shell
+    // (see hasSelectorSettled) — an instant read races them to 0.
+    check: async (b) => ({ ok: await hasSelectorSettled(b, SEL.home.projectLink) })
   },
   {
     id: 'home.projectCard',
     category: 'home',
     description: 'project row ([data-testid="project-row"])',
     requires: 'home',
-    check: async (b) => checkWithLegacy(b, SEL.home.projectCard, SEL.homeLegacy?.projectCard, 'home.projectCard')
+    // Settled probe, same hydration race as projectLink.
+    check: async (b) =>
+      checkWithLegacy(b, SEL.home.projectCard, SEL.homeLegacy?.projectCard, 'home.projectCard', (sel) =>
+        hasSelectorSettled(b, sel)
+      )
   },
 
   // --- inside a session (after /design/p/{uuid}) ---

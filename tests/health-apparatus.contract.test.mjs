@@ -3,7 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { resolveDoctorBin, probeVerdict, EXIT_CODE, navMatch } from '../scripts/ci-health.ts';
+import { resolveDoctorBin, probeVerdict, EXIT_CODE, navMatch, isDesignSurfaceUrl } from '../scripts/ci-health.ts';
 import {
   findAnchor,
   findAnchorTarget,
@@ -1012,4 +1012,60 @@ test('the turn-RPC canary resolves the send button through both branches', () =>
     'canary still queries the canonical send button raw — it would miss the live legacy branch'
   );
   assert.match(canary, /SEND_BRANCHES_JSON/, 'canary must resolve ordered branches');
+});
+
+// --- 2026-09-16: a signed-out redirect must not masquerade as selector drift ---
+
+test('isDesignSurfaceUrl accepts both domains and rejects marketing/other landings', () => {
+  // The product's home has lived on claude.ai; the signed-out bounce goes to
+  // claude.com/product/design. Both domains' /design surfaces must count as
+  // ON-surface so a future signed-in domain migration is judged by its DOM,
+  // while the marketing page (which shares the claude.com domain but not the
+  // /design path) does not.
+  assert.equal(isDesignSurfaceUrl('https://claude.ai/design'), true);
+  assert.equal(isDesignSurfaceUrl('https://claude.ai/design/p/abc-123?file=index.html'), true);
+  assert.equal(isDesignSurfaceUrl('https://claude.com/design'), true);
+  assert.equal(isDesignSurfaceUrl('https://claude.com/product/design'), false, 'marketing page is off-surface');
+  assert.equal(isDesignSurfaceUrl('https://claude.ai/login'), false, 'login wall is off-surface');
+  assert.equal(isDesignSurfaceUrl('https://claude.ai/new'), false, 'unrelated app page is off-surface');
+  assert.equal(isDesignSurfaceUrl(''), false, 'navigation error is off-surface');
+});
+
+test('a home landing off the design surface is incomplete, NOT drift', () => {
+  // Reproduced 2026-09-16: signed out, claude.ai/design redirects to
+  // claude.com/product/design; every claude.ai-keyed anchor failed against the
+  // marketing page and login.signedIn skipped itself (its URL arms only engage
+  // on claude.ai/design|login). Filed as drift, that run opens a bogus
+  // selectors-drift PR — off-surface outranks anchorFail.
+  const v = probeVerdict({ anchorFail: true, doctorSpawnError: null, doctorExitCode: 0, homeLandedOffSurface: true });
+  assert.equal(v, 'incomplete');
+  assert.notEqual(v, 'drift');
+});
+
+test('a home landing ON the design surface with anchor fails is still drift', () => {
+  assert.equal(probeVerdict({ anchorFail: true, doctorSpawnError: null, doctorExitCode: 0, homeLandedOffSurface: false }), 'drift');
+});
+
+test('legacy callers without the off-surface field keep their verdicts', () => {
+  // probeVerdict is exported and called with the 3-field shape elsewhere;
+  // the flag is optional so those callers must behave exactly as before.
+  assert.equal(probeVerdict({ anchorFail: false, doctorSpawnError: null, doctorExitCode: 0 }), 'ok');
+  assert.equal(probeVerdict({ anchorFail: true, doctorSpawnError: null, doctorExitCode: 0 }), 'drift');
+  assert.equal(probeVerdict({ anchorFail: false, doctorSpawnError: 'ENOENT: ...', doctorExitCode: -1 }), 'incomplete');
+});
+
+test('grid anchors settle instead of racing the hydrated projects grid', () => {
+  // projectLink/projectCard key on grid content, which lands ~2s after the
+  // composer (reproduced 2026-09-16 — a fast host ran the whole home phase in
+  // 0.6s and filed drift). Their checks must route through hasSelectorSettled,
+  // never a bare instant hasSelector.
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'ui-anchors.ts'), 'utf8');
+  const link = src.indexOf("id: 'home.projectLink'");
+  const card = src.indexOf("id: 'home.projectCard'");
+  assert.ok(link > 0 && card > link, 'anchor bounds not found — update this test');
+  const between = src.slice(link, card);
+  assert.match(between, /hasSelectorSettled/, 'home.projectLink must use the settled probe');
+  assert.ok(!/hasSelector\(b, SEL\.home\.projectLink\)/.test(between), 'home.projectLink must not instant-probe');
+  const cardBlock = src.slice(card, src.indexOf('id: ', card + 10));
+  assert.match(cardBlock, /hasSelectorSettled/, 'home.projectCard must use the settled probe');
 });
