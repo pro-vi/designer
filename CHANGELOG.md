@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.28](https://github.com/pro-vi/designer/compare/v0.3.27...v0.3.28) (2026-09-16)
+
+
+### Bug Fixes
+
+* **files:** fail safe when the flat Design Files panel doesn't render ([d2db6e7](https://github.com/pro-vi/designer/commit/d2db6e7e769a55b3deface255831d414fbc6ff51))
+* **probe:** two false-drift paths — grid hydration race and off-surface landings ([7c5589b](https://github.com/pro-vi/designer/commit/7c5589bf69651e5d627d993bfc6f2ba6bea9a1c3))
+
 ## [0.3.27](https://github.com/pro-vi/designer/compare/v0.3.26...v0.3.27) (2026-09-14)
 
 
