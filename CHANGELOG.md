@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.30](https://github.com/pro-vi/designer/compare/v0.3.29...v0.3.30) (2026-09-17)
+
+
+### Bug Fixes
+
+* **files:** second-opinion F1-F4 — withdraw switcher authority, verify restoration ([21a60ac](https://github.com/pro-vi/designer/commit/21a60ac74c0f44adc374f96c197f037c162b087c))
+
 ## [0.3.29](https://github.com/pro-vi/designer/compare/v0.3.28...v0.3.29) (2026-09-16)
 
 
