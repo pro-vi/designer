@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readRowsExpr, switcherStateExpr, STAMP_ATTR, STAMP_MOUNT } from '../files-switcher.ts';
+import { readRowsExpr, switcherStateExpr, readSwitcherRowsVerified, STAMP_ATTR, STAMP_MOUNT } from '../files-switcher.ts';
 import { getSelectors } from '../selectors.ts';
 
 const SEL = getSelectors();
@@ -145,4 +145,80 @@ test('readRowsExpr surfaces data-name as the real filename, null when absent', (
 test('readRowsExpr keeps label/editedText parsing intact alongside name', () => {
   const out = evalExpr(readRowsExpr(SEL.files), makeDom({ labels: ['solo'] }).document);
   assert.deepEqual(out.rows, [{ label: 'solo', editedText: 'Edited now', name: null }]);
+});
+
+// --- 2026-09-16 gate: behavioral anchors for the shared read lifecycle (F3/F4) ---
+
+/** Minimal stub satisfying SwitcherReadBrowser, scripted per-call. */
+function stubBrowser(script) {
+  let i = 0;
+  const calls = { clicks: 0, escapes: 0, exprs: [] };
+  const b = {
+    calls,
+    click: async () => { calls.clicks++; },
+    press: async () => { calls.escapes++; },
+    evalValue: async (js) => {
+      calls.exprs.push(js.slice(0, 40));
+      const step = script[Math.min(i, script.length - 1)];
+      i++;
+      const r = typeof step === 'function' ? step(js) : step;
+      if (r && typeof r === 'object' && 'throw' in r) throw new Error(r.throw);
+      return r;
+    }
+  };
+  return b;
+}
+
+test('readSwitcherRowsVerified: open → read → verified close, no Escape', async () => {
+  // state closed → (trusted click) → open → read rows → state open → (close click) → closed
+  const b = stubBrowser(['closed', 'open', { rows: [{ label: 'index', editedText: null, name: 'index.html' }], reused: false }, 'open', 'closed', 'closed']);
+  const read = await readSwitcherRowsVerified(b, SEL.files);
+  assert.deepEqual(read?.rows.map((r) => r.name), ['index.html']);
+  assert.equal(b.calls.escapes, 0, 'no Escape when the trusted close verifies');
+});
+
+test('readSwitcherRowsVerified: close fails → synthetic fails → Escape fires, unverified warns', async () => {
+  const warns = [];
+  const origWarn = console.warn;
+  console.warn = (m) => warns.push(String(m));
+  try {
+    // closed → open → read → still open (close no-ops every time)
+    const b = stubBrowser(['closed', 'open', { rows: [], reused: false }, 'open', 'open', 'open', 'open', 'open']);
+    await readSwitcherRowsVerified(b, SEL.files);
+    assert.ok(b.calls.escapes >= 1, 'Escape escalation must fire');
+    assert.ok(warns.some((w) => w.includes('restoration unverified')), 'unverified postcondition must warn');
+  } finally {
+    console.warn = origWarn;
+  }
+});
+
+test('readSwitcherRowsVerified: popover never opens → null read, no Escape, no warn', async () => {
+  const warns = [];
+  const origWarn = console.warn;
+  console.warn = (m) => warns.push(String(m));
+  try {
+    const b = stubBrowser(['closed', 'closed', 'closed', 'closed']);
+    const read = await readSwitcherRowsVerified(b, SEL.files);
+    assert.equal(read, null);
+    assert.equal(b.calls.escapes, 0);
+    // final state read is 'closed' — no warn
+    assert.equal(warns.filter((w) => w.includes('switcher')).length, 0);
+  } finally {
+    console.warn = origWarn;
+  }
+});
+
+test('readSwitcherRowsVerified: dead transport in cleanup → unverified warns (error state is not a pass)', async () => {
+  const warns = [];
+  const origWarn = console.warn;
+  console.warn = (m) => warns.push(String(m));
+  try {
+    // closed → open → read ok → then every state eval throws (transport dead)
+    const b = stubBrowser(['closed', 'open', { rows: [], reused: false }, { throw: 'transport dead' }, { throw: 'transport dead' }, { throw: 'transport dead' }]);
+    const read = await readSwitcherRowsVerified(b, SEL.files);
+    assert.deepEqual(read?.rows, [], 'the read itself is still returned');
+    assert.ok(warns.some((w) => w.includes('state=error')), 'error state must warn as unverified, not pass silently');
+  } finally {
+    console.warn = origWarn;
+  }
 });

@@ -511,3 +511,92 @@ export function foldSettleRead(c: SettleCounters, read: SettleRead): SettleCount
 export function shouldCloseSwitcher(state: string): boolean {
   return state === 'open' || state === 'open-empty';
 }
+
+// --- Shared read-only lifecycle (added 2026-09-16, second-opinion F4) ---
+//
+// One implementation of "open the popover, read the rows, normalize the page
+// back to closed", used by BOTH the controller's listFiles fallback and the
+// session.fileListScrape anchor. They were near-twins, and this repo has
+// documented history of probe/production divergence from exactly that shape
+// (file-panel.ts PR #77: the probe went green while production silently
+// no-op'd).
+//
+// POLICY (correcting a comment that lied): this NORMALIZES to closed — a
+// popover that was already open when we arrived is closed too. Reads are
+// point-in-time; leaving popovers open across them is how stale mounts get
+// read as fresh. Restoration is verified, not assumed: a close that fails
+// silently leaves the row menu's dismissal scrim (fixed inset-0) swallowing
+// the page's next click — observed live 2026-09-16. Escalation: trusted click
+// → synthetic click → Escape → warn.
+//
+// Returns null when the popover could not be opened at all. A successful read
+// is returned even when restoration ends unverified — a valid filename
+// observation and a safe interaction state are separate properties, and the
+// warn makes the latter visible instead of silently degrading both.
+
+/** The minimal browser surface this lifecycle needs — satisfied by the facade. */
+export interface SwitcherReadBrowser {
+  click(sel: string): Promise<unknown>;
+  press(key: string): Promise<unknown>;
+  evalValue<T = unknown>(js: string): Promise<T>;
+}
+
+const READ_SLEEP = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export async function readSwitcherRowsVerified(
+  browser: SwitcherReadBrowser,
+  f: Selectors['files']
+): Promise<{ rows: SwitcherRow[]; reused: boolean } | null> {
+  const state = async (): Promise<string> =>
+    (await browser.evalValue<string>(switcherStateExpr(f)).catch(() => 'error')) || 'error';
+  let read: { rows: SwitcherRow[]; reused: boolean } | null = null;
+  try {
+    let st = await state();
+    if (st === 'closed') {
+      // Trusted click first — it leaves the cleanest overlay state (a synthetic
+      // open can strand the row menu's scrim; see switcherStateExpr).
+      await browser.click(f.switcherTrigger).catch(() => null);
+      await READ_SLEEP(700);
+      st = await state();
+      if (st === 'closed') {
+        await browser.evalValue(clickTriggerExpr(f)).catch(() => null);
+        await READ_SLEEP(800);
+        st = await state();
+      }
+    }
+    if (st !== 'open' && st !== 'open-empty') return null;
+    read = await browser
+      .evalValue<{ rows: SwitcherRow[]; reused: boolean }>(readRowsExpr(f))
+      .catch(() => null);
+    return read;
+  } finally {
+    try {
+      if (shouldCloseSwitcher(await state())) {
+        await browser.click(f.switcherTrigger).catch(() => null);
+        await READ_SLEEP(400);
+        if (shouldCloseSwitcher(await state())) {
+          await browser.evalValue(clickTriggerExpr(f)).catch(() => null);
+          await READ_SLEEP(400);
+        }
+      }
+      if (shouldCloseSwitcher(await state())) {
+        // Verified live 2026-09-16: Escape dismisses a stranded dismissal
+        // scrim that otherwise swallows the next click on the page.
+        await browser.press('Escape').catch(() => null);
+        await READ_SLEEP(400);
+      }
+      // Postcondition check. A state read that ERRORS is not a pass — it is
+      // "unverified", and the warn must fire for it too: a dead transport
+      // skipping this check silently would leave the escalation ladder's
+      // outcome unknown (casting-lens finding on the 'error' default).
+      const finalState = await state();
+      if (finalState === 'error' || shouldCloseSwitcher(finalState)) {
+        console.warn(
+          `[designer] switcher popover restoration unverified after read + close attempts (trusted, synthetic, Escape; state=${finalState}) — the next click on this page may hit its dismissal layer`
+        );
+      }
+    } catch {
+      // Restoration is best-effort; the read's validity is a separate property.
+    }
+  }
+}

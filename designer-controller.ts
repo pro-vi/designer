@@ -27,6 +27,7 @@ import {
   switcherStateExpr,
   clickTriggerExpr,
   readRowsExpr,
+  readSwitcherRowsVerified,
   rowSelector,
   stampRowExpr,
   stampMenuDeleteExpr,
@@ -1570,11 +1571,11 @@ export class DesignerController {
   // don't expand programmatically). When folders are present, the caller
   // should fall back to designer_handoff for an authoritative list.
   /**
-   * Read the file rows off the unified Pages switcher: open the popover
-   * (trusted click first, synthetic fallback — the same escalation the delete
-   * flow and the session.filesSwitcher anchor use), read rows via readRowsExpr
-   * (mount-stamped, so a re-read of the same mount is detectable), close it
-   * again. Returns null when the popover could not be opened at all.
+   * Read the file rows off the unified Pages switcher, via the SHARED verified
+   * lifecycle in files-switcher.ts (open → read → normalize-closed with
+   * postcondition escalation) — the same implementation the
+   * session.fileListScrape anchor uses, so the probe cannot drift from
+   * production here (the PR #77 lesson).
    *
    * This is the listing path for the post-2026-09-16 session surface, where the
    * flat "Design Files" panel no longer renders and the switcher is the only
@@ -1582,34 +1583,7 @@ export class DesignerController {
    * or menued — those belong to the destructive flows.
    */
   private async _readSwitcherFileRows(): Promise<{ rows: SwitcherRow[]; reused: boolean } | null> {
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const F = this.selectors.files;
-    const state = async (): Promise<string> =>
-      (await this.browser.evalValue<string>(switcherStateExpr(F)).catch(() => 'error')) || 'error';
-    let st = await state();
-    if (st === 'closed') {
-      // Trusted click first — it leaves the cleanest overlay state (a synthetic
-      // open can strand the row menu's scrim; see switcherStateExpr).
-      await this.browser.click(F.switcherTrigger).catch(() => null);
-      await sleep(700);
-      st = await state();
-      if (st === 'closed') {
-        await this.browser.evalValue(clickTriggerExpr(F)).catch(() => null);
-        await sleep(800);
-        st = await state();
-      }
-    }
-    if (st !== 'open' && st !== 'open-empty') return null;
-    const read = await this.browser
-      .evalValue<{ rows: SwitcherRow[]; reused: boolean }>(readRowsExpr(F))
-      .catch(() => null);
-    // Leave the page as found.
-    if (shouldCloseSwitcher(await state())) {
-      await this.browser.click(F.switcherTrigger).catch(() => null);
-      await sleep(400);
-      if (shouldCloseSwitcher(await state())) await this.browser.evalValue(clickTriggerExpr(F)).catch(() => null);
-    }
-    return read;
+    return readSwitcherRowsVerified(this.browser, this.selectors.files);
   }
 
   private async _listFilesDetailedBody(): Promise<{ files: string[]; folders: string[]; authoritative: boolean }> {
@@ -1692,12 +1666,27 @@ export class DesignerController {
       // carries no extension, so rows WITHOUT data-name must not degrade into a
       // label-shaped list — iterate()'s before/after diff would read the shape
       // change as a remove+add of every file. All-or-nothing on real names.
-      // Folders: the switcher has no folder rows to find, so folders report []
-      // with that blind spot documented (issue #160) rather than guessed at.
+      //
+      // authoritative stays FALSE on this path BY DESIGN (second-opinion review
+      // F1, 2026-09-16): every-row-named proves the RETURNED rows are correct,
+      // not that they COVER the project. Foldered files are observationally
+      // invisible here (live-verified: docs/about.html never renders a row),
+      // and row virtualization above single-digit file counts is untested — so
+      // the switcher cannot assert folder-emptiness or completeness the way the
+      // flat panel could (it observed folder rows). `designer files` points at
+      // handoff for the authoritative list; iterate()'s diff guard withholds
+      // newFiles/removedFiles while either listing is untrusted. Do NOT "fix"
+      // this by returning true — manufacture completeness the surface cannot
+      // observe and a false removal record follows.
       const read = await this._readSwitcherFileRows();
       const rows = read?.rows ?? [];
-      if (rows.length > 0 && rows.every((r) => typeof r.name === 'string' && r.name !== '')) {
-        return { files: rows.map((r) => r.name as string), folders: [], authoritative: true };
+      // Total derivation, not every()+cast: the filter's type predicate IS
+      // the proof, and a length mismatch is the all-or-nothing refusal.
+      const names = rows
+        .map((r) => r.name)
+        .filter((n): n is string => typeof n === 'string' && n !== '');
+      if (rows.length > 0 && names.length === rows.length) {
+        return { files: names, folders: [], authoritative: false };
       }
       return { files: [], folders: [], authoritative: false };
     }

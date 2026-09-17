@@ -8,7 +8,7 @@ import {
   switcherStateExpr,
   clickTriggerExpr,
   readRowsExpr,
-  shouldCloseSwitcher,
+  readSwitcherRowsVerified,
   rowSelector,
   stampRowExpr,
   stampMenuDeleteExpr,
@@ -102,6 +102,21 @@ async function hasSelector(browser: Browser, sel: string): Promise<boolean> {
 }
 
 /**
+ * Tri-state single probe: true = present, false = EVALUATED and absent,
+ * null = the transport never answered. Second-opinion F3 (2026-09-16):
+ * conflating "could not evaluate" with "evaluated absent" turns ten failed
+ * agent-browser roundtrips into ordinary negative selector evidence — drift
+ * signal manufactured by a broken transport.
+ */
+async function probeSelector(browser: Browser, sel: string): Promise<boolean | null> {
+  try {
+    return !!(await browser.evalValue<boolean>(`!!document.querySelector(${JSON.stringify(sel)})`));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * hasSelector, but patient: poll for the selector to APPEAR before declaring
  * absence. The projects grid hydrates AFTER the app shell — composer and the
  * projects-list container paint with the first render, rows/links arrive
@@ -112,55 +127,48 @@ async function hasSelector(browser: Browser, sel: string): Promise<boolean> {
  * mid-arrival with rows still at 0, and the run filed itself as selector drift
  * while a 500ms direct-CDP sampler showed the full grid landing ~2s later.
  * Slower CI hosts had masked the race for weeks (each anchor roundtrip
- * outlasted hydration there). A present selector still short-circuits on the
- * first probe, so the healthy path pays nothing.
+ * outlasted hydration there).
+ *
+ * Deadline-based, not attempt-counted (F3): samples run until the wall-clock
+ * window closes, with the final sample AT the deadline — an attempt-counted
+ * loop slept past its last sample and missed a 4.75s arrival inside a 5s
+ * window. Returns null when the transport never produced a single successful
+ * evaluation (unavailable evidence, not absence).
  */
-const SETTLE_TRIES = 10; // × 500ms = 5s bound — comfortably over the observed ~2s hydration
+const SETTLE_WINDOW_MS = 5_000; // comfortably over the observed ~2s hydration
 const SETTLE_GAP_MS = 500;
 
-async function hasSelectorSettled(browser: Browser, sel: string): Promise<boolean> {
-  for (let i = 0; i < SETTLE_TRIES; i++) {
-    if (await hasSelector(browser, sel)) return true;
-    await new Promise((r) => setTimeout(r, SETTLE_GAP_MS));
+async function hasSelectorSettled(browser: Browser, sel: string): Promise<boolean | null> {
+  const deadline = Date.now() + SETTLE_WINDOW_MS;
+  let sawSuccessfulEval = false;
+  for (;;) {
+    const r = await probeSelector(browser, sel);
+    if (r === true) return true;
+    if (r === false) sawSuccessfulEval = true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return sawSuccessfulEval ? false : null;
+    await new Promise((r2) => setTimeout(r2, Math.min(SETTLE_GAP_MS, remaining)));
   }
-  return false;
 }
 
 /**
- * Anchor-side twin of DesignerController._readSwitcherFileRows: open the Pages
- * switcher popover (trusted click first, synthetic fallback — the escalation
- * the delete flow, the filesSwitcher anchor and the controller all use), read
- * rows via readRowsExpr, close it again so the page is left as found. Returns
- * the rows' data-name filenames; empty when the popover wouldn't open or its
- * rows expose no data-name — all-or-nothing on real names, same rule as
- * production (label-shaped strings must never masquerade as filenames).
+ * Anchor-side file listing via the SHARED verified switcher lifecycle
+ * (files-switcher.ts readSwitcherRowsVerified) — the same implementation the
+ * controller's listFiles fallback uses, so the probe exercises production's
+ * exact path. Returns the rows' data-name filenames; empty when the popover
+ * wouldn't open or its rows expose no data-name — all-or-nothing on real
+ * names, same rule as production (label-shaped strings must never masquerade
+ * as filenames).
  */
 async function readSwitcherFileNames(b: Browser): Promise<string[]> {
-  const state = async (): Promise<string> =>
-    (await b.evalValue<string>(switcherStateExpr(SEL.files)).catch(() => 'error')) || 'error';
-  let st = await state();
-  if (st === 'closed') {
-    await b.click(SEL.files.switcherTrigger).catch(() => null);
-    await sleep(700);
-    st = await state();
-    if (st === 'closed') {
-      await b.evalValue(clickTriggerExpr(SEL.files)).catch(() => null);
-      await sleep(800);
-      st = await state();
-    }
-  }
-  if (st !== 'open' && st !== 'open-empty') return [];
-  const read = await b
-    .evalValue<{ rows: SwitcherRow[]; reused: boolean }>(readRowsExpr(SEL.files))
-    .catch(() => null);
-  if (shouldCloseSwitcher(await state())) {
-    await b.click(SEL.files.switcherTrigger).catch(() => null);
-    await sleep(400);
-    if (shouldCloseSwitcher(await state())) await b.evalValue(clickTriggerExpr(SEL.files)).catch(() => null);
-  }
+  const read = await readSwitcherRowsVerified(b, SEL.files);
   const rows = read?.rows ?? [];
-  if (rows.length === 0 || !rows.every((r) => typeof r.name === 'string' && r.name !== '')) return [];
-  return rows.map((r) => r.name as string);
+  // Total derivation, not every()+cast: a length mismatch is the
+  // all-or-nothing refusal (label-shaped strings never masquerade as names).
+  const names = rows
+    .map((r) => r.name)
+    .filter((n): n is string => typeof n === 'string' && n !== '');
+  return names.length === rows.length && rows.length > 0 ? names : [];
 }
 
 /**
@@ -171,21 +179,36 @@ async function readSwitcherFileNames(b: Browser): Promise<string[]> {
  * whichever comes first in document order — not the canonical match — and would
  * report plain `ok` either way, which is exactly how legacy branches masked
  * canonical rot from the daily probe.
+ *
+ * The probe may be tri-state (null = transport never answered). A canonical
+ * that was never evaluated must NOT fall through to the legacy branch — that
+ * would report "canonical gone, legacy holds" (degraded) off zero evidence
+ * (second-opinion F3). Un-evaluable is inconclusive: skip, not drift.
  */
 async function checkWithLegacy(
   browser: Browser,
   canonical: string,
   legacy: string | null | undefined,
   label: string,
-  probe: (sel: string) => Promise<boolean> = (sel) => hasSelector(browser, sel)
+  probe: (sel: string) => Promise<boolean | null> = (sel) => hasSelector(browser, sel)
 ): Promise<{ ok: boolean; status?: ProbeStatus; detail?: string }> {
-  if (await probe(canonical)) return { ok: true };
-  if (legacy && (await probe(legacy))) {
-    return {
-      ok: true,
-      status: 'degraded',
-      detail: `canonical ${label} selector (${canonical}) is GONE; still matching the superseded branch (${legacy}). Re-capture the canonical selector — the tool works today but this is unrepaired drift.`
-    };
+  const c = await probe(canonical);
+  if (c === true) return { ok: true };
+  if (c === null) {
+    return { ok: true, status: 'skip', detail: `${label}: could not evaluate (${canonical}) — transport unavailable, inconclusive` };
+  }
+  if (legacy) {
+    const l = await probe(legacy);
+    if (l === true) {
+      return {
+        ok: true,
+        status: 'degraded',
+        detail: `canonical ${label} selector (${canonical}) is GONE; still matching the superseded branch (${legacy}). Re-capture the canonical selector — the tool works today but this is unrepaired drift.`
+      };
+    }
+    if (l === null) {
+      return { ok: true, status: 'skip', detail: `${label}: canonical absent but legacy (${legacy}) could not be evaluated — inconclusive` };
+    }
   }
   return { ok: false, detail: `neither canonical (${canonical}) nor legacy (${legacy ?? 'none'}) matched` };
 }
@@ -585,8 +608,13 @@ export const UI_ANCHORS: AnchorDef[] = [
     description: 'per-project link (a[href*="/design/p/"]) — the listProjects scrape target',
     requires: 'home',
     // Settled probe: the links are grid content and hydrate after the app shell
-    // (see hasSelectorSettled) — an instant read races them to 0.
-    check: async (b) => ({ ok: await hasSelectorSettled(b, SEL.home.projectLink) })
+    // (see hasSelectorSettled) — an instant read races them to 0. Tri-state:
+    // never-evaluated is a skip (inconclusive), not absence.
+    check: async (b) => {
+      const r = await hasSelectorSettled(b, SEL.home.projectLink);
+      if (r === null) return { ok: true, status: 'skip', detail: 'projectLink never evaluated — transport unavailable, inconclusive' };
+      return { ok: r };
+    }
   },
   {
     id: 'home.projectCard',

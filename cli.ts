@@ -166,9 +166,14 @@ async function main(): Promise<void> {
       const c = new DesignerController({ key });
       const detail = await c.listFilesDetailed();
       if (!detail.authoritative) {
-        console.error(
-          `[designer] Folders detected (${detail.folders.join(', ')}) — files under them are invisible to the live scrape. Run 'designer handoff --key ${key}' for authoritative file listing.`
-        );
+        // Two causes, one remedy. Either folders were DETECTED by the flat
+        // panel (files under them invisible to the scrape), or the listing came
+        // from the switcher fallback, which cannot see foldered files at all
+        // and so never claims completeness (post-2026-09-16 surface).
+        const cause = detail.folders.length > 0
+          ? `Folders detected (${detail.folders.join(', ')}) — files under them are invisible to the live scrape.`
+          : 'Listing came from the switcher surface, which cannot see foldered files or prove coverage.';
+        console.error(`[designer] ${cause} Run 'designer handoff --key ${key}' for authoritative file listing.`);
       }
       console.log(JSON.stringify(detail, null, 2));
       break;

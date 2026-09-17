@@ -155,8 +155,8 @@ export function probeVerdict(input: {
   anchorFail: boolean;
   doctorSpawnError: string | null;
   doctorExitCode: number;
-  /** Home navigation landed off the design surface (isDesignSurfaceUrl said no). */
-  homeLandedOffSurface?: boolean;
+  /** ANY phase's navigation landed off the design surface (isDesignSurfaceUrl said no). */
+  landedOffSurface?: boolean;
 }): ProbeVerdict {
   // Off-surface outranks drift: anchor fails recorded against a page that is
   // not the design app (the signed-out claude.com marketing redirect, a login
@@ -164,7 +164,7 @@ export function probeVerdict(input: {
   // routing them as drift opens a bogus selectors-drift PR (the 2026-09-16
   // claude.com/product/design case). An auth/session fault is an environment
   // problem: `incomplete`, the no-drift-PR path.
-  if (input.homeLandedOffSurface) return 'incomplete';
+  if (input.landedOffSurface) return 'incomplete';
   // Anchor drift wins: it is the signal the drift PR exists to carry, and it is
   // actionable even when the toolchain is also unhappy.
   if (input.anchorFail) return 'drift';
@@ -550,8 +550,8 @@ async function main(): Promise<void> {
   // page. Flag it here so the verdict routes to `incomplete` (no drift PR) and
   // updateStreak is skipped (see both call sites below). An empty landedOn
   // (navigation threw) is left alone — anchors already fail loudly for that.
-  const homeLandedOffSurface = !!homeNav.landedOn && !isDesignSurfaceUrl(homeNav.landedOn);
-  if (homeLandedOffSurface) {
+  let landedOffSurface = !!homeNav.landedOn && !isDesignSurfaceUrl(homeNav.landedOn);
+  if (landedOffSurface) {
     console.log(
       `::error title=Home navigation never reached the design app::landed on ${homeNav.landedOn} — signed out or redirected off the design surface. NOT selector drift: revive the profile session (designer setup) on the host running the probe, then re-run.`
     );
@@ -591,6 +591,16 @@ async function main(): Promise<void> {
     } catch (e) {
       sessionNav = { target: probeUrl, landedOn: '', error: (e as Error).message };
       console.log(`[ci-health] canary navigation failed — ${(e as Error).message}; session anchors will fail loudly`);
+    }
+    // Second-opinion F2 (2026-09-16): the session phase can bounce off-surface
+    // on its own (mid-run auth expiry) while home landed fine — its anchor
+    // fails then describe a marketing page, not drift. Any phase landing
+    // off-surface routes the whole run to incomplete, same as home.
+    if (!!sessionNav?.landedOn && !isDesignSurfaceUrl(sessionNav.landedOn)) {
+      landedOffSurface = true;
+      console.log(
+        `::error title=Session navigation never reached the design app::landed on ${sessionNav.landedOn} — session-phase anchor fails describe the wrong page. NOT selector drift: revive the profile session (designer setup) on the host running the probe, then re-run.`
+      );
     }
     // Session health owns the mutating turn-RPC canary. It sends a chat-only
     // prompt against DESIGNER_PROBE_PROJECT_URL and verifies the live
@@ -661,7 +671,7 @@ async function main(): Promise<void> {
   // probe in the same UTC day, and we don't want that verification run to
   // double-increment fail-streaks or reset a streak the daily-health run
   // already booked.
-  if (homeLandedOffSurface) {
+  if (landedOffSurface) {
     // A session-lapse day must not count as anchor-fail evidence: auto-heal's
     // N=2 gate reads these streaks, and two signed-out days would otherwise
     // propose anchor patches for a marketing page's DOM. Leave prior values
@@ -711,7 +721,7 @@ async function main(): Promise<void> {
     anchorFail: fail,
     doctorSpawnError: doctor.spawnError,
     doctorExitCode: doctor.exitCode,
-    homeLandedOffSurface
+    landedOffSurface
   });
   // The workflow gates on this, not on the raw step outcome — `outcome` only has
   // success/failure, which cannot separate "UI drifted" from "probe broke".

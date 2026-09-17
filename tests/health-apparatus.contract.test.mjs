@@ -1031,19 +1031,21 @@ test('isDesignSurfaceUrl accepts both domains and rejects marketing/other landin
   assert.equal(isDesignSurfaceUrl(''), false, 'navigation error is off-surface');
 });
 
-test('a home landing off the design surface is incomplete, NOT drift', () => {
+test('ANY phase landing off the design surface is incomplete, NOT drift', () => {
   // Reproduced 2026-09-16: signed out, claude.ai/design redirects to
   // claude.com/product/design; every claude.ai-keyed anchor failed against the
   // marketing page and login.signedIn skipped itself (its URL arms only engage
   // on claude.ai/design|login). Filed as drift, that run opens a bogus
-  // selectors-drift PR — off-surface outranks anchorFail.
-  const v = probeVerdict({ anchorFail: true, doctorSpawnError: null, doctorExitCode: 0, homeLandedOffSurface: true });
+  // selectors-drift PR — off-surface outranks anchorFail. Second-opinion F2:
+  // the SESSION phase can bounce on its own (mid-run auth expiry) while home
+  // landed fine, so the flag is phase-agnostic — any off-surface landing.
+  const v = probeVerdict({ anchorFail: true, doctorSpawnError: null, doctorExitCode: 0, landedOffSurface: true });
   assert.equal(v, 'incomplete');
   assert.notEqual(v, 'drift');
 });
 
-test('a home landing ON the design surface with anchor fails is still drift', () => {
-  assert.equal(probeVerdict({ anchorFail: true, doctorSpawnError: null, doctorExitCode: 0, homeLandedOffSurface: false }), 'drift');
+test('every phase landing ON the design surface with anchor fails is still drift', () => {
+  assert.equal(probeVerdict({ anchorFail: true, doctorSpawnError: null, doctorExitCode: 0, landedOffSurface: false }), 'drift');
 });
 
 test('legacy callers without the off-surface field keep their verdicts', () => {
@@ -1068,4 +1070,41 @@ test('grid anchors settle instead of racing the hydrated projects grid', () => {
   assert.ok(!/hasSelector\(b, SEL\.home\.projectLink\)/.test(between), 'home.projectLink must not instant-probe');
   const cardBlock = src.slice(card, src.indexOf('id: ', card + 10));
   assert.match(cardBlock, /hasSelectorSettled/, 'home.projectCard must use the settled probe');
+});
+
+test('the switcher listing never claims authoritative (F1)', () => {
+  // Second-opinion F1: every-row-has-data-name proves the RETURNED rows are
+  // correct, not that they COVER the project — foldered files are invisible to
+  // the switcher (live-verified) and virtualization is untested. The
+  // controller's switcher branch must return authoritative:false in BOTH its
+  // named-rows and empty outcomes, or designer files asserts completeness the
+  // surface cannot observe.
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'designer-controller.ts'), 'utf8');
+  const start = src.indexOf('if (!panelRendered) {');
+  const end = src.indexOf('authoritative: panelRendered');
+  assert.ok(start > 0 && end > start, 'switcher branch bounds not found — update this test');
+  const branch = src.slice(start, end);
+  assert.ok(!/authoritative:\s*true/.test(branch), 'switcher branch must not return authoritative:true');
+  assert.ok((branch.match(/authoritative:\s*false/g) ?? []).length === 2, 'both switcher outcomes must be authoritative:false');
+});
+
+test('probe and production share one switcher read lifecycle (F4)', () => {
+  // The controller's fallback and the fileListScrape anchor must both route
+  // through files-switcher.ts readSwitcherRowsVerified — duplicated
+  // open/read/close sequences are how the probe-green/production-broken
+  // divergence happened before (PR #77).
+  const ctrl = fs.readFileSync(path.join(REPO_ROOT, 'designer-controller.ts'), 'utf8');
+  const anchors = fs.readFileSync(path.join(REPO_ROOT, 'ui-anchors.ts'), 'utf8');
+  assert.match(ctrl, /_readSwitcherFileRows[\s\S]{0,400}readSwitcherRowsVerified\(/, 'controller must delegate to the shared lifecycle');
+  assert.match(anchors, /readSwitcherFileNames[\s\S]{0,300}readSwitcherRowsVerified\(/, 'anchor must delegate to the shared lifecycle');
+});
+
+test('settle uses a wall-clock deadline, not an attempt count (F3)', () => {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'ui-anchors.ts'), 'utf8');
+  const start = src.indexOf('async function hasSelectorSettled');
+  const end = src.indexOf('/**', start);
+  const body = src.slice(start, end);
+  assert.match(body, /Date\.now\(\)\s*\+\s*SETTLE_WINDOW_MS/, 'deadline must be wall-clock');
+  assert.match(body, /Math\.min\(SETTLE_GAP_MS,\s*remaining\)/, 'final sleep must be capped by remaining budget so the last sample lands at the deadline');
+  assert.doesNotMatch(body, /for \(let i/, 'attempt-counted loop must be gone');
 });
